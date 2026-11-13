@@ -626,6 +626,41 @@ function startGame(mode, level = 1, totalPlayers = 2) {
   loopId = requestAnimationFrame(gameLoop);
 }
 
+let externalCutinTimerId = null;
+function showExternalCutin(theme, valueText, accentColor = '#ffd700') {
+  const box = document.getElementById('external-cutin');
+  const img = document.getElementById('external-cutin-img');
+  const nameEl = document.getElementById('external-cutin-name');
+  const valEl = document.getElementById('external-cutin-value');
+  if (!box || !img || !nameEl || !valEl) return;
+
+  if (theme && theme.charSrc) {
+    img.src = theme.charSrc;
+    img.style.display = 'block';
+  } else {
+    img.style.display = 'none';
+  }
+  box.style.borderColor = (theme && theme.color) ? theme.color : '#4ecca3';
+  nameEl.innerText = (theme && theme.name) ? theme.name : 'YOU';
+  valEl.innerText = valueText;
+  valEl.style.color = accentColor;
+
+  box.classList.add('show');
+  if (externalCutinTimerId) clearTimeout(externalCutinTimerId);
+  externalCutinTimerId = setTimeout(() => {
+    box.classList.remove('show');
+  }, 1600);
+}
+
+function hideExternalCutin() {
+  if (externalCutinTimerId) {
+    clearTimeout(externalCutinTimerId);
+    externalCutinTimerId = null;
+  }
+  const box = document.getElementById('external-cutin');
+  if (box) box.classList.remove('show');
+}
+
 function resetGameLogic() {
   isMatchOver = false;
   isDeadInMatch = false;
@@ -633,6 +668,7 @@ function resetGameLogic() {
   myTargetIndex = -1;
   currentMatchId = Date.now(); 
   currentSurvivalWins = 0;
+  hideExternalCutin();
   
   const handicap = parseInt(document.getElementById('handicap-val').value) || 3;
   const sharedSeed = Math.floor(Math.random() * 0xFFFFFFFF);
@@ -657,7 +693,7 @@ function resetGameLogic() {
      myEngine.keepSpeed = true;
   }
 
-  // ★追加：自分のキャラテーマ（立ち絵・背景・フレーム）とカットイン設定
+  // ★追加：自分のキャラテーマ（立ち絵・背景・フレーム）と盤面外表示設定
   const playerCharId = currentMode === 'story' ? 'main00' : selectedCharId;
   myRenderer.theme = buildThemeForCharacter(
     playerCharId,
@@ -665,10 +701,11 @@ function resetGameLogic() {
     true
   );
   document.getElementById('player-label').innerText = getCharacterById(playerCharId).name;
-  myEngine.onMatchEvent = (chain, size) => {
-    myEngine.cutinMax = 45;
-    myEngine.cutinTimer = 45;
-    myEngine.cutinText = chain >= 2 ? `${chain} CHAIN!!` : `${size} ERASE!`;
+  myEngine.onChainEnd = (chain) => {
+    showExternalCutin(myRenderer.theme, `${chain} CHAIN!!`, '#ffd700');
+  };
+  myEngine.onSimultaneousMatch = (size) => {
+    showExternalCutin(myRenderer.theme, `${size}個消し！`, '#00d4ff');
   };
 
   const rivalsArea = document.getElementById('rivals-area');
@@ -684,14 +721,12 @@ function resetGameLogic() {
   for (let i = 0; i < opponentCount; i++) {
     const wrapper = document.createElement('div');
     wrapper.className = 'board-wrapper rival-board';
-    if (currentMode === 'com' || currentMode === 'story') wrapper.classList.add('com-board'); // ★変更：storyも対象に
+    if (currentMode === 'com' || currentMode === 'story') wrapper.classList.add('com-board');
     wrapper.id = `rival-wrapper-${i}`;
     wrapper.onclick = () => selectTarget(i);
 
-    // ★変更：storyもCOM戦として動かす
     let isComMode = currentMode === 'com' || currentMode === 'single_survival' || currentMode === 'story';
 
-    // ★追加：相手キャラを決定して名前・色・テーマを設定
     const oppChar = (currentMode === 'story' && StoryManager.activeStage)
       ? getCharacterById(StoryManager.activeStage.enemyId)
       : rivalCharPool[i % rivalCharPool.length];
@@ -716,7 +751,7 @@ function resetGameLogic() {
 
     const oppId = `com_${i}`;
     const rRenderer = new BoardRenderer(`rival-canvas-${i}`);
-    rRenderer.theme = buildThemeForCharacter(oppChar.id, null, false); // ★追加：相手の立ち絵テーマを適用
+    rRenderer.theme = buildThemeForCharacter(oppChar.id, null, false);
     let rEngine = null, rAI = null;
 
     if (isComMode) {
@@ -732,14 +767,26 @@ function resetGameLogic() {
       // ★変更：ストーリーのボスやCOM画面のチェックON時は cheat クラスを使用
       const useCheat = (currentMode === 'story' && StoryManager.activeStage && StoryManager.activeStage.useCheat)
                     || (currentMode === 'com' && document.getElementById('com-cheat-toggle')?.checked);
-      rAI = useCheat ? new cheat(rEngine, currentComLevel, oppId) : new ComAI(rEngine, currentComLevel, oppId);
-
-      // ★追加：相手側も連鎖・同時消し時にカットイン演出を出す
-      rEngine.onMatchEvent = (chain, size) => {
-        rEngine.cutinMax = 45;
-        rEngine.cutinTimer = 45;
-        rEngine.cutinText = chain >= 2 ? `${chain} CHAIN!!` : `${size} ERASE!`;
-      };
+      if (useCheat) {
+        const CheatClass = (typeof cheat === 'function' && cheat)
+                        || (typeof Cheat === 'function' && Cheat)
+                        || (typeof CheatAI === 'function' && CheatAI);
+        if (CheatClass) {
+          try {
+            rAI = new CheatClass(rEngine, currentComLevel, oppId);
+          } catch (err) {
+            console.error('Cheat AI initialization failed:', err);
+            showToast('Cheat AIの起動に失敗したため通常COMで開始します');
+            rAI = new ComAI(rEngine, currentComLevel, oppId);
+          }
+        } else {
+          console.error('Cheat AI class not found (js/cheat.js)');
+          showToast('cheat.jsが読み込めないため通常COMで開始します');
+          rAI = new ComAI(rEngine, currentComLevel, oppId);
+        }
+      } else {
+        rAI = new ComAI(rEngine, currentComLevel, oppId);
+      }
     }
 
     opponents.push({
@@ -790,6 +837,7 @@ function exitGame() {
   clearReadyGoTimers();
   stopAllEngines();
   stopBgm();
+  hideExternalCutin();
   
   myEngine = null; opponents = [];
   onlineConnections.forEach(c => c.close());
@@ -1341,7 +1389,15 @@ function adjustLayout() {
   // 横画面時は、ユーザーが縦型UIを明示的に選択していない限りPC・タブレット同様の横並びレイアウトを適用
   const isLandscapeLarge = !isPortrait && !useMobileLayoutInLandscape;
   const oppCount = opponents.length;
-
+　const externalCutin = document.getElementById('external-cutin');
+  if (externalCutin) {
+    if (!isLandscapeLarge && oppCount > 1) {
+      externalCutin.classList.add('below-top-rivals');
+    } else {
+      externalCutin.classList.remove('below-top-rivals');
+    }
+  }
+  
   const myWrapper = document.getElementById('my-wrapper');
   const rivalsArea = document.getElementById('rivals-area');
   const rivalsTopArea = document.getElementById('rivals-top-area');

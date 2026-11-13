@@ -650,10 +650,12 @@ class PonEngine {
       
       if (this.chain >= 2) {
          const coords = coordsArray[0].split(',').map(Number);
+         const rawX = coords[1] * CELL_PX + CELL_PX / 2;
+         const rawY = coords[0] * CELL_PX + CELL_PX / 2;
          this.popups.push({
-           text: `${this.chain}comb`,
-           x: coords[1] * CELL_PX + CELL_PX / 2,
-           y: coords[0] * CELL_PX,
+           text: `${this.chain}chain`,
+           x: Math.max(34, Math.min(this.cols * CELL_PX - 34, rawX)),
+           y: Math.max(20, rawY),
            timer: 38,
            initialTimer: 38,
            color: '#ffdf00',
@@ -663,10 +665,13 @@ class PonEngine {
       
       if (matchedPositions.size >= 4) {
          const coords = coordsArray[Math.floor(coordsArray.length / 2)].split(',').map(Number);
+         const rawX = coords[1] * CELL_PX + CELL_PX / 2;
+         let rawY = coords[0] * CELL_PX + CELL_PX / 2;
+         if (this.chain >= 2) rawY += 18;
          this.popups.push({
            text: `${matchedPositions.size}`,
-           x: coords[1] * CELL_PX + CELL_PX / 2,
-           y: coords[0] * CELL_PX,
+           x: Math.max(16, Math.min(this.cols * CELL_PX - 16, rawX)),
+           y: Math.max(22, rawY),
            timer: 38,
            initialTimer: 38,
            color: '#00d4ff',
@@ -702,9 +707,8 @@ class PonEngine {
       if (totalBlocks > 0 && this.onSendGarbage) {
         this.onSendGarbage(totalBlocks, hasSpecial);
       }
-      // ★追加：連鎖・同時消しカットイン通知
-      if ((this.chain >= 2 || matchedPositions.size >= 4) && this.onMatchEvent) {
-        this.onMatchEvent(this.chain, matchedPositions.size);
+      if (matchedPositions.size >= 4 && this.onSimultaneousMatch) {
+        this.onSimultaneousMatch(matchedPositions.size);
       }
     } else {
       let isMoving = false;
@@ -722,6 +726,10 @@ class PonEngine {
            SE.play('fanfareMid');
         } else if (this.chain >= 6) {
            SE.play('fanfareMax');
+        }
+
+        if (this.chain >= 2 && this.onChainEnd) {
+          this.onChainEnd(this.chain);
         }
 
         this.chain = 0;
@@ -889,19 +897,20 @@ class BoardRenderer {
           continue;
         }
         const progress = 1 - p.timer / p.initialTimer;
-        const floatY = progress * 24;
+        const floatY = progress * 22;
         ctx.globalAlpha = Math.max(0, p.timer / 15); 
         ctx.fillStyle = p.color || '#ffdf00'; 
         
         if (p.isNumber) {
-           ctx.font = 'bold 38px sans-serif';
+           ctx.font = 'bold 24px sans-serif';
         } else {
-           ctx.font = 'bold 22px sans-serif'; 
+           ctx.font = 'bold 18px sans-serif'; 
         }
         
         ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
         ctx.lineWidth = 3;
-        ctx.strokeStyle = '#e94560'; 
+        ctx.strokeStyle = '#0f172a'; 
         ctx.strokeText(p.text, p.x, p.y - offsetY - floatY);
         ctx.fillText(p.text, p.x, p.y - offsetY - floatY);
         ctx.globalAlpha = 1.0;

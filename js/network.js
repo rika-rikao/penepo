@@ -255,6 +255,16 @@ function resetGameLogicOnline(config) {
   );
   myEngine.onRowPushed = handleMyRowPushed;
   myEngine.garbageQueue = [];
+  myEngine.onChainEnd = (chain) => {
+    if (typeof showExternalCutin === 'function') {
+      showExternalCutin(myRenderer.theme, `${chain} CHAIN!!`, '#ffd700');
+    }
+  };
+  myEngine.onSimultaneousMatch = (size) => {
+    if (typeof showExternalCutin === 'function') {
+      showExternalCutin(myRenderer.theme, `${size}個消し！`, '#00d4ff');
+    }
+  };
 
   const rivalsArea = document.getElementById('rivals-area');
   const rivalsTopArea = document.getElementById('rivals-top-area');

@@ -22,6 +22,7 @@ function createRoom() {
 
   peer.on('open', () => {
     document.getElementById('main-menu-actions').style.display = 'none';
+    document.getElementById('online-menu').style.display = 'none';
     const waiting = document.getElementById('room-waiting');
     waiting.style.display = 'flex';
     document.getElementById('waiting-code-container').style.display = 'block';
@@ -55,7 +56,7 @@ function cancelRoom() {
   onlineConnections = [];
   if (peer) { peer.destroy(); peer = null; }
   document.getElementById('room-waiting').style.display = 'none';
-  document.getElementById('main-menu-actions').style.display = 'flex';
+  document.getElementById('online-menu').style.display = 'flex';
 }
 
 function joinRoom() {
@@ -73,6 +74,7 @@ function joinRoom() {
       onlineConnections = [c];
       bindConnEvents(c, false); 
       document.getElementById('main-menu-actions').style.display = 'none';
+      document.getElementById('online-menu').style.display = 'none';
       const waiting = document.getElementById('room-waiting');
       waiting.style.display = 'flex';
       document.getElementById('waiting-code-container').style.display = 'none';
@@ -138,6 +140,7 @@ function forceStartRoom() {
   startPrepareMatchFromHost();
 }
 
+
 function startPrepareMatchFromHost() {
   boardReady = {};
   rematchReady = {};
@@ -145,14 +148,15 @@ function startPrepareMatchFromHost() {
   const configBase = matchPlayersConfig.map(pl => ({ id: pl.id, type: pl.type, level: pl.level, name: pl.name }));
   const matchId = Date.now();
   const sharedSeed = Math.floor(Math.random() * 0xFFFFFFFF);
+  const skillEnabled = !!document.getElementById('online-skill-toggle')?.checked;
   
   onlineConnections.forEach(c => {
     const cId = c._clientId;
-    const config = { players: configBase, myId: cId, matchId: matchId, seed: sharedSeed };
+    const config = { players: configBase, myId: cId, matchId: matchId, seed: sharedSeed, skillEnabled };
     if (c.open) c.send({ type: 'prepare_match', config });
   });
   
-  const hostConfig = { players: configBase, myId: 'host', matchId: matchId, seed: sharedSeed };
+  const hostConfig = { players: configBase, myId: 'host', matchId: matchId, seed: sharedSeed, skillEnabled };
   prepareMatchLocal(hostConfig);
 }
 
@@ -172,7 +176,7 @@ function prepareMatchLocal(config) {
   document.getElementById('game-area').style.display = 'flex';
 
   setupInput();
-  resetGameLogicOnline(config);
+  const resolvedCharId = resetGameLogicOnline(config);
   
   if (loopId) cancelAnimationFrame(loopId);
   lastTime = performance.now();
@@ -181,12 +185,10 @@ function prepareMatchLocal(config) {
   
   startSyncInterval();
 
-  // ★追加：自分のキャラ・カスタム立ち絵（圧縮済み）を他プレイヤーへ送信
   if (typeof sendMyAppearanceOnline === 'function') {
-    sendMyAppearanceOnline();
+    sendMyAppearanceOnline(resolvedCharId);
   }
 
-  // 盤面の描画と初期同期を完了させるための待機時間
   setTimeout(() => {
     if (myOnlineId === 'host') {
       handleBoardReady('host');
@@ -197,7 +199,6 @@ function prepareMatchLocal(config) {
     }
   }, 800);
 }
-
 function handleBoardReady(senderId) {
   if (myOnlineId !== 'host') return;
   boardReady[senderId] = true;
@@ -235,6 +236,8 @@ function resetGameLogicOnline(config) {
   isDeadInMatch = false;
   isPracticeMode = false;
   myTargetIndex = -1;
+  currentSkillEnabled = !!config.skillEnabled;
+  hidePlayerHeaderCutin();
   
   rematchReady = {};
   config.players.forEach(p => {
@@ -243,9 +246,17 @@ function resetGameLogicOnline(config) {
 
   const handicap = parseInt(document.getElementById('handicap-val').value) || 3;
   const sharedSeed = config.seed !== undefined ? config.seed : Math.floor(Math.random() * 0xFFFFFFFF);
+  const resolvedCharId = resolvePlayableCharId(selectedCharId);
 
   myRenderer = new BoardRenderer('my-canvas');
-  myRenderer.theme = buildThemeForCharacter(selectedCharId, CustomAssets.chara ? CustomAssets.chara.dataUrl : null, true); // ★追加
+  myRenderer.theme = buildThemeForCharacter(
+    resolvedCharId,
+    (resolvedCharId === 'custom' && CustomAssets.chara) ? CustomAssets.chara.dataUrl : null,
+    true,
+    resolvedCharId === 'custom' ? getPlayerDisplayName() : null
+  );
+  document.getElementById('player-label').innerText = myRenderer.theme.name;
+
   myEngine = new PonEngine(
     (state) => { if (state === 'gameover') checkMatchEnd(); },
     (totalBlocks, isHard) => { distributeGarbageOnline(myOnlineId, totalBlocks, isHard); },
@@ -255,16 +266,18 @@ function resetGameLogicOnline(config) {
   );
   myEngine.onRowPushed = handleMyRowPushed;
   myEngine.garbageQueue = [];
+
+  // ① プレイヤー自身のヘッダーバナー表示 + ② 相手画面向けのカットイン送信
   myEngine.onChainEnd = (chain) => {
-    if (typeof showExternalCutin === 'function') {
-      showExternalCutin(myRenderer.theme, `${chain} CHAIN!!`, '#ffd700');
-    }
+    showPlayerHeaderCutin(myRenderer.theme, `${chain} CHAIN!!`, '#ffd700');
+    sendOnlineCutin(myOnlineId, `${chain} CHAIN!!`);
   };
   myEngine.onSimultaneousMatch = (size) => {
-    if (typeof showExternalCutin === 'function') {
-      showExternalCutin(myRenderer.theme, `${size}個消し！`, '#00d4ff');
-    }
+    showPlayerHeaderCutin(myRenderer.theme, `${size}個消し！`, '#00d4ff');
+    sendOnlineCutin(myOnlineId, `${size}個消し！`);
   };
+
+  initPlayerSkillState(currentSkillEnabled);
 
   const rivalsArea = document.getElementById('rivals-area');
   const rivalsTopArea = document.getElementById('rivals-top-area');
@@ -306,7 +319,6 @@ function resetGameLogicOnline(config) {
         (state) => { 
           if (state === 'gameover') {
             checkMatchEnd();
-            // COM死亡時も即座にゲストへ通知
             onlineConnections.forEach(c => {
               if (c && c.open) c.send({ type: 'sync', senderId: p.id, gameOver: true });
             });
@@ -318,15 +330,29 @@ function resetGameLogicOnline(config) {
         sharedSeed
       );
       rEngine.garbageQueue = [];
-      rAI = new ComAI(rEngine, p.level || 2, p.id);
+      rEngine.onChainStep = (chain) => {
+        const txt = `${chain} CHAIN!!`;
+        rEngine.cutinMax = 50; rEngine.cutinTimer = 50; rEngine.cutinText = txt;
+        sendOnlineCutin(p.id, txt);
+      };
+      rEngine.onSimultaneousMatch = (size) => {
+        const txt = `${size}個消し！`;
+        rEngine.cutinMax = 50; rEngine.cutinTimer = 50; rEngine.cutinText = txt;
+        sendOnlineCutin(p.id, txt);
+      };
+      rEngine.onSkillActivated = (txt) => {
+        sendOnlineCutin(p.id, txt);
+      };
+
+      const useCheat = currentSkillEnabled && typeof cheat === 'function';
+      rAI = useCheat ? new cheat(rEngine, p.level || 2, p.id) : new ComAI(rEngine, p.level || 2, p.id);
     } else {
       rEngine = new PonEngine(null, null, 3, false, sharedSeed);
       rEngine.garbageQueue = [];
     }
 
-    rEngine.gameOver = false; // 初期状態の確実なリセット
+    rEngine.gameOver = false;
 
-// ★追加：COMや相手プレイヤーの初期キャラテーマ設定
     const fallbackCharId = p.type === 'com' ? CHARACTERS[(index + 1) % CHARACTERS.length].id : 'main00';
     rRenderer.theme = buildThemeForCharacter(p.charId || fallbackCharId, null, false);
     opponents.push({
@@ -345,6 +371,7 @@ function resetGameLogicOnline(config) {
   opponents.forEach((opp, i) => updateGarbagePreview(opp.engine, `rival-garbage-preview-${i}`));
   updateTargetUI();
   adjustLayout();
+  return resolvedCharId;
 }
 
 function startSyncInterval() {
@@ -442,6 +469,7 @@ function handleHostDisconnected() {
   }
 }
 
+
 function bindConnEvents(c, isHostMode) {
   c.on('data', (data) => {
     if (data.type === 'sync') {
@@ -513,10 +541,10 @@ function bindConnEvents(c, isHostMode) {
         checkMatchEnd();
       }
     }
-else if (data.type === 'appearance_sync') {
+    else if (data.type === 'appearance_sync') {
       const targetOpp = opponents.find(o => o.id === data.senderId);
       if (targetOpp && targetOpp.renderer) {
-        targetOpp.renderer.theme = buildThemeForCharacter(data.charId, data.customCharaUrl, false);
+        targetOpp.renderer.theme = buildThemeForCharacter(data.charId, data.customCharaUrl, false, data.customName);
         const nameEl = targetOpp.renderer.canvas.closest('.board-wrapper')?.querySelector('.board-header span');
         if (nameEl) {
           const chName = data.customName || getCharacterById(data.charId).name;
@@ -529,9 +557,31 @@ else if (data.type === 'appearance_sync') {
         });
       }
     }
+    else if (data.type === 'cutin_sync') {
+      const senderOpp = opponents.find(o => o.id === data.senderId);
+      if (senderOpp && senderOpp.engine) {
+        senderOpp.engine.cutinMax = 50;
+        senderOpp.engine.cutinTimer = 50;
+        senderOpp.engine.cutinText = data.text;
+      }
+      if (isHostMode) {
+        onlineConnections.forEach(otherC => {
+          if (otherC !== c && otherC.open) otherC.send(data);
+        });
+      }
+    }
     else if (data.type === 'cheat_corrupt_row') {
       if (data.targetId === myOnlineId && myEngine && !myEngine.gameOver && !isPracticeMode) {
         if (typeof applyCorruptRowToEngine === 'function') applyCorruptRowToEngine(myEngine, data.row);
+      } else if (isHostMode) {
+        const comTarget = opponents.find(o => o.id === data.targetId && o.type === 'com');
+        if (comTarget && comTarget.engine && !comTarget.engine.gameOver) {
+          if (typeof applyCorruptRowToEngine === 'function') applyCorruptRowToEngine(comTarget.engine, data.row);
+        } else {
+          onlineConnections.forEach(otherC => {
+            if (otherC !== c && otherC.open) otherC.send(data);
+          });
+        }
       }
     }
     else if (data.type === 'leave') {
@@ -561,14 +611,23 @@ else if (data.type === 'appearance_sync') {
   });
 }
 
-function sendMyAppearanceOnline() {
+function sendMyAppearanceOnline(resolvedCharId = null) {
+  const cid = resolvedCharId || resolvePlayableCharId(selectedCharId);
   const payload = {
     type: 'appearance_sync',
     senderId: myOnlineId,
-    charId: selectedCharId,
-    customCharaUrl: (selectedCharId === 'custom' && CustomAssets.chara) ? CustomAssets.chara.dataUrl : null,
-    customName: selectedCharId === 'custom' ? 'マイキャラ' : null
+    charId: cid,
+    customCharaUrl: (cid === 'custom' && CustomAssets.chara) ? CustomAssets.chara.dataUrl : null,
+    customName: cid === 'custom' ? getPlayerDisplayName() : null
   };
+  onlineConnections.forEach(c => {
+    if (c && c.open) c.send(payload);
+  });
+}
+
+function sendOnlineCutin(senderId, text) {
+  if (currentMode !== 'online') return;
+  const payload = { type: 'cutin_sync', senderId, text };
   onlineConnections.forEach(c => {
     if (c && c.open) c.send(payload);
   });

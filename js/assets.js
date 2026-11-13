@@ -347,54 +347,7 @@ function drawBoardFgAddon(ctx, canvas, engine, renderer) {
   const W = canvas.width;
   const H = canvas.height;
 
-  // 1. 連鎖・スキル発動時のカットイン演出
-  if (engine.cutinTimer && engine.cutinTimer > 0) {
-    engine.cutinTimer--;
-    const progress = engine.cutinTimer / (engine.cutinMax || 45);
-    const alpha = Math.min(1, progress * 2.5);
-    const slideX = progress > 0.8 ? (progress - 0.8) * 5 * W : 0;
-
-    ctx.save();
-    ctx.globalAlpha = alpha * 0.92;
-    const bandY = H * 0.30;
-    const bandH = 92;
-
-    ctx.fillStyle = theme ? theme.color : '#ff007f';
-    ctx.fillRect(0, bandY, W, bandH);
-    ctx.fillStyle = 'rgba(10, 15, 30, 0.82)';
-    ctx.fillRect(0, bandY + 4, W, bandH - 8);
-
-    // 立ち絵の上半分（バストアップ風）を帯内にクリップ描画
-    if (theme && theme.charSrc) {
-      const charImg = getCachedImage(theme.charSrc);
-      if (charImg) {
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect(0, bandY + 4, W, bandH - 8);
-        ctx.clip();
-        const iw = charImg.naturalWidth || charImg.width;
-        const ih = charImg.naturalHeight || charImg.height;
-        const cropH = ih > iw * 1.1 ? ih * 0.55 : ih;
-        const drawW = 86;
-        const drawH = drawW * (cropH / iw);
-        ctx.drawImage(charImg, 0, 0, iw, cropH, 6 + slideX, bandY + 4, drawW, drawH);
-        ctx.restore();
-      }
-    }
-
-    ctx.fillStyle = '#ffffff';
-    ctx.font = '900 18px sans-serif';
-    ctx.textAlign = 'right';
-    ctx.textBaseline = 'middle';
-    ctx.strokeStyle = '#000';
-    ctx.lineWidth = 4;
-    const label = engine.cutinText || 'CHAIN!';
-    ctx.strokeText(label, W - 10 + slideX, bandY + bandH / 2);
-    ctx.fillText(label, W - 10 + slideX, bandY + bandH / 2);
-    ctx.restore();
-  }
-
-  // 2. カスタムフレーム画像（最前面枠）
+  // カスタムフレーム画像（最前面枠）
   if (theme && theme.frameSrc) {
     const frameImg = getCachedImage(theme.frameSrc);
     if (frameImg) {

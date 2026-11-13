@@ -409,6 +409,7 @@ const ACTION_LABELS = {
   ToggleContinuous: '連続移動オンオフ',
   Rise1: 'せり上げ1', Rise2: 'せり上げ2',
   TargetRight: '標的(右)', TargetLeft: '標的(左)',
+  Skill: 'スキル発動',
   Pause: 'ポーズ/退出'
 };
 
@@ -419,6 +420,7 @@ let keyConfig = {
   ToggleContinuous: 'KeyC',
   Rise1: 'ShiftLeft', Rise2: 'ShiftRight',
   TargetRight: 'KeyE', TargetLeft: 'KeyQ',
+  Skill: 'KeyF',
   Pause: 'Escape'
 };
 let padConfig = {
@@ -428,6 +430,7 @@ let padConfig = {
   ToggleContinuous: 3,
   Rise1: 5, Rise2: 7,
   TargetRight: 5, TargetLeft: 4,
+  Skill: 6,
   Pause: 9
 };
 

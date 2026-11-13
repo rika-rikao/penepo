@@ -596,7 +596,7 @@ class PonEngine {
     if (needsMatchCheck) this.checkMatches();
   }
 
-  checkMatches() {
+ checkMatches() {
     let matchedPositions = new Set();
     for (let r = 0; r < this.rows; r++) {
       for (let c = 0; c < this.cols - 2; c++) {
@@ -706,6 +706,9 @@ class PonEngine {
 
       if (totalBlocks > 0 && this.onSendGarbage) {
         this.onSendGarbage(totalBlocks, hasSpecial);
+      }
+      if (this.chain >= 2 && this.onChainStep) {
+        this.onChainStep(this.chain);
       }
       if (matchedPositions.size >= 4 && this.onSimultaneousMatch) {
         this.onSimultaneousMatch(matchedPositions.size);

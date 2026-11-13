@@ -145,7 +145,19 @@ const StoryManager = {
   activeStage: null,
   currentLines: [],
   lineIndex: 0,
-  phase: 'idle', // 'intro' | 'win' | 'lose'
+  phase: 'idle',
+
+  getSelectedCharId() {
+    return (storySelectedCharId === 'custom' && CustomAssets.chara) ? 'custom' : 'main00';
+  },
+
+  isCustomSelected() {
+    return this.getSelectedCharId() === 'custom';
+  },
+
+  isPlayerSkillEnabled() {
+    return !!document.getElementById('story-skill-toggle')?.checked;
+  },
 
   saveProgress(stageId) {
     if (stageId > this.clearedStage) {
@@ -158,6 +170,9 @@ const StoryManager = {
     document.getElementById('main-menu-actions').style.display = 'none';
     const menu = document.getElementById('story-menu');
     menu.style.display = 'flex';
+    if (typeof renderCharPicker === 'function') {
+      renderCharPicker('story-char-picker', { storyOnly: true });
+    }
     this.renderStageList();
   },
 
@@ -179,7 +194,7 @@ const StoryManager = {
       btn.innerHTML = `
         <div style="flex:1;">
           <div style="font-weight:bold; color:${enemy.color};">${st.title}</div>
-          <div style="font-size:0.75rem; color:#aaa;">VS ${enemy.name} (Lv.${st.enemyLevel}${st.useCheat ? ' / Cheat' : ''})</div>
+          <div style="font-size:0.75rem; color:#aaa;">VS ${enemy.name} (Lv.${st.enemyLevel}${st.useCheat ? ' / Skill' : ''})</div>
         </div>
         <span class="story-badge">${badge}</span>
       `;
@@ -220,14 +235,14 @@ const StoryManager = {
       return;
     }
 
-    const ch = getCharacterById(charId);
+    const useCustom = (charId === 'main00' && this.isCustomSelected());
+    const ch = getCharacterById(useCustom ? 'custom' : charId);
     slot.innerHTML = '';
     const img = document.createElement('img');
     img.className = 'story-portrait-img';
     img.src = ch.file;
     img.alt = ch.name;
     img.onload = () => {
-      // アスペクト比に応じて、縦長立ち絵は上半分(バストアップ)を強調、正方形/横長は見切れ防止
       if (img.naturalHeight <= img.naturalWidth * 1.05) {
         img.classList.add('square-or-wide');
       }
@@ -245,13 +260,15 @@ const StoryManager = {
       return;
     }
 
-    const ch = getCharacterById(line.charId);
+    const useCustom = this.isCustomSelected();
+    const isMainCustom = useCustom && line.charId === 'main00';
+    const ch = getCharacterById(isMainCustom ? 'custom' : line.charId);
     const speakerEl = document.getElementById('story-speaker-name');
     const textEl = document.getElementById('story-text');
 
     speakerEl.innerText = ch.name;
     speakerEl.style.background = ch.color;
-    textEl.innerText = line.text;
+    textEl.innerText = useCustom ? line.text.replace(/フレア/g, getPlayerDisplayName()) : line.text;
 
     const leftCharId = line.side === 'left' ? line.charId : 'main00';
     const rightCharId = line.side === 'right' ? line.charId : this.activeStage.enemyId;
@@ -279,7 +296,7 @@ const StoryManager = {
   finishDialogue() {
     document.getElementById('story-overlay').style.display = 'none';
     if (this.phase === 'intro') {
-      startGame('story', this.activeStage.enemyLevel, 2);
+      startGame('story', this.activeStage.enemyLevel, 2, this.isPlayerSkillEnabled());
     } else if (this.phase === 'win') {
       this.saveProgress(this.activeStage.id);
       if (this.activeStage.id >= STORY_STAGES.length) {

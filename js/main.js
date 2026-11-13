@@ -27,8 +27,23 @@ function showToast(msg) {
   t.innerText = msg; t.style.display = 'block'; 
   setTimeout(() => t.style.display = 'none', 3000); 
 }
-function showSingleMenu() { document.getElementById('main-menu-actions').style.display = 'none'; document.getElementById('single-menu').style.display = 'flex'; updateSingleMenu(); }
-function showComMenu() { document.getElementById('main-menu-actions').style.display = 'none'; document.getElementById('com-menu').style.display = 'flex'; }
+
+function showSingleMenu() {
+  document.getElementById('main-menu-actions').style.display = 'none';
+  document.getElementById('single-menu').style.display = 'flex';
+  renderCharPicker('single-char-picker', { storyOnly: false });
+  updateSingleMenu();
+}
+function showComMenu() {
+  document.getElementById('main-menu-actions').style.display = 'none';
+  document.getElementById('com-menu').style.display = 'flex';
+  renderCharPicker('com-char-picker', { storyOnly: false });
+}
+function showOnlineMenu() {
+  document.getElementById('main-menu-actions').style.display = 'none';
+  document.getElementById('online-menu').style.display = 'flex';
+  renderCharPicker('online-char-picker', { storyOnly: false });
+}
 function showRankingMenu() {
   document.getElementById('main-menu-actions').style.display = 'none';
   document.getElementById('ranking-menu').style.display = 'flex';
@@ -68,18 +83,20 @@ function getSurvivalLevel(initLv, matchNum) {
 
 function startSingleMode() {
   const mode = document.getElementById('single-mode-select').value;
+  const skillEnabled = !!document.getElementById('single-skill-toggle')?.checked;
   let initLevel = 1;
   if (mode === 'survival') {
     survivalBaseLevel = parseInt(document.getElementById('survival-init-level').value) || 1;
     initLevel = getSurvivalLevel(survivalBaseLevel, 1);
   }
-  startGame('single_' + mode, initLevel, mode === 'survival' ? 2 : 1);
+  startGame('single_' + mode, initLevel, mode === 'survival' ? 2 : 1, skillEnabled);
 }
 function backToMainMenu() { 
   document.getElementById('com-menu').style.display = 'none'; 
   document.getElementById('single-menu').style.display = 'none'; 
+  document.getElementById('online-menu').style.display = 'none';
   document.getElementById('ranking-menu').style.display = 'none'; 
-  document.getElementById('story-menu').style.display = 'none'; // ★追加
+  document.getElementById('story-menu').style.display = 'none';
   document.getElementById('main-menu-actions').style.display = 'flex'; 
 }
 
@@ -329,11 +346,11 @@ function requestRematch() {
   }
   
   if (currentMode === 'story') {
-    startGame('story', currentComLevel, 2);
+    startGame('story', currentComLevel, 2, currentSkillEnabled);
   } else if (currentMode === 'single_survival') {
     startSingleMode();
   } else if (currentMode === 'single' || currentMode.startsWith('single_') || currentMode === 'com') {
-    startGame(currentMode, currentComLevel, currentTotalPlayers);
+    startGame(currentMode, currentComLevel, currentTotalPlayers, currentSkillEnabled);
   } else if (currentMode === 'online') {
     rematchReady[myOnlineId] = true;
     document.getElementById('result-rematch-btn').disabled = true;
@@ -603,11 +620,126 @@ function switchBgmToPanic(toPanic) {
   }
 }
 
-function startGame(mode, level = 1, totalPlayers = 2) {
+let currentSkillEnabled = false;
+const PLAYER_SKILL_MAX = 3;
+const PLAYER_SKILL_SCORE_STEP = 300;
+let playerSkillState = {
+  enabled: false,
+  usesLeft: 0,
+  maxUses: PLAYER_SKILL_MAX,
+  nextRequiredScore: 0
+};
+
+let headerCutinTimerId = null;
+function showPlayerHeaderCutin(theme, text, accentColor = '#ffd700') {
+  const box = document.getElementById('my-header-cutin');
+  const img = document.getElementById('my-header-cutin-img');
+  const nameEl = document.getElementById('my-header-cutin-name');
+  const textEl = document.getElementById('my-header-cutin-text');
+  if (!box || !img || !nameEl || !textEl) return;
+
+  if (theme && theme.charSrc) {
+    img.src = theme.charSrc;
+    img.style.display = 'block';
+  } else {
+    img.style.display = 'none';
+  }
+  box.style.borderColor = (theme && theme.color) ? theme.color : '#ffd700';
+  nameEl.innerText = (theme && theme.name) ? theme.name : 'YOU';
+  textEl.innerText = text;
+  textEl.style.color = accentColor;
+
+  box.classList.add('show');
+  if (headerCutinTimerId) clearTimeout(headerCutinTimerId);
+  headerCutinTimerId = setTimeout(() => {
+    box.classList.remove('show');
+  }, 1500);
+}
+
+function hidePlayerHeaderCutin() {
+  if (headerCutinTimerId) {
+    clearTimeout(headerCutinTimerId);
+    headerCutinTimerId = null;
+  }
+  const box = document.getElementById('my-header-cutin');
+  if (box) box.classList.remove('show');
+}
+
+function initPlayerSkillState(enabled) {
+  playerSkillState.enabled = !!enabled;
+  playerSkillState.usesLeft = enabled ? PLAYER_SKILL_MAX : 0;
+  playerSkillState.nextRequiredScore = 0; // 1回目は最初から使用可能
+  updateSkillButtonUI();
+}
+
+function updateSkillButtonUI() {
+  const btn = document.getElementById('skill-btn');
+  const label = document.getElementById('skill-btn-label');
+  const prog = document.getElementById('skill-btn-progress');
+  if (!btn || !label || !prog) return;
+
+  if (!playerSkillState.enabled || isPracticeMode) {
+    btn.style.display = 'none';
+    return;
+  }
+  btn.style.display = 'flex';
+
+  const curScore = myEngine ? myEngine.score : 0;
+  if (playerSkillState.usesLeft <= 0) {
+    btn.disabled = true;
+    btn.classList.remove('ready');
+    prog.style.width = '0%';
+    label.innerText = `スキル終了\n(0/${PLAYER_SKILL_MAX})`;
+    return;
+  }
+
+  const remain = Math.max(0, playerSkillState.nextRequiredScore - curScore);
+  if (remain === 0) {
+    btn.disabled = false;
+    btn.classList.add('ready');
+    prog.style.width = '100%';
+    label.innerText = `スキル発動!\n(${playerSkillState.usesLeft}/${PLAYER_SKILL_MAX})`;
+  } else {
+    btn.disabled = true;
+    btn.classList.remove('ready');
+    const gained = Math.max(0, PLAYER_SKILL_SCORE_STEP - remain);
+    const pct = Math.min(100, Math.floor((gained / PLAYER_SKILL_SCORE_STEP) * 100));
+    prog.style.width = `${pct}%`;
+    label.innerText = `スキル(${playerSkillState.usesLeft}/${PLAYER_SKILL_MAX})\nあと${remain}点`;
+  }
+}
+
+function activatePlayerSkill() {
+  if (!playerSkillState.enabled || !myEngine || myEngine.gameOver || isPracticeMode) return;
+  if (matchState !== 'playing' || isMatchOver) return;
+  if (playerSkillState.usesLeft <= 0) return;
+  if (myEngine.score < playerSkillState.nextRequiredScore) return;
+  if (typeof executePlayerCheatSkill !== 'function') return;
+
+  const senderId = currentMode === 'online' ? myOnlineId : 'player';
+  const res = executePlayerCheatSkill(myEngine, senderId, myTargetIndex);
+  if (!res || !res.success) {
+    showToast('今はスキルを発動できる対象がありません');
+    return;
+  }
+
+  playerSkillState.usesLeft--;
+  // スキル自体のスコア加算後に次の必要スコアを設定
+  playerSkillState.nextRequiredScore = myEngine.score + PLAYER_SKILL_SCORE_STEP;
+  updateSkillButtonUI();
+
+  showPlayerHeaderCutin(myRenderer.theme, res.text, '#ff007f');
+  if (currentMode === 'online' && typeof sendOnlineCutin === 'function') {
+    sendOnlineCutin(myOnlineId, res.text);
+  }
+}
+
+function startGame(mode, level = 1, totalPlayers = 2, skillEnabled = false) {
   document.getElementById('result-overlay').style.display = 'none'; 
   currentMode = mode;
   currentComLevel = level;
   currentTotalPlayers = totalPlayers;
+  currentSkillEnabled = !!skillEnabled;
   matchState = 'ready';
   isPracticeMode = false;
   
@@ -626,41 +758,6 @@ function startGame(mode, level = 1, totalPlayers = 2) {
   loopId = requestAnimationFrame(gameLoop);
 }
 
-let externalCutinTimerId = null;
-function showExternalCutin(theme, valueText, accentColor = '#ffd700') {
-  const box = document.getElementById('external-cutin');
-  const img = document.getElementById('external-cutin-img');
-  const nameEl = document.getElementById('external-cutin-name');
-  const valEl = document.getElementById('external-cutin-value');
-  if (!box || !img || !nameEl || !valEl) return;
-
-  if (theme && theme.charSrc) {
-    img.src = theme.charSrc;
-    img.style.display = 'block';
-  } else {
-    img.style.display = 'none';
-  }
-  box.style.borderColor = (theme && theme.color) ? theme.color : '#4ecca3';
-  nameEl.innerText = (theme && theme.name) ? theme.name : 'YOU';
-  valEl.innerText = valueText;
-  valEl.style.color = accentColor;
-
-  box.classList.add('show');
-  if (externalCutinTimerId) clearTimeout(externalCutinTimerId);
-  externalCutinTimerId = setTimeout(() => {
-    box.classList.remove('show');
-  }, 1600);
-}
-
-function hideExternalCutin() {
-  if (externalCutinTimerId) {
-    clearTimeout(externalCutinTimerId);
-    externalCutinTimerId = null;
-  }
-  const box = document.getElementById('external-cutin');
-  if (box) box.classList.remove('show');
-}
-
 function resetGameLogic() {
   isMatchOver = false;
   isDeadInMatch = false;
@@ -668,7 +765,7 @@ function resetGameLogic() {
   myTargetIndex = -1;
   currentMatchId = Date.now(); 
   currentSurvivalWins = 0;
-  hideExternalCutin();
+  hidePlayerHeaderCutin();
   
   const handicap = parseInt(document.getElementById('handicap-val').value) || 3;
   const sharedSeed = Math.floor(Math.random() * 0xFFFFFFFF);
@@ -693,20 +790,26 @@ function resetGameLogic() {
      myEngine.keepSpeed = true;
   }
 
-  // ★追加：自分のキャラテーマ（立ち絵・背景・フレーム）と盤面外表示設定
-  const playerCharId = currentMode === 'story' ? 'main00' : selectedCharId;
+  // ③ 使用キャラ解決（ストーリー時はフレア or マイ立ち絵、それ以外は2-3-3-2選択）
+  const rawCharId = currentMode === 'story' ? StoryManager.getSelectedCharId() : selectedCharId;
+  const resolvedCharId = resolvePlayableCharId(rawCharId);
   myRenderer.theme = buildThemeForCharacter(
-    playerCharId,
-    (playerCharId === 'custom' && CustomAssets.chara) ? CustomAssets.chara.dataUrl : null,
-    true
+    resolvedCharId,
+    (resolvedCharId === 'custom' && CustomAssets.chara) ? CustomAssets.chara.dataUrl : null,
+    true,
+    resolvedCharId === 'custom' ? getPlayerDisplayName() : null
   );
-  document.getElementById('player-label').innerText = getCharacterById(playerCharId).name;
+  document.getElementById('player-label').innerText = myRenderer.theme.name;
+
+  // ① プレイヤー自身の連鎖終了・同時消しはヘッダーにバナー表示
   myEngine.onChainEnd = (chain) => {
-    showExternalCutin(myRenderer.theme, `${chain} CHAIN!!`, '#ffd700');
+    showPlayerHeaderCutin(myRenderer.theme, `${chain} CHAIN!!`, '#ffd700');
   };
   myEngine.onSimultaneousMatch = (size) => {
-    showExternalCutin(myRenderer.theme, `${size}個消し！`, '#00d4ff');
+    showPlayerHeaderCutin(myRenderer.theme, `${size}個消し！`, '#00d4ff');
   };
+
+  initPlayerSkillState(currentSkillEnabled);
 
   const rivalsArea = document.getElementById('rivals-area');
   const rivalsTopArea = document.getElementById('rivals-top-area');
@@ -715,8 +818,7 @@ function resetGameLogic() {
   opponents = [];
 
   const opponentCount = currentMode.startsWith('single') && currentMode !== 'single_survival' ? 0 : currentTotalPlayers - 1;
-  // ★追加：COM対戦時の相手キャラ候補（自分と被らないようシャッフル）
-  const rivalCharPool = CHARACTERS.filter(c => c.id !== playerCharId).sort(() => Math.random() - 0.5);
+  const rivalCharPool = CHARACTERS.filter(c => c.id !== resolvedCharId).sort(() => Math.random() - 0.5);
 
   for (let i = 0; i < opponentCount; i++) {
     const wrapper = document.createElement('div');
@@ -764,26 +866,22 @@ function resetGameLogic() {
       );
       rEngine.garbageQueue = [];
 
-      // ★変更：ストーリーのボスやCOM画面のチェックON時は cheat クラスを使用
+      // ② 相手の連鎖・同時消しは相手盤面上に立ち絵付きカットイン表示
+      rEngine.onChainStep = (chain) => {
+        rEngine.cutinMax = 50;
+        rEngine.cutinTimer = 50;
+        rEngine.cutinText = `${chain} CHAIN!!`;
+      };
+      rEngine.onSimultaneousMatch = (size) => {
+        rEngine.cutinMax = 50;
+        rEngine.cutinTimer = 50;
+        rEngine.cutinText = `${size}個消し！`;
+      };
+
       const useCheat = (currentMode === 'story' && StoryManager.activeStage && StoryManager.activeStage.useCheat)
-                    || (currentMode === 'com' && document.getElementById('com-cheat-toggle')?.checked);
-      if (useCheat) {
-        const CheatClass = (typeof cheat === 'function' && cheat)
-                        || (typeof Cheat === 'function' && Cheat)
-                        || (typeof CheatAI === 'function' && CheatAI);
-        if (CheatClass) {
-          try {
-            rAI = new CheatClass(rEngine, currentComLevel, oppId);
-          } catch (err) {
-            console.error('Cheat AI initialization failed:', err);
-            showToast('Cheat AIの起動に失敗したため通常COMで開始します');
-            rAI = new ComAI(rEngine, currentComLevel, oppId);
-          }
-        } else {
-          console.error('Cheat AI class not found (js/cheat.js)');
-          showToast('cheat.jsが読み込めないため通常COMで開始します');
-          rAI = new ComAI(rEngine, currentComLevel, oppId);
-        }
+                    || ((currentMode === 'com' || currentMode === 'single_survival') && currentSkillEnabled);
+      if (useCheat && typeof cheat === 'function') {
+        rAI = new cheat(rEngine, currentComLevel, oppId);
       } else {
         rAI = new ComAI(rEngine, currentComLevel, oppId);
       }
@@ -807,18 +905,20 @@ function resetGameLogic() {
 }
 
 function startSingleGame() { 
-  startGame('single_free', 1, 1); 
+  startGame('single_free', 1, 1, false); 
 }
 
 function startComGame(level) {
   const count = parseInt(document.getElementById('com-player-count').value) || 2;
-  startGame('com', level, count); 
+  const skillEnabled = !!document.getElementById('com-cheat-toggle')?.checked;
+  startGame('com', level, count, skillEnabled); 
 }
 
 function startComGameFromSlider() {
   const level = parseInt(document.getElementById('com-level-slider').value) || 2;
   const count = parseInt(document.getElementById('com-player-count').value) || 2;
-  startGame('com', level, count); 
+  const skillEnabled = !!document.getElementById('com-cheat-toggle')?.checked;
+  startGame('com', level, count, skillEnabled); 
 }
 
 function exitGame() {
@@ -837,7 +937,7 @@ function exitGame() {
   clearReadyGoTimers();
   stopAllEngines();
   stopBgm();
-  hideExternalCutin();
+  hidePlayerHeaderCutin();
   
   myEngine = null; opponents = [];
   onlineConnections.forEach(c => c.close());
@@ -858,9 +958,10 @@ function exitGame() {
   document.getElementById('room-waiting').style.display = 'none';
   document.getElementById('com-menu').style.display = 'none';
   document.getElementById('single-menu').style.display = 'none';
+  document.getElementById('online-menu').style.display = 'none';
   document.getElementById('ranking-menu').style.display = 'none';
-  document.getElementById('story-menu').style.display = 'none';    // ★ここを追加
-  document.getElementById('story-overlay').style.display = 'none'; // ★ここを追加（会話中に戻った場合用）
+  document.getElementById('story-menu').style.display = 'none';
+  document.getElementById('story-overlay').style.display = 'none';
   document.getElementById('main-menu-actions').style.display = 'flex';
 }
 
@@ -1045,6 +1146,7 @@ function pollGamepadInput() {
   myEngine.isRisingManualPad = !!(isRise1 || isRise2);
   if (justPressed(padConfig.TargetRight)) cycleTarget(1);
   if (justPressed(padConfig.TargetLeft)) cycleTarget(-1);
+  if (justPressed(padConfig.Skill)) activatePlayerSkill();
 }
 
 function updateGarbagePreview(engine, containerId) {
@@ -1127,8 +1229,10 @@ function gameLoop(time) {
              let n = currentSurvivalWins + 1;
              let nextLv = getSurvivalLevel(survivalBaseLevel, n);
              opp.level = nextLv;
-             opp.ai = new ComAI(opp.engine, nextLv, opp.id);
-             document.getElementById(`rival-name-label-0`).innerHTML = `COM Lv.${nextLv} <span class="target-badge">🎯 TARGET</span>`;
+             opp.ai = (currentSkillEnabled && typeof cheat === 'function')
+               ? new cheat(opp.engine, nextLv, opp.id)
+               : new ComAI(opp.engine, nextLv, opp.id);
+             document.getElementById(`rival-name-label-0`).innerHTML = `${opp.renderer.theme.name} Lv.${nextLv} <span class="target-badge">🎯 TARGET</span>`;
            }
         } else {
            const isLocalControlledCom = (opp.type === 'com') && (currentMode === 'com' || currentMode === 'single_survival' || currentMode === 'story' || myOnlineId === 'host');
@@ -1151,6 +1255,7 @@ function gameLoop(time) {
     document.getElementById('timer-label').innerText = `${m}:${s}`;
     document.getElementById('score-label').innerText = `SCORE: ${myEngine.score} | CHAIN: ${myEngine.chain}`;
     updateGarbagePreview(myEngine, 'my-garbage-preview');
+    updateSkillButtonUI();
     
     if (currentMode === 'single_ta' && myEngine.timeElapsed >= 180000 && !myEngine.gameOver && !isMatchOver) {
        myEngine.gameOver = true;
@@ -1338,6 +1443,7 @@ function setupInput() {
     if (code === keyConfig.Rise1 || code === keyConfig.Rise2) { e.preventDefault(); myEngine.isRisingManualKey = true; }
     if (code === keyConfig.TargetRight) { e.preventDefault(); cycleTarget(1); }
     if (code === keyConfig.TargetLeft) { e.preventDefault(); cycleTarget(-1); }
+    if (code === keyConfig.Skill && !e.repeat) { e.preventDefault(); activatePlayerSkill(); }
   });
 
   window.addEventListener('keyup', (e) => {

@@ -79,6 +79,7 @@ function backToMainMenu() {
   document.getElementById('com-menu').style.display = 'none'; 
   document.getElementById('single-menu').style.display = 'none'; 
   document.getElementById('ranking-menu').style.display = 'none'; 
+  document.getElementById('story-menu').style.display = 'none'; // ★追加
   document.getElementById('main-menu-actions').style.display = 'flex'; 
 }
 
@@ -326,6 +327,11 @@ function requestRematch() {
      exitGame();
      return;
   }
+  
+  if (currentMode === 'story') {
+    startGame('story', currentComLevel, 2);
+  } else if ...
+  
   if (currentMode === 'single' || currentMode === 'com') {
     startGame(currentMode, currentComLevel, currentTotalPlayers);
   } else if (currentMode === 'online') {
@@ -411,6 +417,14 @@ function checkMatchEnd() {
        if (currentMode === 'com') stopAllEngines(); 
        showResultModal(isRankIn ? "NEW RECORD! (LOSE)" : "LOSE...");
     }
+	
+	if (currentMode === 'story') {
+      matchState = 'gameover';
+      stopAllEngines();
+      StoryManager.onBattleEnd(false);
+      return;
+    }
+	
   }
 
   // 自分以外の全員が負けた瞬間（自分が生き残って勝利）
@@ -437,6 +451,15 @@ function checkMatchEnd() {
        }
        showResultModal(isRankIn ? "WIN!! (NEW RECORD)" : "WIN!!");
      }
+	 
+	 if (currentMode === 'story') {
+      isMatchOver = true;
+      matchState = 'gameover';
+      stopAllEngines();
+      StoryManager.onBattleEnd(true);
+      return;
+    }
+	 
   }
 
   // 全滅、もしくは自分以外全滅して自分も負けた場合など、試合が完全に終わった状態
@@ -638,6 +661,20 @@ function resetGameLogic() {
      myEngine.keepSpeed = true;
   }
 
+  // ★追加：自分のキャラテーマ（立ち絵・背景・フレーム）とカットイン設定
+  const playerCharId = currentMode === 'story' ? 'main00' : selectedCharId;
+  myRenderer.theme = buildThemeForCharacter(
+    playerCharId,
+    (playerCharId === 'custom' && CustomAssets.chara) ? CustomAssets.chara.dataUrl : null,
+    true
+  );
+  document.getElementById('player-label').innerText = getCharacterById(playerCharId).name;
+  myEngine.onMatchEvent = (chain, size) => {
+    myEngine.cutinMax = 45;
+    myEngine.cutinTimer = 45;
+    myEngine.cutinText = chain >= 2 ? `${chain} CHAIN!!` : `${size} ERASE!`;
+  };
+
   const rivalsArea = document.getElementById('rivals-area');
   const rivalsTopArea = document.getElementById('rivals-top-area');
   rivalsArea.innerHTML = '';
@@ -645,18 +682,28 @@ function resetGameLogic() {
   opponents = [];
 
   const opponentCount = currentMode.startsWith('single') && currentMode !== 'single_survival' ? 0 : currentTotalPlayers - 1;
+  // ★追加：COM対戦時の相手キャラ候補（自分と被らないようシャッフル）
+  const rivalCharPool = CHARACTERS.filter(c => c.id !== playerCharId).sort(() => Math.random() - 0.5);
 
   for (let i = 0; i < opponentCount; i++) {
     const wrapper = document.createElement('div');
     wrapper.className = 'board-wrapper rival-board';
-    if (currentMode === 'com') wrapper.classList.add('com-board');
+    if (currentMode === 'com' || currentMode === 'story') wrapper.classList.add('com-board'); // ★変更：storyも対象に
     wrapper.id = `rival-wrapper-${i}`;
     wrapper.onclick = () => selectTarget(i);
 
-    let isComMode = currentMode === 'com' || currentMode === 'single_survival';
-    let nameColor = isComMode ? '#aaaaaa' : '#e94560';
-    let oppName = isComMode ? `COM ${i+1}` : `RIVAL ${i+1}`;
-    if (currentMode === 'single_survival') oppName = `COM Lv.${currentComLevel}`;
+    // ★変更：storyもCOM戦として動かす
+    let isComMode = currentMode === 'com' || currentMode === 'single_survival' || currentMode === 'story';
+
+    // ★追加：相手キャラを決定して名前・色・テーマを設定
+    const oppChar = (currentMode === 'story' && StoryManager.activeStage)
+      ? getCharacterById(StoryManager.activeStage.enemyId)
+      : rivalCharPool[i % rivalCharPool.length];
+
+    let nameColor = oppChar ? oppChar.color : (isComMode ? '#aaaaaa' : '#e94560');
+    let oppName = oppChar ? oppChar.name : (isComMode ? `COM ${i+1}` : `RIVAL ${i+1}`);
+    if (currentMode === 'single_survival') oppName = `${oppChar.name} Lv.${currentComLevel}`;
+    else if (currentMode === 'com') oppName = `${oppChar.name} (COM)`;
 
     wrapper.innerHTML = `
       <div class="garbage-preview-box">
@@ -673,6 +720,7 @@ function resetGameLogic() {
 
     const oppId = `com_${i}`;
     const rRenderer = new BoardRenderer(`rival-canvas-${i}`);
+    rRenderer.theme = buildThemeForCharacter(oppChar.id, null, false); // ★追加：相手の立ち絵テーマを適用
     let rEngine = null, rAI = null;
 
     if (isComMode) {
@@ -684,12 +732,23 @@ function resetGameLogic() {
         sharedSeed
       );
       rEngine.garbageQueue = [];
-      rAI = new ComAI(rEngine, currentComLevel, oppId);
+
+      // ★変更：ストーリーのボスやCOM画面のチェックON時は cheat クラスを使用
+      const useCheat = (currentMode === 'story' && StoryManager.activeStage && StoryManager.activeStage.useCheat)
+                    || (currentMode === 'com' && document.getElementById('com-cheat-toggle')?.checked);
+      rAI = useCheat ? new cheat(rEngine, currentComLevel, oppId) : new ComAI(rEngine, currentComLevel, oppId);
+
+      // ★追加：相手側も連鎖・同時消し時にカットイン演出を出す
+      rEngine.onMatchEvent = (chain, size) => {
+        rEngine.cutinMax = 45;
+        rEngine.cutinTimer = 45;
+        rEngine.cutinText = chain >= 2 ? `${chain} CHAIN!!` : `${size} ERASE!`;
+      };
     }
 
     opponents.push({
       id: oppId,
-      name: `RIVAL ${i+1}`,
+      name: oppName,
       type: 'com',
       engine: rEngine,
       renderer: rRenderer,
@@ -756,6 +815,8 @@ function exitGame() {
   document.getElementById('com-menu').style.display = 'none';
   document.getElementById('single-menu').style.display = 'none';
   document.getElementById('ranking-menu').style.display = 'none';
+  document.getElementById('story-menu').style.display = 'none';    // ★ここを追加
+  document.getElementById('story-overlay').style.display = 'none'; // ★ここを追加（会話中に戻った場合用）
   document.getElementById('main-menu-actions').style.display = 'flex';
 }
 
@@ -1594,4 +1655,8 @@ window.addEventListener('DOMContentLoaded', () => {
     }
     lastTouchEnd = now;
   }, { passive: false });
+
+  // ★この2行を追加（キャラ・カスタム画像の読み込みと、ストーリー操作の初期化）
+  if (typeof initAssetsSystem === 'function') initAssetsSystem();
+  if (typeof initStorySystem === 'function') initStorySystem();
 });

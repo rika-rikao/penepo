@@ -7,6 +7,7 @@
   <title>ぱねぽ - パネポン風対戦パズル</title>
   <link rel="manifest" href="manifest.json">
   <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="css/addon.css">
   <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
 </head>
 <body>
@@ -20,6 +21,22 @@
     <h2 style="color:#00d4ff; font-size: 2rem;">プレイヤーが揃いました！</h2>
     <div id="countdown-text" style="font-size: 6rem; font-weight: bold; color: #ff007f; margin: 20px 0;">10</div>
     <button id="countdown-start-btn" class="btn" onclick="forceStartRoom()">すぐに開始</button>
+  </div>
+
+  <div id="story-overlay">
+    <div id="story-stage-bg" class="story-stage-bg"></div>
+    <div class="story-top-controls">
+      <button class="small-btn" onclick="StoryManager.skip()">スキップ ▶▶</button>
+    </div>
+    <div class="story-portraits-area">
+      <div id="story-slot-left" class="story-portrait-slot"></div>
+      <div id="story-slot-right" class="story-portrait-slot"></div>
+    </div>
+    <div class="story-dialog-box" onclick="StoryManager.advance()">
+      <div id="story-speaker-name" class="story-speaker-name">フレア</div>
+      <div id="story-text" class="story-text"></div>
+      <div class="story-next-hint">▼ タップ / 決定で次へ</div>
+    </div>
   </div>
 
   <div id="settings-overlay">
@@ -41,6 +58,41 @@
         <div style="font-size: 0.9rem; margin-top: 10px;">
           SE音量 (効果音): <span id="se-volume-val">50</span>%<br>
           <input type="range" id="se-volume" min="0" max="1" step="0.05" value="0.5" style="width:100%; margin-top:5px;">
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h3>🎨 カスタム画像（縦横比自動圧縮・保存）</h3>
+        <p style="font-size:0.78rem; color:#aaa; margin-bottom: 5px;">立ち絵はP2P対戦相手にも自動で軽量反映されます。</p>
+
+        <div class="custom-asset-row">
+          <img id="custom-chara-thumb" class="custom-asset-thumb" alt="">
+          <div style="flex:1; min-width:0;">
+            <div style="font-size:0.82rem; font-weight:bold;">マイ立ち絵</div>
+            <div id="custom-chara-info" class="custom-asset-info">未設定</div>
+          </div>
+          <label class="small-btn">選択<input type="file" tabindex="-1" accept="image/*" style="display:none;" onchange="handleCustomAssetUpload('chara', this)"></label>
+          <button class="small-btn" onclick="clearCustomAsset('chara')">解除</button>
+        </div>
+
+        <div class="custom-asset-row">
+          <img id="custom-bg-thumb" class="custom-asset-thumb" alt="">
+          <div style="flex:1; min-width:0;">
+            <div style="font-size:0.82rem; font-weight:bold;">パズル背景</div>
+            <div id="custom-bg-info" class="custom-asset-info">未設定</div>
+          </div>
+          <label class="small-btn">選択<input type="file" tabindex="-1" accept="image/*" style="display:none;" onchange="handleCustomAssetUpload('bg', this)"></label>
+          <button class="small-btn" onclick="clearCustomAsset('bg')">解除</button>
+        </div>
+
+        <div class="custom-asset-row">
+          <img id="custom-frame-thumb" class="custom-asset-thumb" alt="">
+          <div style="flex:1; min-width:0;">
+            <div style="font-size:0.82rem; font-weight:bold;">フレーム</div>
+            <div id="custom-frame-info" class="custom-asset-info">未設定</div>
+          </div>
+          <label class="small-btn">選択<input type="file" tabindex="-1" accept="image/*" style="display:none;" onchange="handleCustomAssetUpload('frame', this)"></label>
+          <button class="small-btn" onclick="clearCustomAsset('frame')">解除</button>
         </div>
       </div>
 
@@ -69,8 +121,8 @@
     <div id="main-menu" style="display:flex; flex-direction:column; gap:15px; align-items:center; width:100%; max-width:400px;">
       <h1 class="title">ぱねぽ</h1>
       
-      <div style="font-size: 0.9rem; color: #4ecca3; display: flex; align-items: center; gap: 8px; margin-bottom: 5px;">
-        <span>自分のハンデ(有利さ):</span>
+      <div class="char-select-bar">
+        <span>ハンデ:</span>
         <select id="handicap-val" class="input-box" style="width: auto; padding: 5px; font-size: 0.85rem; border-radius: 10px;">
           <option value="1">1: 不利 (激ムズ)</option>
           <option value="2">2: やや不利</option>
@@ -78,9 +130,23 @@
           <option value="4">4: やや有利</option>
           <option value="5">5: 有利 (やさしい)</option>
         </select>
+
+        <span>キャラ:</span>
+        <select id="player-char-select" class="input-box" style="width: auto; padding: 5px; font-size: 0.85rem; border-radius: 10px;" onchange="onPlayerCharChange(this.value)">
+          <option value="main00">フレア</option>
+          <option value="sub01">しずく</option>
+          <option value="sub02">シルル</option>
+          <option value="sub03">ブープル</option>
+          <option value="enemy01">ゴースト</option>
+          <option value="enemy02">コーレム</option>
+          <option value="enemy03">デビビ</option>
+          <option value="enemy04">マーオ</option>
+          <option value="custom" disabled>マイ立ち絵 (設定で登録)</option>
+        </select>
       </div>
 
       <div id="main-menu-actions" style="display:flex; flex-direction:column; align-items:center; gap:15px; width:100%;">
+        <button class="btn" onclick="StoryManager.openMenu()" style="border-color:#ffd700;">ストーリーモード</button>
         <button class="btn" onclick="showSingleMenu()">ひとりで練習</button>
         <button class="btn" onclick="showComMenu()">COMと対戦</button>
         <button class="btn" onclick="showRankingMenu()">ランキング</button>
@@ -118,6 +184,12 @@
         <button class="btn" style="padding:8px 16px; font-size:0.9rem; background:#444; border-color:#888;" onclick="cancelRoom()">キャンセル</button>
       </div>
 
+    </div>
+
+    <div id="story-menu">
+      <h2 style="color:#ffd700">ストーリーモード</h2>
+      <div id="story-stage-list" class="story-stage-list"></div>
+      <button class="btn" style="background:#444; border-color:#888;" onclick="backToMainMenu()">戻る</button>
     </div>
     
     <div id="single-menu" style="display:none; flex-direction:column; gap:12px; align-items:center; width:100%;">
@@ -183,6 +255,9 @@
           <span>99:げきむず</span>
         </div>
       </div>
+      <label class="switch-wrapper" style="background:rgba(0,0,0,0.3); padding:8px 14px; border-radius:10px;">
+        <input type="checkbox" id="com-cheat-toggle"> Cheat AI（スキル発動あり）
+      </label>
       <button class="btn" onclick="startComGameFromSlider()">スタート</button>
       <button class="btn" style="background:#444; border-color:#888;" onclick="backToMainMenu()">戻る</button>
     </div>
@@ -222,8 +297,11 @@
   </div>
 
   <script src="js/config.js"></script>
+  <script src="js/assets.js"></script>
   <script src="js/engine.js"></script>
+  <script src="js/cheat.js"></script>
   <script src="js/network.js"></script>
+  <script src="js/story.js"></script>
   <script src="js/main.js"></script>
 </body>
 </html>

@@ -702,6 +702,10 @@ class PonEngine {
       if (totalBlocks > 0 && this.onSendGarbage) {
         this.onSendGarbage(totalBlocks, hasSpecial);
       }
+      // ★追加：連鎖・同時消しカットイン通知
+      if ((this.chain >= 2 || matchedPositions.size >= 4) && this.onMatchEvent) {
+        this.onMatchEvent(this.chain, matchedPositions.size);
+      }
     } else {
       let isMoving = false;
       for (let r = 0; r < this.rows; r++) {
@@ -736,10 +740,12 @@ class BoardRenderer {
     this.ctx = this.canvas.getContext('2d');
     this.canvas.width = COLS * CELL_PX;
     this.canvas.height = ROWS * CELL_PX + CELL_PX * 0.75; 
+    this.theme = null; // ★追加
   }
   draw(engine) {
     const ctx = this.ctx;
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    if (typeof drawBoardBgAddon === 'function') drawBoardBgAddon(ctx, this.canvas, engine, this); // ★追加
     
     ctx.save();
     if (engine.shakeTimer > 0) {
@@ -901,6 +907,8 @@ class BoardRenderer {
         ctx.globalAlpha = 1.0;
       }
     }
+
+    if (typeof drawBoardFgAddon === 'function') drawBoardFgAddon(ctx, this.canvas, engine, this); // ★追加
 
     if (engine.gameOver && !engine.isPractice) {
       ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);

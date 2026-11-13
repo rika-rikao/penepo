@@ -181,6 +181,11 @@ function prepareMatchLocal(config) {
   
   startSyncInterval();
 
+  // ★追加：自分のキャラ・カスタム立ち絵（圧縮済み）を他プレイヤーへ送信
+  if (typeof sendMyAppearanceOnline === 'function') {
+    sendMyAppearanceOnline();
+  }
+
   // 盤面の描画と初期同期を完了させるための待機時間
   setTimeout(() => {
     if (myOnlineId === 'host') {
@@ -240,6 +245,7 @@ function resetGameLogicOnline(config) {
   const sharedSeed = config.seed !== undefined ? config.seed : Math.floor(Math.random() * 0xFFFFFFFF);
 
   myRenderer = new BoardRenderer('my-canvas');
+  myRenderer.theme = buildThemeForCharacter(selectedCharId, CustomAssets.chara ? CustomAssets.chara.dataUrl : null, true); // ★追加
   myEngine = new PonEngine(
     (state) => { if (state === 'gameover') checkMatchEnd(); },
     (totalBlocks, isHard) => { distributeGarbageOnline(myOnlineId, totalBlocks, isHard); },
@@ -310,6 +316,9 @@ function resetGameLogicOnline(config) {
 
     rEngine.gameOver = false; // 初期状態の確実なリセット
 
+// ★追加：COMや相手プレイヤーの初期キャラテーマ設定
+    const fallbackCharId = p.type === 'com' ? CHARACTERS[(index + 1) % CHARACTERS.length].id : 'main00';
+    rRenderer.theme = buildThemeForCharacter(p.charId || fallbackCharId, null, false);
     opponents.push({
       id: p.id,
       name: p.name,
@@ -494,6 +503,27 @@ function bindConnEvents(c, isHostMode) {
         checkMatchEnd();
       }
     }
+else if (data.type === 'appearance_sync') {
+      const targetOpp = opponents.find(o => o.id === data.senderId);
+      if (targetOpp && targetOpp.renderer) {
+        targetOpp.renderer.theme = buildThemeForCharacter(data.charId, data.customCharaUrl, false);
+        const nameEl = targetOpp.renderer.canvas.closest('.board-wrapper')?.querySelector('.board-header span');
+        if (nameEl) {
+          const chName = data.customName || getCharacterById(data.charId).name;
+          nameEl.innerHTML = `${chName} (${targetOpp.name}) <span class="target-badge">🎯 TARGET</span>`;
+        }
+      }
+      if (isHostMode) {
+        onlineConnections.forEach(otherC => {
+          if (otherC !== c && otherC.open) otherC.send(data);
+        });
+      }
+    }
+    else if (data.type === 'cheat_corrupt_row') {
+      if (data.targetId === myOnlineId && myEngine && !myEngine.gameOver && !isPracticeMode) {
+        if (typeof applyCorruptRowToEngine === 'function') applyCorruptRowToEngine(myEngine, data.row);
+      }
+    }
     else if (data.type === 'leave') {
       if (isHostMode) {
         handlePlayerLeftHost(data.senderId);
@@ -518,5 +548,18 @@ function bindConnEvents(c, isHostMode) {
     } else {
       handleHostDisconnected();
     }
+  });
+}
+
+function sendMyAppearanceOnline() {
+  const payload = {
+    type: 'appearance_sync',
+    senderId: myOnlineId,
+    charId: selectedCharId,
+    customCharaUrl: (selectedCharId === 'custom' && CustomAssets.chara) ? CustomAssets.chara.dataUrl : null,
+    customName: selectedCharId === 'custom' ? 'マイキャラ' : null
+  };
+  onlineConnections.forEach(c => {
+    if (c && c.open) c.send(payload);
   });
 }

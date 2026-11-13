@@ -330,9 +330,9 @@ function requestRematch() {
   
   if (currentMode === 'story') {
     startGame('story', currentComLevel, 2);
-  } else if ...
-  
-  if (currentMode === 'single' || currentMode === 'com') {
+  } else if (currentMode === 'single_survival') {
+    startSingleMode();
+  } else if (currentMode === 'single' || currentMode.startsWith('single_') || currentMode === 'com') {
     startGame(currentMode, currentComLevel, currentTotalPlayers);
   } else if (currentMode === 'online') {
     rematchReady[myOnlineId] = true;
@@ -406,6 +406,13 @@ function checkMatchEnd() {
       onlineConnections.forEach(c => { if (c && c.open) c.send(syncData); });
     }
 
+    if (currentMode === 'story') {
+      matchState = 'gameover';
+      stopAllEngines();
+      StoryManager.onBattleEnd(false);
+      return;
+    }
+
     let scoreVal = currentMode === 'single_survival' ? currentSurvivalWins : myEngine.score;
     let isRankIn = saveRankingData(currentMode, { score: scoreVal, handicap: myEngine.handicap, level: currentComLevel, date: Date.now() });
 
@@ -417,14 +424,6 @@ function checkMatchEnd() {
        if (currentMode === 'com') stopAllEngines(); 
        showResultModal(isRankIn ? "NEW RECORD! (LOSE)" : "LOSE...");
     }
-	
-	if (currentMode === 'story') {
-      matchState = 'gameover';
-      stopAllEngines();
-      StoryManager.onBattleEnd(false);
-      return;
-    }
-	
   }
 
   // 自分以外の全員が負けた瞬間（自分が生き残って勝利）
@@ -441,6 +440,12 @@ function checkMatchEnd() {
            }
         }
         return;
+     } else if (currentMode === 'story') {
+       isMatchOver = true;
+       matchState = 'gameover';
+       stopAllEngines();
+       StoryManager.onBattleEnd(true);
+       return;
      } else {
        isMatchOver = true;
        matchState = 'gameover';
@@ -451,15 +456,6 @@ function checkMatchEnd() {
        }
        showResultModal(isRankIn ? "WIN!! (NEW RECORD)" : "WIN!!");
      }
-	 
-	 if (currentMode === 'story') {
-      isMatchOver = true;
-      matchState = 'gameover';
-      stopAllEngines();
-      StoryManager.onBattleEnd(true);
-      return;
-    }
-	 
   }
 
   // 全滅、もしくは自分以外全滅して自分も負けた場合など、試合が完全に終わった状態
@@ -1087,7 +1083,7 @@ function gameLoop(time) {
              document.getElementById(`rival-name-label-0`).innerHTML = `COM Lv.${nextLv} <span class="target-badge">🎯 TARGET</span>`;
            }
         } else {
-           const isLocalControlledCom = (opp.type === 'com') && (currentMode === 'com' || currentMode === 'single_survival' || myOnlineId === 'host');
+           const isLocalControlledCom = (opp.type === 'com') && (currentMode === 'com' || currentMode === 'single_survival' || currentMode === 'story' || myOnlineId === 'host');
            if (isLocalControlledCom) {
              if (opp.ai) opp.ai.update();
              if (opp.engine && !opp.engine.gameOver) opp.engine.update(FIXED_TIME_STEP);

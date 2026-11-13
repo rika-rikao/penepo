@@ -1,4 +1,4 @@
-const CACHE_NAME = 'pdw-cache-v3';
+const CACHE_NAME = 'pdw-cache-v4';
 
 // オフラインでも起動させるために最低限キャッシュするリスト
 const urlsToCache = [

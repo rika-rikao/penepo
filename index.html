@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#1a1a2e">
+  <title>ぱねぽ - パネポン風対戦パズル</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="stylesheet" href="css/style.css">
+  <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+</head>
+<body>
+  <div id="toast"></div>
+
+  <div id="ready-go-overlay" style="display:none; position:absolute; inset:0; z-index:500; pointer-events:none; flex-direction:column; align-items:center; justify-content:center;">
+    <div id="ready-go-text" style="font-size: 5rem; font-weight: 900; color: #ff007f; text-shadow: 0 0 15px rgba(255,255,255,0.8), 0 0 30px #e94560; opacity: 0; transform: scale(0.5); font-style: italic;"></div>
+  </div>
+
+  <div id="countdown-overlay" style="display:none; position:absolute; inset:0; background:rgba(0,0,0,0.92); z-index:450; flex-direction:column; align-items:center; justify-content:center;">
+    <h2 style="color:#00d4ff; font-size: 2rem;">プレイヤーが揃いました！</h2>
+    <div id="countdown-text" style="font-size: 6rem; font-weight: bold; color: #ff007f; margin: 20px 0;">10</div>
+    <button id="countdown-start-btn" class="btn" onclick="forceStartRoom()">すぐに開始</button>
+  </div>
+
+  <div id="settings-overlay">
+    <div class="settings-box">
+      <h2 style="text-align: center; color: #4ecca3; flex-shrink: 0;">設定</h2>
+      
+      <div class="settings-section">
+        <h3>🎵 音声設定</h3>
+        <p style="font-size:0.8rem; color:#aaa; margin-bottom: 5px;">マイBGM（ファイルやフォルダを選択して再生）</p>
+        <div style="display:flex; gap:10px; margin-bottom: 10px;">
+          <label class="small-btn">ファイル選択<input type="file" tabindex="-1" id="bgm-file-input" multiple accept="audio/*, .mp3, .m4a, .aac, .wav, .ogg, .opus, .webm" style="display:none;"></label>
+          <label class="small-btn">フォルダ選択<input type="file" tabindex="-1" id="bgm-dir-input" multiple webkitdirectory directory accept="audio/*, .mp3, .m4a, .aac, .wav, .ogg, .opus, .webm" style="display:none;"></label>
+          <button class="small-btn" onclick="toggleBgmPlay()">再生 / 停止</button>
+        </div>
+        <div style="font-size: 0.9rem;">
+          BGM音量: <span id="bgm-volume-val">50</span>%<br>
+          <input type="range" id="bgm-volume" min="0" max="1" step="0.05" value="0.5" style="width:100%; margin-top:5px;">
+        </div>
+        <div style="font-size: 0.9rem; margin-top: 10px;">
+          SE音量 (効果音): <span id="se-volume-val">50</span>%<br>
+          <input type="range" id="se-volume" min="0" max="1" step="0.05" value="0.5" style="width:100%; margin-top:5px;">
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h3>🎮 キー・パッド設定</h3>
+        <p style="font-size:0.8rem; color:#aaa; margin-bottom: 5px;">変更したい枠を押してから、キーやボタンを入力してください。</p>
+        <div id="key-config-list" style="display:flex; flex-direction:column; gap:8px;"></div>
+      </div>
+
+      <button class="btn" style="width: 100%;" onclick="closeSettings()">設定を保存して閉じる</button>
+    </div>
+  </div>
+
+  <div id="result-overlay" style="display:none; position:absolute; inset:0; background:rgba(0,0,0,0.85); z-index:250; flex-direction:column; align-items:center; justify-content:center;">
+    <div style="background:#162447; padding:30px; border-radius:15px; border:2px solid #e94560; text-align:center; min-width:300px;">
+      <h2 id="result-title" style="color:#ff007f; margin-bottom:15px; font-size:2rem;"></h2>
+      <div id="result-status" style="margin-bottom:20px; color:#4ecca3; font-size:1rem; height:20px;"></div>
+      <div style="display:flex; flex-direction:column; gap:12px;">
+        <button class="btn" id="result-rematch-btn" onclick="requestRematch()">もう一度対戦する</button>
+        <button class="btn retire-btn" onclick="exitGame()">タイトルへ戻る</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="menu-overlay">
+    <div id="main-menu" style="display:flex; flex-direction:column; gap:15px; align-items:center; width:100%; max-width:400px;">
+      <h1 class="title">ぱねぽ</h1>
+      
+      <div style="font-size: 0.9rem; color: #4ecca3; display: flex; align-items: center; gap: 8px; margin-bottom: 5px;">
+        <span>自分のハンデ(有利さ):</span>
+        <select id="handicap-val" class="input-box" style="width: auto; padding: 5px; font-size: 0.85rem; border-radius: 10px;">
+          <option value="1">1: 不利 (激ムズ)</option>
+          <option value="2">2: やや不利</option>
+          <option value="3" selected>3: 普通</option>
+          <option value="4">4: やや有利</option>
+          <option value="5">5: 有利 (やさしい)</option>
+        </select>
+      </div>
+
+      <div id="main-menu-actions" style="display:flex; flex-direction:column; align-items:center; gap:15px; width:100%;">
+        <button class="btn" onclick="showSingleMenu()">ひとりで練習</button>
+        <button class="btn" onclick="showComMenu()">COMと対戦</button>
+        <button class="btn" onclick="showRankingMenu()">ランキング</button>
+        <button class="btn" onclick="openSettings()" style="background:#1a4d3e; border-color:#4ecca3;">⚙️設定</button>
+        
+        <div style="border-top:1px solid rgba(255,255,255,0.2); width:100%; margin:5px 0;"></div>
+        
+        <div class="online-menu-section" style="display:flex; flex-direction:column; align-items:center; gap:8px;">
+          <input type="text" id="peer-room-id" class="input-box" placeholder="部屋コード (最大4人)" maxlength="10">
+          <div style="font-size: 0.9rem; color: #4ecca3; display: flex; align-items: center; gap: 8px;">
+            <span>人数:</span>
+            <select id="online-max-players" class="input-box" style="width: auto; padding: 5px; font-size: 0.85rem; border-radius: 10px;">
+              <option value="2" selected>2人対戦</option>
+              <option value="3">3人対戦</option>
+              <option value="4">4人対戦</option>
+            </select>
+          </div>
+          <div style="font-size: 0.85rem; color: #4ecca3; display: flex; align-items: center; justify-content: space-between; width: 240px; background: rgba(0,0,0,0.3); padding: 4px 10px; border-radius: 10px;">
+            <span>不足COM強さ: <b style="color:#ff007f;">Lv.<span id="online-com-level-val">3</span></b></span>
+            <input type="range" id="online-com-level" min="1" max="99" step="1" value="3" style="width:90px;" oninput="document.getElementById('online-com-level-val').innerText = this.value">
+          </div>
+          <div style="display:flex; gap:10px;">
+            <button class="btn" style="min-width:115px; padding:10px 16px; font-size:1rem;" onclick="createRoom()">部屋を作る</button>
+            <button class="btn" style="min-width:115px; padding:10px 16px; font-size:1rem;" onclick="joinRoom()">部屋に入る</button>
+          </div>
+        </div>
+      </div>
+      
+      <div id="room-waiting" style="display:none; flex-direction:column; align-items:center; gap:10px; margin-top:10px; background:#162447; padding:15px; border-radius:10px; border:1px solid #e94560; width:100%; box-sizing:border-box;">
+        <div style="font-size:1.1rem; color:#4ecca3;">待機ルーム</div>
+        <div id="waiting-code-container">部屋コード: <b id="waiting-code" style="font-size:1.4rem; color:#ff007f;"></b></div>
+        <div id="waiting-status-text" style="color:#fff;"></div>
+        <div>参加者: <span id="waiting-count" style="font-weight:bold; color:#fff;">1</span> / <span id="waiting-max" style="font-weight:bold; color:#fff;">2</span> 人</div>
+        <button id="force-start-btn" class="btn" style="padding:10px 16px; font-size:1rem; margin-top:10px; display:none;" onclick="startCountdown()">この人数で開始(不足はCOM)</button>
+        <button class="btn" style="padding:8px 16px; font-size:0.9rem; background:#444; border-color:#888;" onclick="cancelRoom()">キャンセル</button>
+      </div>
+
+    </div>
+    
+    <div id="single-menu" style="display:none; flex-direction:column; gap:12px; align-items:center; width:100%;">
+      <h2 style="color:#4ecca3">ひとりで練習</h2>
+      <div style="font-size:0.9rem; color:#4ecca3; display:flex; align-items:center; gap:8px;">
+        <span>モード:</span>
+        <select id="single-mode-select" class="input-box" style="width: auto; padding: 5px; font-size: 0.85rem; border-radius: 10px;" onchange="updateSingleMenu()">
+          <option value="free" selected>フリー練習 (エンドレス)</option>
+          <option value="ta">タイムアタック (3分)</option>
+          <option value="sa">スコアアタック</option>
+          <option value="survival">勝ち抜きモード</option>
+        </select>
+      </div>
+      
+      <div id="survival-settings" style="display:none; flex-direction:column; gap:8px; font-size:0.8rem; background:rgba(0,0,0,0.3); padding:10px; border-radius:8px; width: 260px; text-align: left;">
+        <div style="display:flex; align-items:center; justify-content:space-between;">
+          <span style="color:#4ecca3;">初期COM強さ: <b style="color:#ff007f;">Lv.<span id="survival-init-level-val">1</span></b></span>
+          <input type="range" id="survival-init-level" min="1" max="99" step="1" value="1" style="width:110px;" oninput="document.getElementById('survival-init-level-val').innerText = this.value">
+        </div>
+        <label style="display:flex; align-items:center; gap:5px;"><input type="checkbox" id="survival-clear-garbage" checked> COM撃破時に予告お邪魔を無効化</label>
+        <label style="display:flex; align-items:center; gap:5px;"><input type="checkbox" id="survival-cancel-sent" checked> 次COMへのお邪魔持ち越しを無効化</label>
+        <label style="display:flex; align-items:center; gap:5px;"><input type="checkbox" id="survival-keep-speed"> 自動せり上がり速度を初期値に固定</label>
+      </div>
+
+      <button class="btn" onclick="startSingleMode()">スタート</button>
+      <button class="btn" style="background:#444; border-color:#888;" onclick="backToMainMenu()">戻る</button>
+    </div>
+
+    <div id="ranking-menu" style="display:none; flex-direction:column; gap:12px; align-items:center; width:100%;">
+      <h2 style="color:#ffd700">ランキング</h2>
+      <div style="font-size:0.9rem; color:#4ecca3; display:flex; align-items:center; gap:8px;">
+        <select id="ranking-mode-select" class="input-box" style="width: auto; padding: 5px; font-size: 0.85rem; border-radius: 10px;" onchange="showRankingMenu()">
+          <option value="single_free">フリー練習</option>
+          <option value="single_ta">タイムアタック</option>
+          <option value="single_sa">スコアアタック</option>
+          <option value="single_survival">勝ち抜きモード</option>
+          <option value="com">COMと対戦</option>
+        </select>
+      </div>
+      <div id="ranking-list" style="width:100%; max-width: 300px; background:rgba(0,0,0,0.5); border-radius:8px; padding:10px; font-size:0.9rem; line-height:1.8;"></div>
+      <button class="btn" style="background:#444; border-color:#888;" onclick="backToMainMenu()">戻る</button>
+    </div>
+
+    <div id="com-menu" style="display:none; flex-direction:column; gap:12px; align-items:center; width:100%; max-width:350px;">
+      <h2 style="color:#4ecca3">CPU対戦設定</h2>
+      <div style="font-size:0.9rem; color:#4ecca3; display:flex; align-items:center; gap:8px;">
+        <span>対戦人数:</span>
+        <select id="com-player-count" class="input-box" style="width: auto; padding: 5px; font-size: 0.85rem; border-radius: 10px;">
+          <option value="2" selected>2人対戦 (1 vs 1)</option>
+          <option value="3">3人対戦 (1 vs 2)</option>
+          <option value="4">4人対戦 (1 vs 3)</option>
+        </select>
+      </div>
+      <div style="font-size:0.9rem; color:#4ecca3; display:flex; flex-direction:column; align-items:center; gap:6px; width: 100%; background:rgba(0,0,0,0.3); padding:10px; border-radius:10px; box-sizing:border-box;">
+        <div style="display:flex; justify-content:space-between; width:100%;">
+          <span>CPU強さ:</span>
+          <span style="font-weight:bold; color:#ff007f;">Lv.<span id="com-level-display">2</span></span>
+        </div>
+        <input type="range" id="com-level-slider" min="1" max="99" step="1" value="2" style="width:100%;" oninput="document.getElementById('com-level-display').innerText = this.value">
+        <div style="display:flex; justify-content:space-between; width:100%; font-size:0.75rem; color:#888;">
+          <span>1:やさしい</span>
+          <span>50:ふつう</span>
+          <span>99:げきむず</span>
+        </div>
+      </div>
+      <button class="btn" onclick="startComGameFromSlider()">スタート</button>
+      <button class="btn" style="background:#444; border-color:#888;" onclick="backToMainMenu()">戻る</button>
+    </div>
+  </div>
+
+  <div id="game-area" class="right-handed">
+    <button id="exit-btn" class="action-btn retire-btn absolute-top" onclick="exitGame()">退出 (リタイア)</button>
+    <div id="rivals-top-area" style="display:none;"></div>
+
+    <div id="game-container">
+      <div id="controls-container" style="display: flex; flex-direction: column; justify-content: flex-end; gap: 10px; z-index: 20; width: 110px;">
+        <button id="layout-toggle-btn" class="small-btn" tabindex="-1" onclick="toggleLandscapeLayout()" style="display:none; width:100%; font-size:0.75rem; padding:5px 2px; text-align:center;">UI: 横並び</button>
+        <label id="handedness-wrapper" class="switch-wrapper" style="background: rgba(0,0,0,0.85); padding: 6px 8px; border-radius: 10px; flex-direction: column; gap: 4px; border: 1px solid #4ecca3;">
+          <input type="checkbox" id="handedness-toggle" tabindex="-1" onchange="toggleHandedness()"> <span id="handedness-text" style="font-size: 0.75rem;">右利きモード</span>
+        </label>
+        <label id="swipe-wrapper" class="switch-wrapper" style="background: rgba(0,0,0,0.65); padding: 6px 8px; border-radius: 10px; flex-direction: column; gap: 4px; border: 1px solid rgba(255,255,255,0.1);">
+          <input type="checkbox" id="continuous-swipe" tabindex="-1" checked>連続移動
+        </label>
+        <button class="action-btn" id="rise-btn" tabindex="-1" style="height: 60px; font-size: 1.05rem; box-shadow: 0 4px #8a0c24;">せり上げ</button>
+      </div>
+
+      <div class="board-wrapper my-board" id="my-wrapper">
+        <div class="garbage-preview-box">
+          <span class="preview-label">予告</span>
+          <div id="my-garbage-preview" class="preview-list"></div>
+        </div>
+        <div class="board-header">
+          <span id="player-label">YOU</span>
+          <span id="timer-label" style="color:#ffd700;">00:00</span>
+          <span id="score-label">SCORE: 0</span>
+        </div>
+        <div class="canvas-container"><canvas id="my-canvas"></canvas></div>
+      </div>
+      
+      <div id="rivals-area" style="display: none; gap: 10px; align-items: center; justify-content: center;"></div>
+    </div>
+  </div>
+
+  <script src="js/config.js"></script>
+  <script src="js/engine.js"></script>
+  <script src="js/network.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>

@@ -106,7 +106,9 @@ function renderCharPicker(containerId, options = {}) {
   const storyOnly = !!options.storyOnly;
 
   let currentId;
-  if (storyOnly) {
+  if (options.currentId !== undefined) {
+    currentId = options.currentId;
+  } else if (storyOnly) {
     currentId = (storySelectedCharId === 'custom' && CustomAssets.chara) ? 'custom' : 'main00';
     storySelectedCharId = currentId;
   } else {
@@ -121,9 +123,9 @@ function renderCharPicker(containerId, options = {}) {
 
   const titleEl = document.createElement('div');
   titleEl.className = 'char-picker-title';
-  titleEl.innerText = storyOnly
+  titleEl.innerText = options.title || (storyOnly
     ? '使用キャラ選択（ストーリーはフレア / マイ立ち絵のみ）'
-    : '使用キャラ選択';
+    : '使用キャラ選択');
   container.appendChild(titleEl);
 
   CHAR_PICKER_ROWS.forEach((rowIds) => {
@@ -179,7 +181,9 @@ function renderCharPicker(containerId, options = {}) {
           showToast('「⚙️設定」からマイ立ち絵を登録すると選べます');
           return;
         }
-        if (storyOnly) {
+        if (typeof options.onSelect === 'function') {
+          options.onSelect(cid);
+        } else if (storyOnly) {
           storySelectedCharId = cid;
           localStorage.setItem('pdw_story_char_id', cid);
         } else {
@@ -187,7 +191,7 @@ function renderCharPicker(containerId, options = {}) {
           localStorage.setItem('pdw_char_id', cid);
         }
         if (typeof SE !== 'undefined') SE.play('cursorMove');
-        renderCharPicker(containerId, options);
+        renderCharPicker(containerId, options.onSelect ? { ...options, currentId: cid } : options);
       };
 
       rowEl.appendChild(btn);
@@ -196,8 +200,7 @@ function renderCharPicker(containerId, options = {}) {
     container.appendChild(rowEl);
   });
 
-  // マイ立ち絵を選択中の場合は、その場で名前入力も可能にする
-  if (currentId === 'custom' && CustomAssets.chara) {
+  if (currentId === 'custom' && CustomAssets.chara && !options.hideNameInput) {
     const nameRow = document.createElement('div');
     nameRow.className = 'char-name-inline-row';
     const lbl = document.createElement('span');
@@ -482,12 +485,13 @@ function drawBoardBgAddon(ctx, canvas, engine, renderer) {
 }
 
 // ② 対戦相手の盤面上にのみ立ち絵付きカットインを描画（プレイヤー自身はヘッダーバナーに出す）
+// ローカル対戦のスキル時（allowBoardCutin）または対戦相手の盤面上に立ち絵付きカットインを描画
 function drawBoardFgAddon(ctx, canvas, engine, renderer) {
   const theme = renderer.theme;
   const W = canvas.width;
   const H = canvas.height;
 
-  if (!engine.isPlayer && engine.cutinTimer && engine.cutinTimer > 0) {
+  if ((engine.allowBoardCutin || !engine.isPlayer) && engine.cutinTimer && engine.cutinTimer > 0) {
     engine.cutinTimer--;
     const progress = engine.cutinTimer / (engine.cutinMax || 50);
     const alpha = Math.min(1, progress * 2.5);

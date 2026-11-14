@@ -1,4 +1,4 @@
-if ('serviceWorker' in navigator) {
+if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   navigator.serviceWorker.register('sw.js').catch(err => console.error('SW Register Error:', err));
 }
 
@@ -12,7 +12,7 @@ const COLORS = [
 ];
 
 // ==========================================
-// SE & BGM 制御 (Web Audio API & HTML5 Audio)
+// SE & BGM 制御 (Web Audio API & HTML5 Audioフォールバック)
 // ==========================================
 const AudioContext = window.AudioContext || window.webkitAudioContext;
 const audioCtx = new AudioContext();
@@ -32,9 +32,22 @@ const SE = {
     fanfareMax: 'assets/se/Fanfare_max.m4a',
   },
   buffers: {},
+  fallbackAudios: {},
   volume: 0.5,
+  registerFallback(key, path) {
+    try {
+      const a = new Audio(path);
+      a.preload = 'auto';
+      this.fallbackAudios[key] = a;
+    } catch (e) {}
+  },
   async load() {
+    const isFile = (window.location && window.location.protocol === 'file:');
     for (const [key, path] of Object.entries(this.files)) {
+      if (isFile) {
+        this.registerFallback(key, path);
+        continue;
+      }
       try {
         const response = await fetch(path);
         const arrayBuffer = await response.arrayBuffer();
@@ -43,25 +56,35 @@ const SE = {
         });
         this.buffers[key] = decoded;
       } catch (e) {
-        console.warn('SE Load Error:', key, e);
+        this.registerFallback(key, path);
       }
     }
   },
   play(key) {
-    if (!this.buffers[key]) return;
-    if (audioCtx.state === 'suspended') audioCtx.resume();
-    const source = audioCtx.createBufferSource();
-    source.buffer = this.buffers[key];
-    const gainNode = audioCtx.createGain();
-    gainNode.gain.value = this.volume;
-    source.connect(gainNode);
-    gainNode.connect(audioCtx.destination);
-    source.start(0);
+    if (this.buffers[key]) {
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      const source = audioCtx.createBufferSource();
+      source.buffer = this.buffers[key];
+      const gainNode = audioCtx.createGain();
+      gainNode.gain.value = this.volume;
+      source.connect(gainNode);
+      gainNode.connect(audioCtx.destination);
+      source.start(0);
+      return;
+    }
+    const base = this.fallbackAudios[key];
+    if (base) {
+      try {
+        const a = base.cloneNode();
+        a.volume = this.volume;
+        a.play().catch(() => {});
+      } catch (e) {}
+    }
   }
 };
 SE.load();
 
-// iOS等(WebKit)での音量調整不具合を解消するためのWeb Audio API BGMラッパー
+// iOS等(WebKit)での音量調整不具合解消Web Audio API BGMラッパー（file://時はHTMLAudioへフォールバック）
 class WebAudioBGMPlayer {
   constructor(ctx, src = '') {
     this.ctx = ctx;
@@ -73,7 +96,7 @@ class WebAudioBGMPlayer {
     this._src = src;
     this._volume = 0.5;
     this._muted = false;
-    this.loop = false;
+    this._loop = false;
     this._currentFile = null;
     this.onended = null;
     
@@ -84,6 +107,15 @@ class WebAudioBGMPlayer {
     this._playRequestId = 0;
     this._loadingPromise = null;
     this._loadingSrc = null;
+
+    this._useFallback = false;
+    this._htmlAudio = null;
+  }
+
+  get loop() { return this._loop; }
+  set loop(v) {
+    this._loop = !!v;
+    if (this._htmlAudio) this._htmlAudio.loop = this._loop;
   }
   
   get src() { return this._src; }
@@ -93,9 +125,14 @@ class WebAudioBGMPlayer {
       this._playRequestId++;
       this._src = value;
       this.pauseTime = 0;
-      this.buffer = null; // 新しいsrcになったらバッファクリア
+      this.buffer = null;
       this._loadingPromise = null;
       this._loadingSrc = null;
+      this._useFallback = false;
+      if (this._htmlAudio) {
+        try { this._htmlAudio.pause(); } catch (e) {}
+        this._htmlAudio = null;
+      }
     }
   }
   
@@ -112,11 +149,17 @@ class WebAudioBGMPlayer {
   }
   
   updateGain() {
-    // GainNodeを使って強制的にWeb Audio経由で音量反映・ミュート制御を行う
     this.gainNode.gain.value = this._muted ? 0 : this._volume;
+    if (this._htmlAudio) {
+      this._htmlAudio.volume = this._volume;
+      this._htmlAudio.muted = this._muted;
+    }
   }
   
   get currentTime() {
+    if (this._useFallback && this._htmlAudio) {
+      return this._htmlAudio.currentTime || 0;
+    }
     if (this.isPlaying) {
       let t = this.pauseTime + (this.ctx.currentTime - this.startTime);
       if (this.buffer && this.loop) return t % this.buffer.duration;
@@ -126,6 +169,11 @@ class WebAudioBGMPlayer {
     return this.pauseTime;
   }
   set currentTime(v) {
+    if (this._useFallback && this._htmlAudio) {
+      try { this._htmlAudio.currentTime = v; } catch (e) {}
+      this.pauseTime = v;
+      return;
+    }
     const wasPlaying = this.isPlaying;
     if (wasPlaying) {
       this.pause();
@@ -141,18 +189,38 @@ class WebAudioBGMPlayer {
       this.onended = callback;
     }
   }
+
+  _initHtmlFallback(targetSrc) {
+    this._useFallback = true;
+    const audio = new Audio(targetSrc);
+    audio.loop = this._loop;
+    audio.volume = this._volume;
+    audio.muted = this._muted;
+    audio.preload = 'auto';
+    audio.addEventListener('ended', () => {
+      if (this._htmlAudio === audio && !this._loop) {
+        this.isPlaying = false;
+        if (this.onended) this.onended();
+      }
+    });
+    this._htmlAudio = audio;
+  }
   
   async load() {
     if (!this._src) return;
-    if (this.buffer) return;
+    if (this.buffer || this._useFallback) return;
     if (this._loadingPromise && this._loadingSrc === this._src) {
       return this._loadingPromise;
     }
     const targetSrc = this._src;
+    const isFile = (window.location && window.location.protocol === 'file:');
+    if (isFile && !targetSrc.startsWith('blob:')) {
+      this._initHtmlFallback(targetSrc);
+      return;
+    }
     this._loadingSrc = targetSrc;
     this._loadingPromise = (async () => {
       try {
-        // File API等で生成されたBlob(ObjectURL)も正常にfetch可能
         const response = await fetch(targetSrc);
         const arrayBuffer = await response.arrayBuffer();
         const decoded = await this.ctx.decodeAudioData(arrayBuffer);
@@ -160,9 +228,9 @@ class WebAudioBGMPlayer {
           this.buffer = decoded;
         }
       } catch (e) {
-        console.warn('BGM Load Error:', e);
         if (this._src === targetSrc) {
           this.buffer = null;
+          this._initHtmlFallback(targetSrc);
         }
       } finally {
         if (this._loadingSrc === targetSrc) {
@@ -176,13 +244,24 @@ class WebAudioBGMPlayer {
   async play() {
     const reqId = ++this._playRequestId;
     if (this.ctx.state === 'suspended') {
-      await this.ctx.resume();
+      await this.ctx.resume().catch(()=>{});
       if (reqId !== this._playRequestId) return Promise.resolve();
     }
-    if (!this.buffer) {
+    if (!this.buffer && !this._useFallback) {
       await this.load();
       if (reqId !== this._playRequestId) return Promise.resolve();
     }
+
+    if (this._useFallback && this._htmlAudio) {
+      this._htmlAudio.loop = this._loop;
+      this.updateGain();
+      try {
+        await this._htmlAudio.play();
+        this.isPlaying = true;
+      } catch (e) {}
+      return Promise.resolve();
+    }
+
     if (!this.buffer) return Promise.resolve();
     
     if (this.isPlaying) this.pause(false);
@@ -199,7 +278,7 @@ class WebAudioBGMPlayer {
         this.isPlaying = false;
         this.pauseTime = 0;
         this.source = null;
-        if (this.onended) this.onended(); // 再生終了でイベント発火（プレイリスト遷移等）
+        if (this.onended) this.onended();
       }
     };
     
@@ -221,6 +300,11 @@ class WebAudioBGMPlayer {
   pause(invalidateRequest = true) {
     if (invalidateRequest) {
       this._playRequestId++;
+    }
+    if (this._useFallback && this._htmlAudio) {
+      try { this._htmlAudio.pause(); } catch (e) {}
+      this.isPlaying = false;
+      return;
     }
     if (this.isPlaying && this.source) {
       this._isManualStop = true;

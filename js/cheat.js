@@ -102,10 +102,11 @@ function hasGarbageInEngine(engine) {
   return false;
 }
 
-// プレイヤー用スキル発動エントリーポイント
-function executePlayerCheatSkill(engine, senderId, preferredTargetIdx = -1) {
+// プレイヤー用スキル発動エントリーポイント（preferredTarget は相手の文字列ID または index）
+function executePlayerCheatSkill(engine, senderId, preferredTarget = -1) {
   if (!engine) return { success: false };
-  const hasEnemy = opponents.some(o => o.engine && !o.engine.gameOver);
+  const hasEnemy = (senderId !== 'player' && myEngine && !myEngine.gameOver && !isPracticeMode)
+                || opponents.some(o => o.id !== senderId && o.engine && !o.engine.gameOver);
   const candidates = ['erase_color', 'erase_rows'];
   if (hasEnemy) candidates.push('corrupt_enemy_row');
   if (hasGarbageInEngine(engine)) {
@@ -118,7 +119,7 @@ function executePlayerCheatSkill(engine, senderId, preferredTargetIdx = -1) {
       const res = execSkillPurifyGarbage(engine);
       if (res.success) return res;
     } else if (skill === 'corrupt_enemy_row') {
-      const res = execSkillCorruptEnemyRow(senderId, preferredTargetIdx);
+      const res = execSkillCorruptEnemyRow(senderId, preferredTarget);
       if (res.success) return res;
     } else if (skill === 'erase_color') {
       const res = execSkillEraseColor(engine, senderId);
@@ -220,12 +221,12 @@ function execSkillPurifyGarbage(engine) {
   return { success: true, text: 'SKILL: お邪魔浄化!' };
 }
 
-function execSkillCorruptEnemyRow(senderId, preferredTargetIdx = -1) {
+function execSkillCorruptEnemyRow(senderId, preferredTarget = -1) {
   const targets = [];
   const selfId = currentMode === 'online' ? myOnlineId : 'player';
 
   if (senderId !== selfId && myEngine && !myEngine.gameOver && !isPracticeMode) {
-    targets.push({ id: selfId, engine: myEngine, isRemote: false });
+    targets.push({ id: selfId, engine: myEngine, isRemote: false, index: -1 });
   }
   opponents.forEach(o => {
     if (o.id !== senderId && o.engine && !o.engine.gameOver) {
@@ -236,8 +237,10 @@ function execSkillCorruptEnemyRow(senderId, preferredTargetIdx = -1) {
   if (targets.length === 0) return { success: false };
 
   let target = null;
-  if (preferredTargetIdx !== -1) {
-    target = targets.find(t => t.index === preferredTargetIdx) || null;
+  if (typeof preferredTarget === 'string') {
+    target = targets.find(t => t.id === preferredTarget) || null;
+  } else if (typeof preferredTarget === 'number' && preferredTarget >= 0) {
+    target = targets.find(t => t.index === preferredTarget) || null;
   }
   if (!target) {
     target = targets[Math.floor(Math.random() * targets.length)];

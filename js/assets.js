@@ -1,4 +1,3 @@
-
 // ==========================================
 // キャラクター定義 & 2-3-3-2アイコン選択 & カスタム画像 & 描画補助
 // ==========================================
@@ -536,12 +535,16 @@ function drawBoardFgAddon(ctx, canvas, engine, renderer) {
     ctx.restore();
   }
 
-  // カスタムフレーム画像（最前面枠）
+  // カスタムフレーム画像
+  function applyCustomBoardFrame(theme) {
+  const frameEl = document.getElementById('my-custom-frame');
+  if (!frameEl) return;
   if (theme && theme.frameSrc) {
-    const frameImg = getCachedImage(theme.frameSrc);
-    if (frameImg) {
-      ctx.drawImage(frameImg, 0, 0, W, H);
-    }
+    frameEl.src = theme.frameSrc;
+    frameEl.style.display = 'block';
+  } else {
+    frameEl.removeAttribute('src');
+    frameEl.style.display = 'none';
   }
 }
 

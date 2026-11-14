@@ -22,7 +22,6 @@ function createRoom() {
 
   peer.on('open', () => {
     document.getElementById('main-menu-actions').style.display = 'none';
-    document.getElementById('online-menu').style.display = 'none';
     const waiting = document.getElementById('room-waiting');
     waiting.style.display = 'flex';
     document.getElementById('waiting-code-container').style.display = 'block';
@@ -56,7 +55,7 @@ function cancelRoom() {
   onlineConnections = [];
   if (peer) { peer.destroy(); peer = null; }
   document.getElementById('room-waiting').style.display = 'none';
-  document.getElementById('online-menu').style.display = 'flex';
+  document.getElementById('main-menu-actions').style.display = 'flex';
 }
 
 function joinRoom() {
@@ -74,7 +73,6 @@ function joinRoom() {
       onlineConnections = [c];
       bindConnEvents(c, false); 
       document.getElementById('main-menu-actions').style.display = 'none';
-      document.getElementById('online-menu').style.display = 'none';
       const waiting = document.getElementById('room-waiting');
       waiting.style.display = 'flex';
       document.getElementById('waiting-code-container').style.display = 'none';
@@ -122,6 +120,7 @@ function forceStartRoom() {
 
   const maxPlayers = parseInt(document.getElementById('online-max-players').value);
   const comLvl = parseInt(document.getElementById('online-com-level')?.value) || 3;
+  const comUseCheat = !!document.getElementById('online-cheat-toggle')?.checked;
   currentComLevel = comLvl;
   let players = [{ id: 'host', type: 'player', name: 'HOST' }];
   
@@ -133,30 +132,30 @@ function forceStartRoom() {
 
   const currentCount = players.length;
   for(let i = 0; i < maxPlayers - currentCount; i++) {
-    players.push({ id: `com_${i}`, type: 'com', level: comLvl, name: `COM ${i+1}` });
+    players.push({ id: `com_${i}`, type: 'com', level: comLvl, useCheat: comUseCheat, name: `COM ${i+1}` });
   }
 
   matchPlayersConfig = players;
   startPrepareMatchFromHost();
 }
 
-
 function startPrepareMatchFromHost() {
   boardReady = {};
   rematchReady = {};
   
-  const configBase = matchPlayersConfig.map(pl => ({ id: pl.id, type: pl.type, level: pl.level, name: pl.name }));
+  const configBase = matchPlayersConfig.map(pl => ({
+    id: pl.id, type: pl.type, level: pl.level, useCheat: !!pl.useCheat, name: pl.name
+  }));
   const matchId = Date.now();
   const sharedSeed = Math.floor(Math.random() * 0xFFFFFFFF);
-  const skillEnabled = !!document.getElementById('online-skill-toggle')?.checked;
   
   onlineConnections.forEach(c => {
     const cId = c._clientId;
-    const config = { players: configBase, myId: cId, matchId: matchId, seed: sharedSeed, skillEnabled };
+    const config = { players: configBase, myId: cId, matchId: matchId, seed: sharedSeed };
     if (c.open) c.send({ type: 'prepare_match', config });
   });
   
-  const hostConfig = { players: configBase, myId: 'host', matchId: matchId, seed: sharedSeed, skillEnabled };
+  const hostConfig = { players: configBase, myId: 'host', matchId: matchId, seed: sharedSeed };
   prepareMatchLocal(hostConfig);
 }
 
@@ -176,7 +175,7 @@ function prepareMatchLocal(config) {
   document.getElementById('game-area').style.display = 'flex';
 
   setupInput();
-  const resolvedCharId = resetGameLogicOnline(config);
+  resetGameLogicOnline(config);
   
   if (loopId) cancelAnimationFrame(loopId);
   lastTime = performance.now();
@@ -186,9 +185,10 @@ function prepareMatchLocal(config) {
   startSyncInterval();
 
   if (typeof sendMyAppearanceOnline === 'function') {
-    sendMyAppearanceOnline(resolvedCharId);
+    sendMyAppearanceOnline();
   }
 
+  // 盤面の描画と初期同期を完了させるための待機時間
   setTimeout(() => {
     if (myOnlineId === 'host') {
       handleBoardReady('host');
@@ -199,6 +199,7 @@ function prepareMatchLocal(config) {
     }
   }, 800);
 }
+
 function handleBoardReady(senderId) {
   if (myOnlineId !== 'host') return;
   boardReady[senderId] = true;
@@ -236,8 +237,6 @@ function resetGameLogicOnline(config) {
   isDeadInMatch = false;
   isPracticeMode = false;
   myTargetIndex = -1;
-  currentSkillEnabled = !!config.skillEnabled;
-  hidePlayerHeaderCutin();
   
   rematchReady = {};
   config.players.forEach(p => {
@@ -246,17 +245,9 @@ function resetGameLogicOnline(config) {
 
   const handicap = parseInt(document.getElementById('handicap-val').value) || 3;
   const sharedSeed = config.seed !== undefined ? config.seed : Math.floor(Math.random() * 0xFFFFFFFF);
-  const resolvedCharId = resolvePlayableCharId(selectedCharId);
 
   myRenderer = new BoardRenderer('my-canvas');
-  myRenderer.theme = buildThemeForCharacter(
-    resolvedCharId,
-    (resolvedCharId === 'custom' && CustomAssets.chara) ? CustomAssets.chara.dataUrl : null,
-    true,
-    resolvedCharId === 'custom' ? getPlayerDisplayName() : null
-  );
-  document.getElementById('player-label').innerText = myRenderer.theme.name;
-
+  myRenderer.theme = buildThemeForCharacter(selectedCharId, CustomAssets.chara ? CustomAssets.chara.dataUrl : null, true);
   myEngine = new PonEngine(
     (state) => { if (state === 'gameover') checkMatchEnd(); },
     (totalBlocks, isHard) => { distributeGarbageOnline(myOnlineId, totalBlocks, isHard); },
@@ -266,24 +257,26 @@ function resetGameLogicOnline(config) {
   );
   myEngine.onRowPushed = handleMyRowPushed;
   myEngine.garbageQueue = [];
-
-  // ① プレイヤー自身のヘッダーバナー表示 + ② 相手画面向けのカットイン送信
   myEngine.onChainEnd = (chain) => {
-    showPlayerHeaderCutin(myRenderer.theme, `${chain} CHAIN!!`, '#ffd700');
-    sendOnlineCutin(myOnlineId, `${chain} CHAIN!!`);
+    if (typeof showExternalCutin === 'function') {
+      showExternalCutin(myRenderer.theme, `${chain} CHAIN!!`, '#ffd700');
+    }
   };
   myEngine.onSimultaneousMatch = (size) => {
-    showPlayerHeaderCutin(myRenderer.theme, `${size}個消し！`, '#00d4ff');
-    sendOnlineCutin(myOnlineId, `${size}個消し！`);
+    if (typeof showExternalCutin === 'function') {
+      showExternalCutin(myRenderer.theme, `${size}個消し！`, '#00d4ff');
+    }
   };
-
-  initPlayerSkillState(currentSkillEnabled);
 
   const rivalsArea = document.getElementById('rivals-area');
   const rivalsTopArea = document.getElementById('rivals-top-area');
   rivalsArea.innerHTML = '';
   rivalsTopArea.innerHTML = '';
   opponents = [];
+
+  const CheatClass = (typeof cheat === 'function' && cheat)
+                  || (typeof Cheat === 'function' && Cheat)
+                  || (typeof CheatAI === 'function' && CheatAI);
 
   let index = 0;
   config.players.forEach(p => {
@@ -302,6 +295,7 @@ function resetGameLogicOnline(config) {
       <div class="garbage-preview-box">
         <span class="preview-label">予告</span>
         <div id="rival-garbage-preview-${index}" class="preview-list"></div>
+        <span id="rival-skill-badge-${index}" class="skill-count-badge" style="display:none;"></span>
       </div>
       <div class="board-header">
         <span style="color: ${nameColor};">${p.name} <span class="target-badge">🎯 TARGET</span></span>
@@ -330,22 +324,11 @@ function resetGameLogicOnline(config) {
         sharedSeed
       );
       rEngine.garbageQueue = [];
-      rEngine.onChainStep = (chain) => {
-        const txt = `${chain} CHAIN!!`;
-        rEngine.cutinMax = 50; rEngine.cutinTimer = 50; rEngine.cutinText = txt;
-        sendOnlineCutin(p.id, txt);
-      };
-      rEngine.onSimultaneousMatch = (size) => {
-        const txt = `${size}個消し！`;
-        rEngine.cutinMax = 50; rEngine.cutinTimer = 50; rEngine.cutinText = txt;
-        sendOnlineCutin(p.id, txt);
-      };
-      rEngine.onSkillActivated = (txt) => {
-        sendOnlineCutin(p.id, txt);
-      };
-
-      const useCheat = currentSkillEnabled && typeof cheat === 'function';
-      rAI = useCheat ? new cheat(rEngine, p.level || 2, p.id) : new ComAI(rEngine, p.level || 2, p.id);
+      if (p.useCheat && CheatClass) {
+        rAI = new CheatClass(rEngine, p.level || 2, p.id, 3);
+      } else {
+        rAI = new ComAI(rEngine, p.level || 2, p.id);
+      }
     } else {
       rEngine = new PonEngine(null, null, 3, false, sharedSeed);
       rEngine.garbageQueue = [];
@@ -355,15 +338,18 @@ function resetGameLogicOnline(config) {
 
     const fallbackCharId = p.type === 'com' ? CHARACTERS[(index + 1) % CHARACTERS.length].id : 'main00';
     rRenderer.theme = buildThemeForCharacter(p.charId || fallbackCharId, null, false);
-    opponents.push({
+    const oppObj = {
       id: p.id,
       name: p.name,
       type: p.type,
       engine: rEngine,
       renderer: rRenderer,
       ai: rAI,
+      syncedSkillRemaining: (p.type === 'com' && p.useCheat) ? 3 : undefined,
       index: index
-    });
+    };
+    opponents.push(oppObj);
+    if (typeof updateRivalSkillBadge === 'function') updateRivalSkillBadge(oppObj, index);
     index++;
   });
 
@@ -371,7 +357,6 @@ function resetGameLogicOnline(config) {
   opponents.forEach((opp, i) => updateGarbagePreview(opp.engine, `rival-garbage-preview-${i}`));
   updateTargetUI();
   adjustLayout();
-  return resolvedCharId;
 }
 
 function startSyncInterval() {
@@ -399,7 +384,8 @@ function startSyncInterval() {
           const comSyncData = {
             type: 'sync', senderId: opp.id, grid: opp.engine.grid, nextRow: opp.engine.nextRow, 
             riseOffset: opp.engine.riseOffset, score: opp.engine.score, 
-            garbageQueue: opp.engine.garbageQueue, gameOver: opp.engine.gameOver
+            garbageQueue: opp.engine.garbageQueue, gameOver: opp.engine.gameOver,
+            skillRemaining: (opp.ai && typeof opp.ai.getRemainingSkills === 'function') ? opp.ai.getRemainingSkills() : undefined
           };
           onlineConnections.forEach(c => { if (c && c.open) c.send(comSyncData); });
         }
@@ -469,7 +455,6 @@ function handleHostDisconnected() {
   }
 }
 
-
 function bindConnEvents(c, isHostMode) {
   c.on('data', (data) => {
     if (data.type === 'sync') {
@@ -480,6 +465,7 @@ function bindConnEvents(c, isHostMode) {
         if (data.riseOffset !== undefined) senderOpp.engine.riseOffset = data.riseOffset;
         if (data.score !== undefined) senderOpp.engine.score = data.score;
         if (data.garbageQueue) senderOpp.engine.garbageQueue = data.garbageQueue;
+        if (data.skillRemaining !== undefined) senderOpp.syncedSkillRemaining = data.skillRemaining;
 
         if (data.gameOver !== undefined) {
            const wasGameOver = senderOpp.engine.gameOver;
@@ -544,7 +530,7 @@ function bindConnEvents(c, isHostMode) {
     else if (data.type === 'appearance_sync') {
       const targetOpp = opponents.find(o => o.id === data.senderId);
       if (targetOpp && targetOpp.renderer) {
-        targetOpp.renderer.theme = buildThemeForCharacter(data.charId, data.customCharaUrl, false, data.customName);
+        targetOpp.renderer.theme = buildThemeForCharacter(data.charId, data.customCharaUrl, false);
         const nameEl = targetOpp.renderer.canvas.closest('.board-wrapper')?.querySelector('.board-header span');
         if (nameEl) {
           const chName = data.customName || getCharacterById(data.charId).name;
@@ -557,31 +543,9 @@ function bindConnEvents(c, isHostMode) {
         });
       }
     }
-    else if (data.type === 'cutin_sync') {
-      const senderOpp = opponents.find(o => o.id === data.senderId);
-      if (senderOpp && senderOpp.engine) {
-        senderOpp.engine.cutinMax = 50;
-        senderOpp.engine.cutinTimer = 50;
-        senderOpp.engine.cutinText = data.text;
-      }
-      if (isHostMode) {
-        onlineConnections.forEach(otherC => {
-          if (otherC !== c && otherC.open) otherC.send(data);
-        });
-      }
-    }
     else if (data.type === 'cheat_corrupt_row') {
       if (data.targetId === myOnlineId && myEngine && !myEngine.gameOver && !isPracticeMode) {
         if (typeof applyCorruptRowToEngine === 'function') applyCorruptRowToEngine(myEngine, data.row);
-      } else if (isHostMode) {
-        const comTarget = opponents.find(o => o.id === data.targetId && o.type === 'com');
-        if (comTarget && comTarget.engine && !comTarget.engine.gameOver) {
-          if (typeof applyCorruptRowToEngine === 'function') applyCorruptRowToEngine(comTarget.engine, data.row);
-        } else {
-          onlineConnections.forEach(otherC => {
-            if (otherC !== c && otherC.open) otherC.send(data);
-          });
-        }
       }
     }
     else if (data.type === 'leave') {
@@ -611,23 +575,14 @@ function bindConnEvents(c, isHostMode) {
   });
 }
 
-function sendMyAppearanceOnline(resolvedCharId = null) {
-  const cid = resolvedCharId || resolvePlayableCharId(selectedCharId);
+function sendMyAppearanceOnline() {
   const payload = {
     type: 'appearance_sync',
     senderId: myOnlineId,
-    charId: cid,
-    customCharaUrl: (cid === 'custom' && CustomAssets.chara) ? CustomAssets.chara.dataUrl : null,
-    customName: cid === 'custom' ? getPlayerDisplayName() : null
+    charId: selectedCharId,
+    customCharaUrl: (selectedCharId === 'custom' && CustomAssets.chara) ? CustomAssets.chara.dataUrl : null,
+    customName: selectedCharId === 'custom' ? 'マイキャラ' : null
   };
-  onlineConnections.forEach(c => {
-    if (c && c.open) c.send(payload);
-  });
-}
-
-function sendOnlineCutin(senderId, text) {
-  if (currentMode !== 'online') return;
-  const payload = { type: 'cutin_sync', senderId, text };
   onlineConnections.forEach(c => {
     if (c && c.open) c.send(payload);
   });

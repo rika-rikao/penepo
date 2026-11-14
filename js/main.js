@@ -707,13 +707,16 @@ function clearReadyGoTimers() {
   readyGoTimers.forEach(id => clearTimeout(id));
   readyGoTimers = [];
   const overlay = document.getElementById('ready-go-overlay');
+  const numEl = document.getElementById('ready-countdown-num');
   if (overlay) overlay.style.display = 'none';
+  if (numEl) numEl.style.display = 'none';
 }
 
 function showReadyGo() {
   clearReadyGoTimers();
   const overlay = document.getElementById('ready-go-overlay');
   const text = document.getElementById('ready-go-text');
+  const numEl = document.getElementById('ready-countdown-num');
   overlay.style.display = 'flex';
   
   text.innerText = 'READY?';
@@ -721,6 +724,25 @@ function showReadyGo() {
   text.style.opacity = '0';
   text.style.transform = 'scale(0.5)';
   text.style.color = '#ff007f';
+
+  const showCountdownStep = (numStr) => {
+    if (!numEl) return;
+    numEl.style.display = 'block';
+    numEl.style.transition = 'none';
+    numEl.style.opacity = '0';
+    numEl.style.transform = 'scale(1.5)';
+    numEl.innerText = numStr;
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        numEl.style.transition = 'all 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275)';
+        numEl.style.opacity = '1';
+        numEl.style.transform = 'scale(1)';
+      });
+    });
+    if (typeof SE !== 'undefined' && typeof SE.playCountdown === 'function') {
+      SE.playCountdown(numStr);
+    }
+  };
   
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
@@ -729,9 +751,23 @@ function showReadyGo() {
       text.style.transform = 'scale(1)';
     });
   });
+  showCountdownStep('3');
 
   const t1 = setTimeout(() => {
     if (matchState === 'gameover' || document.getElementById('game-area').style.display === 'none') return;
+    showCountdownStep('2');
+  }, 1000);
+  readyGoTimers.push(t1);
+
+  const t2 = setTimeout(() => {
+    if (matchState === 'gameover' || document.getElementById('game-area').style.display === 'none') return;
+    showCountdownStep('1');
+  }, 2000);
+  readyGoTimers.push(t2);
+
+  const t3 = setTimeout(() => {
+    if (matchState === 'gameover' || document.getElementById('game-area').style.display === 'none') return;
+    if (numEl) numEl.style.display = 'none';
     text.style.transition = 'none';
     text.style.opacity = '0';
     text.style.transform = 'scale(1.5)';
@@ -746,22 +782,25 @@ function showReadyGo() {
       });
     });
 
+    if (typeof SE !== 'undefined' && typeof SE.playCountdown === 'function') {
+      SE.playCountdown('go');
+    }
     matchState = 'playing';
     resumeBgm();
 
-    const t2 = setTimeout(() => {
+    const t4 = setTimeout(() => {
       text.style.transition = 'all 0.3s ease-in';
       text.style.opacity = '0';
       text.style.transform = 'scale(2)';
-      const t3 = setTimeout(() => {
+      const t5 = setTimeout(() => {
         overlay.style.display = 'none';
       }, 300);
-      readyGoTimers.push(t3);
+      readyGoTimers.push(t5);
     }, 800);
-    readyGoTimers.push(t2);
+    readyGoTimers.push(t4);
 
-  }, 1500);
-  readyGoTimers.push(t1);
+  }, 3000);
+  readyGoTimers.push(t3);
 }
 
 function checkPanic() {
@@ -954,7 +993,6 @@ function updateRivalSkillBadge(opp, index) {
   const badge = document.getElementById(`rival-skill-badge-${index}`);
   if (!badge || !opp) return;
 
-  // ローカル対戦の人間プレイヤーは下部のスキルバーで表示するため二重表示しない
   if (opp.type === 'local_human') {
     badge.style.display = 'none';
     return;
@@ -1105,6 +1143,9 @@ function resetGameLogic() {
     true,
     resolvedCharId === 'custom' ? getPlayerDisplayName() : null
   );
+  if (typeof applyCustomBoardFrame === 'function') {
+    applyCustomBoardFrame(myRenderer.theme);
+  }
   document.getElementById('player-label').innerText = currentMode === 'local'
     ? `1P: ${myRenderer.theme.name}`
     : myRenderer.theme.name;
@@ -1324,6 +1365,7 @@ function exitGame() {
   stopAllEngines();
   stopBgm();
   hidePlayerHeaderCutin();
+  if (typeof applyCustomBoardFrame === 'function') applyCustomBoardFrame(null);
 
   document.body.classList.remove('local-force-landscape');
   try { screen.orientation?.unlock?.(); } catch (e) {}
@@ -1593,7 +1635,6 @@ function updateGarbagePreview(engine, containerId) {
   const container = document.getElementById(containerId);
   if (!container || !engine) return;
 
-  // 連続していなくても同じ種類(w, h, isHard)のお邪魔はすべて1つのアイコン＋×Nバッジに圧縮
   const compressed = [];
   const keyMap = new Map();
   engine.garbageQueue.forEach(g => {

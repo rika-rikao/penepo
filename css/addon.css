@@ -1,5 +1,5 @@
 /* ==========================================
-   追加UI・ストーリー・カスタムスキン・バストアップ選択用CSS
+   追加UI・ストーリー・カスタムスキン・バストアップ選択・強制横画面用CSS
    ========================================== */
 .char-select-bar {
   font-size: 0.85rem;
@@ -11,12 +11,50 @@
   flex-wrap: wrap;
 }
 
+/* 各メニュー左上の固定「戻る」ボタン */
+.menu-back-top-btn {
+  position: fixed !important;
+  top: max(12px, env(safe-area-inset-top)) !important;
+  left: 12px !important;
+  z-index: 140 !important;
+  min-width: auto !important;
+  width: auto !important;
+  padding: 7px 14px !important;
+  font-size: 0.88rem !important;
+  background: #444 !important;
+  border-color: #888 !important;
+  border-radius: 20px !important;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.6);
+}
+#story-menu > h2,
+#single-menu > h2,
+#com-menu > h2,
+#local-menu > h2,
+#online-menu > h2,
+#ranking-menu > h2 {
+  margin-top: 8px;
+}
+
+.skill-rule-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
 .skill-rule-box {
   background: rgba(0, 0, 0, 0.35);
-  padding: 6px 14px;
+  padding: 6px 12px;
   border-radius: 10px;
   border: 1px solid rgba(255, 0, 127, 0.45);
-  font-size: 0.84rem;
+  font-size: 0.82rem;
+}
+.skill-select-box {
+  width: auto !important;
+  padding: 5px 8px !important;
+  font-size: 0.8rem !important;
+  border-radius: 10px !important;
+  border-color: #ff007f !important;
 }
 
 /* 2・3・3・2 バストアップアイコン選択GUI */
@@ -233,6 +271,86 @@
   white-space: pre-line;
 }
 
+/* ローカル対戦用メニュー・盤面スキルバー・縦向き時の強制横画面UI */
+.local-player-tabs {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  width: 100%;
+}
+.local-player-tabs .small-btn.active {
+  background: #e94560;
+  border-color: #ffd700;
+  font-weight: bold;
+}
+.local-slot-config {
+  width: 100%;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 145, 0, 0.45);
+  border-radius: 10px;
+  padding: 8px 10px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 0.8rem;
+}
+.local-skill-bar {
+  width: 100%;
+  height: 22px;
+  margin-top: 3px;
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.9);
+  border: 1px solid #ff007f;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.72rem;
+  font-weight: bold;
+  color: #fff;
+}
+.local-skill-bar.ready {
+  background: linear-gradient(90deg, #ff007f, #ff8c00);
+  border-color: #ffd700;
+  box-shadow: 0 0 8px rgba(255, 215, 0, 0.7);
+}
+.local-skill-bar-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: rgba(255, 0, 127, 0.45);
+  transition: width 0.2s;
+  pointer-events: none;
+}
+.local-skill-bar-text {
+  position: relative;
+  z-index: 2;
+}
+
+body.local-force-landscape #game-area,
+body.local-force-landscape #ready-go-overlay,
+body.local-force-landscape #result-overlay {
+  position: fixed !important;
+  inset: auto !important;
+  top: 50% !important;
+  left: 50% !important;
+  width: 100vh !important;
+  height: 100vw !important;
+  transform: translate(-50%, -50%) rotate(90deg) !important;
+  transform-origin: center center !important;
+}
+body.local-force-landscape #toast {
+  top: 50%;
+  left: auto;
+  right: 16px;
+  transform: translateY(-50%) rotate(90deg);
+}
+
 /* カスタム画像設定リスト */
 .custom-asset-row {
   display: flex;
@@ -276,7 +394,7 @@
   flex-direction: column;
   gap: 6px;
   width: 100%;
-  max-height: 36vh;
+  max-height: 34vh;
   overflow-y: auto;
   padding: 4px;
 }
@@ -441,66 +559,5 @@
   .story-dialog-box { min-height: 92px; padding: 10px 14px 18px 14px; margin-bottom: 8px; }
   .story-text { font-size: 0.88rem; line-height: 1.4; }
   #story-menu { max-width: 540px; gap: 6px; }
-  .story-stage-list { max-height: 30vh; }
-}
-
-/* ローカル対戦用メニュー・盤面スキルバー */
-.local-player-tabs {
-  display: flex;
-  justify-content: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  width: 100%;
-}
-.local-player-tabs .small-btn.active {
-  background: #e94560;
-  border-color: #ffd700;
-  font-weight: bold;
-}
-.local-slot-config {
-  width: 100%;
-  background: rgba(0, 0, 0, 0.35);
-  border: 1px solid rgba(255, 145, 0, 0.45);
-  border-radius: 10px;
-  padding: 8px 10px;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  font-size: 0.8rem;
-}
-.local-skill-bar {
-  width: 100%;
-  height: 22px;
-  margin-top: 3px;
-  border-radius: 6px;
-  background: rgba(15, 23, 42, 0.9);
-  border: 1px solid #ff007f;
-  position: relative;
-  overflow: hidden;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 0.72rem;
-  font-weight: bold;
-  color: #fff;
-}
-.local-skill-bar.ready {
-  background: linear-gradient(90deg, #ff007f, #ff8c00);
-  border-color: #ffd700;
-  box-shadow: 0 0 8px rgba(255, 215, 0, 0.7);
-}
-.local-skill-bar-fill {
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  background: rgba(255, 0, 127, 0.45);
-  transition: width 0.2s;
-  pointer-events: none;
-}
-.local-skill-bar-text {
-  position: relative;
-  z-index: 2;
+  .story-stage-list { max-height: 28vh; }
 }

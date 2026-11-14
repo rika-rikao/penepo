@@ -118,7 +118,7 @@ class PonEngine {
     }
 
     if (this.grid[r][c] && r+1 < this.rows && this.grid[r+1][c] === null) { this.grid[r][c].state = 'hover'; this.grid[r][c].timer = 14; }
-    if (this.grid[r][c+1] && r+1 < this.rows && this.grid[r][c+1] === null) { this.grid[r][c+1].state = 'hover'; this.grid[r][c+1].timer = 14; }
+    if (this.grid[r][c+1] && r+1 < this.rows && this.grid[r+1][c+1] === null) { this.grid[r][c+1].state = 'hover'; this.grid[r][c+1].timer = 14; }
 
     this.checkMatches();
     return true;
@@ -164,67 +164,13 @@ class PonEngine {
     }
   }
 
-  reconcileGarbageGroups() {
-    const visited = Array.from({ length: this.rows }, () => Array(this.cols).fill(false));
-    const seenGroupIds = new Set();
-
-    for (let r = 0; r < this.rows; r++) {
-      for (let c = 0; c < this.cols; c++) {
-        const b = this.grid[r][c];
-        if (!b || b.type !== 'garbage' || visited[r][c]) continue;
-
-        const origGid = b.groupId;
-        const queue = [[r, c]];
-        const component = [];
-        visited[r][c] = true;
-
-        while (queue.length > 0) {
-          const [cr, cc] = queue.shift();
-          component.push(this.grid[cr][cc]);
-          [[cr-1,cc],[cr+1,cc],[cr,cc-1],[cr,cc+1]].forEach(([nr, nc]) => {
-            if (nr >= 0 && nr < this.rows && nc >= 0 && nc < this.cols && !visited[nr][nc]) {
-              const nb = this.grid[nr][nc];
-              if (nb && nb.type === 'garbage' && nb.groupId === origGid) {
-                visited[nr][nc] = true;
-                queue.push([nr, nc]);
-              }
-            }
-          });
-        }
-
-        if (!origGid || seenGroupIds.has(origGid)) {
-          const newGid = Date.now() + Math.random();
-          component.forEach(cb => {
-            cb.groupId = newGid;
-            if (cb.state === 'fall') {
-              cb.state = 'hover';
-              cb.timer = 12;
-              cb.fallY = 0;
-            }
-          });
-          seenGroupIds.add(newGid);
-        } else {
-          seenGroupIds.add(origGid);
-        }
-      }
-    }
-  }
-
   transformGarbageNear(r, c) {
-    const isEligibleGarbage = (b) =>
-      b && b.type === 'garbage' && b.groupId &&
-      b.state !== 'match' &&
-      b.state !== 'transforming' &&
-      b.state !== 'transforming_wait' &&
-      b.state !== 'transformed_wait' &&
-      !b.transformGroupId;
-
     let triggeredGroupIds = new Set();
     
     [[r-1,c],[r+1,c],[r,c-1],[r,c+1]].forEach(([nr, nc]) => {
       if (nr >= 0 && nr < this.rows && nc >= 0 && nc < this.cols) {
         const b = this.grid[nr][nc];
-        if (isEligibleGarbage(b)) triggeredGroupIds.add(b.groupId);
+        if (b && b.type === 'garbage' && b.groupId) triggeredGroupIds.add(b.groupId);
       }
     });
 
@@ -235,11 +181,11 @@ class PonEngine {
         for (let rr = 0; rr < this.rows; rr++) {
           for (let cc = 0; cc < this.cols; cc++) {
             const b = this.grid[rr][cc];
-            if (isEligibleGarbage(b) && triggeredGroupIds.has(b.groupId)) {
+            if (b && b.type === 'garbage' && triggeredGroupIds.has(b.groupId)) {
               [[rr-1,cc],[rr+1,cc],[rr,cc-1],[rr,cc+1]].forEach(([nr, nc]) => {
                 if (nr >= 0 && nr < this.rows && nc >= 0 && nc < this.cols) {
                   const adjB = this.grid[nr][nc];
-                  if (isEligibleGarbage(adjB) && adjB.groupId !== b.groupId) {
+                  if (adjB && adjB.type === 'garbage' && adjB.groupId && adjB.groupId !== b.groupId) {
                     if (!triggeredGroupIds.has(adjB.groupId)) {
                       triggeredGroupIds.add(adjB.groupId);
                       newlyAdded = true;
@@ -256,7 +202,7 @@ class PonEngine {
       for (let rr = 0; rr < this.rows; rr++) {
         for (let cc = 0; cc < this.cols; cc++) {
           const b = this.grid[rr][cc];
-          if (isEligibleGarbage(b) && triggeredGroupIds.has(b.groupId)) {
+          if (b && b.type === 'garbage' && triggeredGroupIds.has(b.groupId)) {
             cells.push({r: rr, c: cc, b: b});
           }
         }
@@ -289,7 +235,6 @@ class PonEngine {
         let isGroupBottom = (item.r === groupMaxR[item.b.groupId]);
         
         item.b.state = 'transforming';
-        item.b.fallY = 0;
         item.b.transformDelay = Math.round(idx * 8 * 1.15);
         item.b.isTarget = isGroupBottom;
         item.b.transformToNormal = isGroupBottom && !item.b.isHard;
@@ -339,7 +284,7 @@ class PonEngine {
       }
     }
 
-    transformGroups.forEach((blocks) => {
+    transformGroups.forEach((blocks, tGroupId) => {
       const hasTransforming = blocks.some(b => b.state === 'transforming');
       if (!hasTransforming) {
         blocks.forEach(b => {
@@ -347,17 +292,12 @@ class PonEngine {
             if (typeof b.type === 'number') {
               b.state = 'hover';
               b.timer = 17;
-              b.fallY = 0;
               delete b.groupId; 
             } else {
               b.state = 'hover'; 
-              b.timer = 17;
-              b.fallY = 0;
+              b.timer = 12; 
             }
             delete b.transformGroupId;
-            delete b.transformDelay;
-            delete b.isTarget;
-            delete b.transformToNormal;
           }
         });
       }
@@ -451,28 +391,18 @@ class PonEngine {
       }
     }
 
-    let needGarbageReconcile = false;
-    let playedGarbageVanishSE = false;
-
     for (let r = 0; r < this.rows; r++) {
       for (let c = 0; c < this.cols; c++) {
         const b = this.grid[r][c];
         if (b && b.state === 'match') {
           isMoving = true; b.timer--;
           if (b.timer <= 0) {
-            const isVanishGarbage = !!b.vanishGarbage;
-            if (!isVanishGarbage) {
-              this.transformGarbageNear(r, c);
-            } else {
-              needGarbageReconcile = true;
-              playedGarbageVanishSE = true;
-            }
+            this.transformGarbageNear(r, c);
             this.grid[r][c] = null;
             
             for (let ur = r - 1; ur >= 0; ur--) {
               const ub = this.grid[ur][c];
-              if (ub && ub.type !== 'garbage' && ub.state !== 'match'
-                  && ub.state !== 'transforming' && ub.state !== 'transforming_wait' && ub.state !== 'transformed_wait') {
+              if (ub && ub.type !== 'garbage' && ub.state !== 'match') {
                 ub.state = 'hover';
                 ub.timer = 17;
                 ub.chainEligible = true;
@@ -486,9 +416,6 @@ class PonEngine {
       }
     }
 
-    if (playedGarbageVanishSE) SE.play('garbageErase');
-    if (needGarbageReconcile) this.reconcileGarbageGroups();
-
     const garbageGroups = new Map();
     for (let r = 0; r < this.rows; r++) {
       for (let c = 0; c < this.cols; c++) {
@@ -501,13 +428,12 @@ class PonEngine {
     }
 
     garbageGroups.forEach((cells, groupId) => {
-      const hasBusy = cells.some(item => 
-        item.block.state === 'match' ||
+      const hasTransforming = cells.some(item => 
         item.block.state === 'transforming' || 
         item.block.state === 'transforming_wait' || 
         item.block.state === 'transformed_wait'
       );
-      if (hasBusy) return;
+      if (hasTransforming) return;
 
       const leader = cells[0].block;
 
@@ -603,26 +529,12 @@ class PonEngine {
           if (below === null) canFallOrFloating = true;
         }
 
-        const bottomBlock = this.grid[r][c];
-        if (canFallOrFloating || bottomBlock.state === 'hover' || bottomBlock.state === 'fall') {
+        if (canFallOrFloating || this.grid[r][c].state === 'hover' || this.grid[r][c].state === 'fall') {
           let stack = [];
           let cur = r;
-          const baseState = (bottomBlock.state === 'normal') ? 'hover' : bottomBlock.state;
-          const effectiveTimer = (bottomBlock.state === 'normal') ? 14 : bottomBlock.timer;
-
-          while (cur >= 0) {
-            const cb = this.grid[cur][c];
-            if (!cb || cb.type === 'garbage' || cb.state === 'match'
-                || cb.state === 'transforming' || cb.state === 'transforming_wait' || cb.state === 'transformed_wait') {
-              break;
-            }
-            if (baseState === 'fall') {
-              if (cb.state !== 'fall') break;
-            } else {
-              if (cb.state === 'fall') break;
-              if (cb.state === 'hover' && cb.timer > effectiveTimer) break;
-            }
-            stack.push({ r: cur, block: cb });
+          while (cur >= 0 && this.grid[cur][c] && this.grid[cur][c].type !== 'garbage' && this.grid[cur][c].state !== 'match'
+                && this.grid[cur][c].state !== 'transforming' && this.grid[cur][c].state !== 'transforming_wait' && this.grid[cur][c].state !== 'transformed_wait') {
+            stack.push({ r: cur, block: this.grid[cur][c] });
             cur--;
           }
 
@@ -684,7 +596,7 @@ class PonEngine {
     if (needsMatchCheck) this.checkMatches();
   }
 
-  checkMatches() {
+ checkMatches() {
     let matchedPositions = new Set();
     for (let r = 0; r < this.rows; r++) {
       for (let c = 0; c < this.cols - 2; c++) {
@@ -795,6 +707,9 @@ class PonEngine {
       if (totalBlocks > 0 && this.onSendGarbage) {
         this.onSendGarbage(totalBlocks, hasSpecial);
       }
+      if (this.chain >= 2 && this.onChainStep) {
+        this.onChainStep(this.chain);
+      }
       if (matchedPositions.size >= 4 && this.onSimultaneousMatch) {
         this.onSimultaneousMatch(matchedPositions.size);
       }
@@ -836,12 +751,12 @@ class BoardRenderer {
     this.ctx = this.canvas.getContext('2d');
     this.canvas.width = COLS * CELL_PX;
     this.canvas.height = ROWS * CELL_PX + CELL_PX * 0.75; 
-    this.theme = null;
+    this.theme = null; // ★追加
   }
   draw(engine) {
     const ctx = this.ctx;
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-    if (typeof drawBoardBgAddon === 'function') drawBoardBgAddon(ctx, this.canvas, engine, this);
+    if (typeof drawBoardBgAddon === 'function') drawBoardBgAddon(ctx, this.canvas, engine, this); // ★追加
     
     ctx.save();
     if (engine.shakeTimer > 0) {
@@ -888,8 +803,7 @@ class BoardRenderer {
           const y = r * CELL_PX - offsetY + (b.fallY * CELL_PX);
 
           if (b.type === 'garbage') {
-            const isGarbageFlashing = (b.state === 'match' && Math.floor(b.timer / 4) % 2 === 0);
-            ctx.fillStyle = isGarbageFlashing ? '#ffffff' : (b.isHard ? '#a8b2bd' : '#5c636a'); 
+            ctx.fillStyle = b.isHard ? '#a8b2bd' : '#5c636a'; 
             ctx.fillRect(x, y, CELL_PX, CELL_PX);
             ctx.strokeStyle = '#dee2e6'; ctx.lineWidth = 2;
             
@@ -937,6 +851,7 @@ class BoardRenderer {
               
               const isHighestCol = isEnginePanic && highestCols.has(c);
               const time = Date.now();
+              // 通常状態(isHighestColがfalse)の時はバウンスを0にし、ピンチ時は早く少し大きく揺らす
               const bounceY = isHighestCol ? Math.sin(time / 60 + c) * 3 : 0;
 
               ctx.fillStyle = isFlashing ? '#6c757d' : conf.bg;
@@ -1005,7 +920,7 @@ class BoardRenderer {
       }
     }
 
-    if (typeof drawBoardFgAddon === 'function') drawBoardFgAddon(ctx, this.canvas, engine, this);
+    if (typeof drawBoardFgAddon === 'function') drawBoardFgAddon(ctx, this.canvas, engine, this); // ★追加
 
     if (engine.gameOver && !engine.isPractice) {
       ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);

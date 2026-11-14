@@ -11,6 +11,67 @@
   flex-wrap: wrap;
 }
 
+/* 盤面幅固定＆予告・ヘッダー溢れ防止 */
+.board-wrapper {
+  width: 224px;
+  max-width: 224px;
+  flex-shrink: 0;
+}
+.rival-board {
+  width: 228px;
+  max-width: 228px;
+}
+.garbage-preview-box {
+  width: 224px;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+.preview-label {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.preview-list {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+.board-header {
+  width: 224px;
+  max-width: 100%;
+  gap: 4px;
+  overflow: hidden;
+}
+.board-header > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.board-header > span:last-of-type {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* 対戦相手スキル残数バッジ */
+.skill-count-badge {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 0.68rem;
+  font-weight: 900;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #3b0a45, #7b1fa2);
+  border: 1px solid #ff007f;
+  color: #ffd700;
+  white-space: nowrap;
+  line-height: 1.2;
+}
+.skill-count-badge.empty {
+  background: #27273a;
+  border-color: #555;
+  color: #999;
+}
+
 /* 各メニュー左上の固定「戻る」ボタン */
 .menu-back-top-btn {
   position: fixed !important;

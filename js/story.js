@@ -1,6 +1,13 @@
 // ==========================================
-// ストーリーモード（全7話：味方集め3戦＋敵キャラ4戦）
+// ストーリーモード（全7話：難易度4種 & 最後の敵2人は適切スキル固定）
 // ==========================================
+const STORY_DIFFICULTIES = {
+  easy:   { label: 'やさしい',   levels: [1, 2, 4, 6, 8, 12, 16],     allUseCheat: false },
+  normal: { label: 'ふつう',     levels: [3, 7, 12, 17, 23, 28, 36],  allUseCheat: false },
+  hard:   { label: 'むずかしい', levels: [15, 22, 30, 38, 46, 55, 65], allUseCheat: false },
+  unfair: { label: 'りふじん',   levels: [40, 52, 64, 74, 84, 92, 99], allUseCheat: true  }
+};
+
 const STORY_STAGES = [
   {
     id: 1,
@@ -8,6 +15,7 @@ const STORY_STAGES = [
     enemyId: 'sub01',
     enemyLevel: 3,
     useCheat: false,
+    skillType: 'single',
     intro: [
       { side: 'left',  charId: 'main00', text: '大変！パズルワールドの空に不気味な渦が出現してる！' },
       { side: 'right', charId: 'sub01',  text: 'あわわっ、フレアさん！お邪魔ブロックが勝手に降ってきそうです〜！' },
@@ -28,6 +36,7 @@ const STORY_STAGES = [
     enemyId: 'sub02',
     enemyLevel: 7,
     useCheat: false,
+    skillType: 'single',
     intro: [
       { side: 'right', charId: 'sub02',  text: 'やっほーフレア！こんな慌ただしい時にどこ行くのさ？' },
       { side: 'left',  charId: 'main00', text: 'シルル！魔王城のほうから嫌な気配がするんだ。仲間になってくれない？' },
@@ -47,6 +56,7 @@ const STORY_STAGES = [
     enemyId: 'sub03',
     enemyLevel: 12,
     useCheat: false,
+    skillType: 'single',
     intro: [
       { side: 'right', charId: 'sub03',  text: 'おっと、そこから先は通行料……じゃなくて実力テストだぜ！' },
       { side: 'left',  charId: 'main00', text: 'ブープルまでどうしたの？みんなを助けに行くところなんだよ。' },
@@ -66,6 +76,7 @@ const STORY_STAGES = [
     enemyId: 'enemy01',
     enemyLevel: 17,
     useCheat: false,
+    skillType: 'single',
     intro: [
       { side: 'left',  charId: 'sub02',  text: 'うわっ、ここから空気がひんやりしてる……何か出たよ！' },
       { side: 'right', charId: 'enemy01',text: 'ヒヒヒ……生きたままここを通すわけにはいかぬなぁ……。' },
@@ -85,6 +96,7 @@ const STORY_STAGES = [
     enemyId: 'enemy02',
     enemyLevel: 23,
     useCheat: false,
+    skillType: 'single',
     intro: [
       { side: 'right', charId: 'enemy02',text: 'ゴゴゴ……魔王城ノ門ハ、コノ「コーレム」ガ通サヌ……！' },
       { side: 'left',  charId: 'sub03',  text: 'でっか！こいつの硬いガードをぶち抜くには大連鎖が必要だぜ！' },
@@ -104,6 +116,7 @@ const STORY_STAGES = [
     enemyId: 'enemy03',
     enemyLevel: 28,
     useCheat: true,
+    skillType: 'smart_all', // 最後の敵2人は固定で適切に全スキルから選ぶタイプ
     intro: [
       { side: 'right', charId: 'enemy03',text: 'ケケケッ！よくここまで来たね。でもオレ様「デビビ」は正攻法じゃ戦わないよ？' },
       { side: 'left',  charId: 'main00', text: 'どういうこと！？卑怯な手を使うつもり？' },
@@ -123,6 +136,7 @@ const STORY_STAGES = [
     enemyId: 'enemy04',
     enemyLevel: 36,
     useCheat: true,
+    skillType: 'smart_all', // 最後の敵2人は固定で適切に全スキルから選ぶタイプ
     intro: [
       { side: 'right', charId: 'enemy04',text: 'よくぞ辿り着いた、フレア。我が名は魔王「マーオ」。世界のパズルを混沌に染め上げる者だ！' },
       { side: 'left',  charId: 'main00', text: 'しずく、シルル、ブープル……みんなの想いと一緒に、あんたの野望はここで止める！' },
@@ -142,10 +156,36 @@ const STORY_STAGES = [
 
 const StoryManager = {
   clearedStage: parseInt(localStorage.getItem('pdw_story_cleared') || '0', 10),
+  difficulty: localStorage.getItem('pdw_story_diff') || 'normal',
   activeStage: null,
+  activeStageConfig: null,
   currentLines: [],
   lineIndex: 0,
   phase: 'idle',
+
+  getDifficultyKey() {
+    return STORY_DIFFICULTIES[this.difficulty] ? this.difficulty : 'normal';
+  },
+
+  getClearedForDifficulty(diffKey) {
+    return parseInt(localStorage.getItem(`pdw_story_cleared_${diffKey}`) || '0', 10);
+  },
+
+  onDifficultyChange(val) {
+    this.difficulty = STORY_DIFFICULTIES[val] ? val : 'normal';
+    localStorage.setItem('pdw_story_diff', this.difficulty);
+    this.renderStageList();
+  },
+
+  getStageConfig(stage) {
+    const diffKey = this.getDifficultyKey();
+    const diff = STORY_DIFFICULTIES[diffKey];
+    const idx = Math.max(0, stage.id - 1);
+    const level = diff.levels[idx] !== undefined ? diff.levels[idx] : stage.enemyLevel;
+    const useCheat = diff.allUseCheat ? true : !!stage.useCheat;
+    const skillType = stage.skillType || 'single';
+    return { level, useCheat, skillType, diffKey };
+  },
 
   getSelectedCharId() {
     return (storySelectedCharId === 'custom' && CustomAssets.chara) ? 'custom' : 'main00';
@@ -164,12 +204,20 @@ const StoryManager = {
       this.clearedStage = stageId;
       localStorage.setItem('pdw_story_cleared', String(stageId));
     }
+    const diffKey = this.getDifficultyKey();
+    const curDiffCleared = this.getClearedForDifficulty(diffKey);
+    if (stageId > curDiffCleared) {
+      localStorage.setItem(`pdw_story_cleared_${diffKey}`, String(stageId));
+    }
   },
 
   openMenu() {
     document.getElementById('main-menu-actions').style.display = 'none';
     const menu = document.getElementById('story-menu');
     menu.style.display = 'flex';
+    const diffSel = document.getElementById('story-difficulty');
+    if (diffSel) diffSel.value = this.getDifficultyKey();
+    if (typeof syncPlayerSkillSelects === 'function') syncPlayerSkillSelects();
     if (typeof renderCharPicker === 'function') {
       renderCharPicker('story-char-picker', { storyOnly: true });
     }
@@ -180,21 +228,36 @@ const StoryManager = {
     const list = document.getElementById('story-stage-list');
     if (!list) return;
     list.innerHTML = '';
+    const diffKey = this.getDifficultyKey();
+    const diffCleared = this.getClearedForDifficulty(diffKey);
+
     STORY_STAGES.forEach(st => {
       const unlocked = st.id <= this.clearedStage + 1;
-      const isCleared = st.id <= this.clearedStage;
+      const isClearedThisDiff = st.id <= diffCleared;
+      const isClearedAny = st.id <= this.clearedStage;
       const enemy = getCharacterById(st.enemyId);
+      const cfg = this.getStageConfig(st);
 
       const btn = document.createElement('button');
-      btn.className = 'story-stage-btn' + (isCleared ? ' cleared' : '') + (!unlocked ? ' locked' : '');
+      btn.className = 'story-stage-btn' + (isClearedThisDiff ? ' cleared' : '') + (!unlocked ? ' locked' : '');
       btn.disabled = !unlocked;
       btn.onclick = () => this.startStage(st.id);
 
-      const badge = isCleared ? 'CLEAR!' : (unlocked ? (st.useCheat ? 'NEW / SKILL' : 'NEW!') : 'LOCKED');
+      let badge = 'LOCKED';
+      if (unlocked) {
+        if (isClearedThisDiff) badge = 'CLEAR!';
+        else if (isClearedAny) badge = cfg.useCheat ? 'SKILL' : 'OPEN';
+        else badge = cfg.useCheat ? 'NEW / SKILL' : 'NEW!';
+      }
+
+      const skillNote = cfg.useCheat
+        ? (cfg.skillType === 'smart_all' ? ' / Skill(全)' : ' / Skill(1種)')
+        : '';
+
       btn.innerHTML = `
         <div style="flex:1;">
           <div style="font-weight:bold; color:${enemy.color};">${st.title}</div>
-          <div style="font-size:0.75rem; color:#aaa;">VS ${enemy.name} (Lv.${st.enemyLevel}${st.useCheat ? ' / Skill' : ''})</div>
+          <div style="font-size:0.75rem; color:#aaa;">VS ${enemy.name} (Lv.${cfg.level}${skillNote})</div>
         </div>
         <span class="story-badge">${badge}</span>
       `;
@@ -206,6 +269,7 @@ const StoryManager = {
     const stage = STORY_STAGES.find(s => s.id === stageId);
     if (!stage) return;
     this.activeStage = stage;
+    this.activeStageConfig = this.getStageConfig(stage);
     this.startDialogue('intro', stage.intro);
   },
 
@@ -296,7 +360,8 @@ const StoryManager = {
   finishDialogue() {
     document.getElementById('story-overlay').style.display = 'none';
     if (this.phase === 'intro') {
-      startGame('story', this.activeStage.enemyLevel, 2, this.isPlayerSkillEnabled());
+      const cfg = this.activeStageConfig || this.getStageConfig(this.activeStage);
+      startGame('story', cfg.level, 2, this.isPlayerSkillEnabled());
     } else if (this.phase === 'win') {
       this.saveProgress(this.activeStage.id);
       if (this.activeStage.id >= STORY_STAGES.length) {

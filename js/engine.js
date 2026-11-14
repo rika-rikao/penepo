@@ -21,6 +21,7 @@ class PonEngine {
     this.nextRow = []; 
     this.riseOffset = 0; 
     this.isPractice = false;
+    this.nextGroupId = 1;
     
     this.baseRiseSpeed = 0.0012 - (handicap - 3) * 0.0003;
     if (this.baseRiseSpeed < 0.0003) this.baseRiseSpeed = 0.0003;
@@ -44,6 +45,10 @@ class PonEngine {
     this.isRisingManualPad = false;
 
     this.initGrid(5);
+  }
+
+  allocGroupId() {
+    return this.nextGroupId++;
   }
 
   initGrid(initRows) {
@@ -154,7 +159,7 @@ class PonEngine {
   }
 
   spawnGarbage(g) {
-    const groupId = Date.now() + Math.random();
+    const groupId = this.allocGroupId();
     const startCol = g.startCol;
     for (let r = 0; r < g.h; r++) {
       for (let c = 0; c < g.w; c++) {
@@ -165,12 +170,25 @@ class PonEngine {
   }
 
   transformGarbageNear(r, c) {
+    // すでに変換中・落下中のグループを誤って再取得しないよう、全セルが 'normal' のグループだけを収集
+    const invalidGroupIds = new Set();
+    for (let rr = 0; rr < this.rows; rr++) {
+      for (let cc = 0; cc < this.cols; cc++) {
+        const b = this.grid[rr][cc];
+        if (b && b.type === 'garbage' && b.groupId && b.state !== 'normal') {
+          invalidGroupIds.add(b.groupId);
+        }
+      }
+    }
+
     let triggeredGroupIds = new Set();
     
     [[r-1,c],[r+1,c],[r,c-1],[r,c+1]].forEach(([nr, nc]) => {
       if (nr >= 0 && nr < this.rows && nc >= 0 && nc < this.cols) {
         const b = this.grid[nr][nc];
-        if (b && b.type === 'garbage' && b.groupId) triggeredGroupIds.add(b.groupId);
+        if (b && b.type === 'garbage' && b.state === 'normal' && b.groupId && !invalidGroupIds.has(b.groupId)) {
+          triggeredGroupIds.add(b.groupId);
+        }
       }
     });
 
@@ -181,11 +199,11 @@ class PonEngine {
         for (let rr = 0; rr < this.rows; rr++) {
           for (let cc = 0; cc < this.cols; cc++) {
             const b = this.grid[rr][cc];
-            if (b && b.type === 'garbage' && triggeredGroupIds.has(b.groupId)) {
+            if (b && b.type === 'garbage' && b.state === 'normal' && triggeredGroupIds.has(b.groupId)) {
               [[rr-1,cc],[rr+1,cc],[rr,cc-1],[rr,cc+1]].forEach(([nr, nc]) => {
                 if (nr >= 0 && nr < this.rows && nc >= 0 && nc < this.cols) {
                   const adjB = this.grid[nr][nc];
-                  if (adjB && adjB.type === 'garbage' && adjB.groupId && adjB.groupId !== b.groupId) {
+                  if (adjB && adjB.type === 'garbage' && adjB.state === 'normal' && adjB.groupId && !invalidGroupIds.has(adjB.groupId) && adjB.groupId !== b.groupId) {
                     if (!triggeredGroupIds.has(adjB.groupId)) {
                       triggeredGroupIds.add(adjB.groupId);
                       newlyAdded = true;
@@ -202,7 +220,7 @@ class PonEngine {
       for (let rr = 0; rr < this.rows; rr++) {
         for (let cc = 0; cc < this.cols; cc++) {
           const b = this.grid[rr][cc];
-          if (b && b.type === 'garbage' && triggeredGroupIds.has(b.groupId)) {
+          if (b && b.type === 'garbage' && b.state === 'normal' && triggeredGroupIds.has(b.groupId)) {
             cells.push({r: rr, c: cc, b: b});
           }
         }
@@ -229,7 +247,7 @@ class PonEngine {
         orderedCells.push(...rowCells);
       });
 
-      const transformGroupId = Date.now() + Math.random();
+      const transformGroupId = this.allocGroupId();
 
       orderedCells.forEach((item, idx) => {
         let isGroupBottom = (item.r === groupMaxR[item.b.groupId]);
@@ -272,37 +290,8 @@ class PonEngine {
         }
       }
     }
-    
-    let transformGroups = new Map();
-    for (let r = 0; r < this.rows; r++) {
-      for (let c = 0; c < this.cols; c++) {
-        const b = this.grid[r][c];
-        if (b && b.transformGroupId) {
-           if (!transformGroups.has(b.transformGroupId)) transformGroups.set(b.transformGroupId, []);
-           transformGroups.get(b.transformGroupId).push(b);
-        }
-      }
-    }
 
-    transformGroups.forEach((blocks, tGroupId) => {
-      const hasTransforming = blocks.some(b => b.state === 'transforming');
-      if (!hasTransforming) {
-        blocks.forEach(b => {
-          if (b.state === 'transformed_wait' || b.state === 'transforming_wait') {
-            if (typeof b.type === 'number') {
-              b.state = 'hover';
-              b.timer = 17;
-              delete b.groupId; 
-            } else {
-              b.state = 'hover'; 
-              b.timer = 12; 
-            }
-            delete b.transformGroupId;
-          }
-        });
-      }
-    });
-    
+    // transforming の進行を先に実行し、その後で transformGroupId ごとの完了判定を行う
     for (let r = 0; r < this.rows; r++) {
       for (let c = 0; c < this.cols; c++) {
         const b = this.grid[r][c];
@@ -337,6 +326,37 @@ class PonEngine {
         }
       }
     }
+    
+    let transformGroups = new Map();
+    for (let r = 0; r < this.rows; r++) {
+      for (let c = 0; c < this.cols; c++) {
+        const b = this.grid[r][c];
+        if (b && b.transformGroupId) {
+           if (!transformGroups.has(b.transformGroupId)) transformGroups.set(b.transformGroupId, []);
+           transformGroups.get(b.transformGroupId).push(b);
+        }
+      }
+    }
+
+    transformGroups.forEach((blocks) => {
+      const hasTransforming = blocks.some(b => b.state === 'transforming');
+      if (!hasTransforming) {
+        blocks.forEach(b => {
+          if (b.state === 'transformed_wait' || b.state === 'transforming_wait') {
+            b.state = 'hover';
+            b.timer = 15; // 通常ブロック化セルと上のお邪魔を同一タイマーで同期落下させる
+            b.fallY = 0;
+            if (typeof b.type === 'number') {
+              delete b.groupId;
+            }
+            delete b.transformDelay;
+            delete b.isTarget;
+            delete b.transformToNormal;
+            delete b.transformGroupId;
+          }
+        });
+      }
+    });
 
     let isTopFilled = false;
     for (let c = 0; c < this.cols; c++) {
@@ -397,7 +417,9 @@ class PonEngine {
         if (b && b.state === 'match') {
           isMoving = true; b.timer--;
           if (b.timer <= 0) {
-            this.transformGarbageNear(r, c);
+            if (!b.skillErase) {
+              this.transformGarbageNear(r, c);
+            }
             this.grid[r][c] = null;
             
             for (let ur = r - 1; ur >= 0; ur--) {
@@ -449,18 +471,31 @@ class PonEngine {
       if (leader.state === 'fall') {
         isMoving = true;
         let canFall = true;
+        let blockedByMoving = false;
         for (const item of cells) {
           if (item.r + 1 >= this.rows) { canFall = false; break; }
           const below = this.grid[item.r + 1][item.c];
-          if (below !== null && below.groupId !== groupId) { canFall = false; break; }
+          if (below !== null && below.groupId !== groupId) {
+            canFall = false;
+            if (below.state === 'hover' || below.state === 'fall') {
+              blockedByMoving = true;
+            }
+            break;
+          }
         }
 
         if (!canFall) {
-          cells.forEach(item => {
-            item.block.state = 'normal';
-            item.block.fallY = 0;
-          });
-          needsMatchCheck = true;
+          if (blockedByMoving) {
+            // 下のブロックが落下・ホバー中なら確定せずそのまま待機して連動落下させる
+            leader.fallY = 0;
+            cells.forEach(item => { item.block.fallY = 0; });
+          } else {
+            cells.forEach(item => {
+              item.block.state = 'normal';
+              item.block.fallY = 0;
+            });
+            needsMatchCheck = true;
+          }
         } else {
           leader.fallY += 0.35;
           cells.forEach(item => item.block.fallY = leader.fallY);
@@ -474,12 +509,21 @@ class PonEngine {
             }
             leader.fallY = 0;
             let hitBottom = false;
+            let hitMoving = false;
             for (const item of cells) {
-              if (item.r + 1 >= this.rows || (this.grid[item.r + 1][item.c] !== null && this.grid[item.r + 1][item.c].groupId !== groupId)) {
+              if (item.r + 1 >= this.rows) {
                 hitBottom = true; break;
               }
+              const below = this.grid[item.r + 1][item.c];
+              if (below !== null && below.groupId !== groupId) {
+                if (below.state === 'hover' || below.state === 'fall') {
+                  hitMoving = true;
+                } else {
+                  hitBottom = true; break;
+                }
+              }
             }
-            if (hitBottom) {
+            if (hitBottom && !hitMoving) {
               cells.forEach(item => {
                 item.block.state = 'normal';
                 item.block.fallY = 0;
@@ -751,12 +795,12 @@ class BoardRenderer {
     this.ctx = this.canvas.getContext('2d');
     this.canvas.width = COLS * CELL_PX;
     this.canvas.height = ROWS * CELL_PX + CELL_PX * 0.75; 
-    this.theme = null; // ★追加
+    this.theme = null;
   }
   draw(engine) {
     const ctx = this.ctx;
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-    if (typeof drawBoardBgAddon === 'function') drawBoardBgAddon(ctx, this.canvas, engine, this); // ★追加
+    if (typeof drawBoardBgAddon === 'function') drawBoardBgAddon(ctx, this.canvas, engine, this);
     
     ctx.save();
     if (engine.shakeTimer > 0) {
@@ -803,14 +847,15 @@ class BoardRenderer {
           const y = r * CELL_PX - offsetY + (b.fallY * CELL_PX);
 
           if (b.type === 'garbage') {
-            ctx.fillStyle = b.isHard ? '#a8b2bd' : '#5c636a'; 
+            const isFlashing = (b.state === 'match' && Math.floor(b.timer / 4) % 2 === 0);
+            ctx.fillStyle = isFlashing ? '#ffffff' : (b.isHard ? '#a8b2bd' : '#5c636a'); 
             ctx.fillRect(x, y, CELL_PX, CELL_PX);
             ctx.strokeStyle = '#dee2e6'; ctx.lineWidth = 2;
             
-            const sameTop = r > 0 && engine.grid[r-1][c] && engine.grid[r-1][c].groupId === b.groupId;
-            const sameBottom = r < engine.rows-1 && engine.grid[r+1][c] && engine.grid[r+1][c].groupId === b.groupId;
-            const sameLeft = c > 0 && engine.grid[r][c-1] && engine.grid[r][c-1].groupId === b.groupId;
-            const sameRight = c < engine.cols-1 && engine.grid[r][c+1] && engine.grid[r][c+1].groupId === b.groupId;
+            const sameTop = b.groupId && r > 0 && engine.grid[r-1][c] && engine.grid[r-1][c].groupId === b.groupId;
+            const sameBottom = b.groupId && r < engine.rows-1 && engine.grid[r+1][c] && engine.grid[r+1][c].groupId === b.groupId;
+            const sameLeft = b.groupId && c > 0 && engine.grid[r][c-1] && engine.grid[r][c-1].groupId === b.groupId;
+            const sameRight = b.groupId && c < engine.cols-1 && engine.grid[r][c+1] && engine.grid[r][c+1].groupId === b.groupId;
 
             ctx.beginPath();
             if (!sameTop) { ctx.moveTo(x, y+1); ctx.lineTo(x+CELL_PX, y+1); }
@@ -851,7 +896,6 @@ class BoardRenderer {
               
               const isHighestCol = isEnginePanic && highestCols.has(c);
               const time = Date.now();
-              // 通常状態(isHighestColがfalse)の時はバウンスを0にし、ピンチ時は早く少し大きく揺らす
               const bounceY = isHighestCol ? Math.sin(time / 60 + c) * 3 : 0;
 
               ctx.fillStyle = isFlashing ? '#6c757d' : conf.bg;
@@ -920,7 +964,7 @@ class BoardRenderer {
       }
     }
 
-    if (typeof drawBoardFgAddon === 'function') drawBoardFgAddon(ctx, this.canvas, engine, this); // ★追加
+    if (typeof drawBoardFgAddon === 'function') drawBoardFgAddon(ctx, this.canvas, engine, this);
 
     if (engine.gameOver && !engine.isPractice) {
       ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);

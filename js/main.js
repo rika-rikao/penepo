@@ -189,7 +189,6 @@ function renderLocalMenuUI() {
     padWrap.append('パッド:', pSel);
     cfgEl.appendChild(padWrap);
 
-    // プレイヤーが使うスキル1つを選択
     const skWrap = document.createElement('label');
     skWrap.style.display = 'flex';
     skWrap.style.alignItems = 'center';
@@ -590,7 +589,6 @@ function checkMatchEnd() {
     if (o.engine && !o.engine.gameOver) aliveCount++;
   });
 
-  // ローカル対戦：最後の1人が残るまで試合続行
   if (currentMode === 'local') {
     if (aliveCount <= 1) {
       isMatchOver = true;
@@ -610,7 +608,6 @@ function checkMatchEnd() {
     return;
   }
 
-   // 自分が負けた瞬間
   if (myEngine && myEngine.gameOver && !isMatchOver && !isPracticeMode) {
     isMatchOver = true;
     isDeadInMatch = true;
@@ -640,7 +637,6 @@ function checkMatchEnd() {
     }
   }
 
-  // 自分以外の全員が負けた瞬間（自分が生き残って勝利）
   if (!isMatchOver && opponents.length > 0 && aliveCount === 1 && !myEngine.gameOver && !isDeadInMatch) {
      if (currentMode === 'single_survival') {
         const comOpp = opponents[0];
@@ -672,7 +668,6 @@ function checkMatchEnd() {
      }
   }
 
-  // 全滅、もしくは自分以外全滅して自分も負けた場合など、試合が完全に終わった状態
   if (isMatchOver && aliveCount <= 1) {
      matchState = 'gameover';
      if (hostDisconnected) {
@@ -899,6 +894,33 @@ function renderLocalSkillBarElement(barId, skillState, curScore, skillId) {
   }
 }
 
+function updateRivalSkillBadge(opp, index) {
+  const badge = document.getElementById(`rival-skill-badge-${index}`);
+  if (!badge || !opp) return;
+
+  let rem = null;
+  if (opp.type === 'local_human' && opp.skillState && opp.skillState.enabled) {
+    rem = opp.skillState.usesLeft;
+  } else if (opp.ai && typeof opp.ai.getRemainingSkills === 'function') {
+    rem = opp.ai.getRemainingSkills();
+  } else if (opp.syncedSkillRemaining !== undefined && opp.syncedSkillRemaining !== null) {
+    rem = opp.syncedSkillRemaining;
+  }
+
+  if (rem === null) {
+    if (badge.style.display !== 'none') badge.style.display = 'none';
+    return;
+  }
+
+  const label = `⚡${rem}`;
+  if (badge.style.display === 'none') badge.style.display = 'inline-block';
+  if (badge.dataset.skillText !== label) {
+    badge.dataset.skillText = label;
+    badge.innerText = label;
+  }
+  badge.classList.toggle('empty', rem <= 0);
+}
+
 function updateSkillButtonUI() {
   const btn = document.getElementById('skill-btn');
   const label = document.getElementById('skill-btn-label');
@@ -971,7 +993,6 @@ function activatePlayerSkill() {
   updateSkillButtonUI();
 
   if (currentMode === 'local') {
-    // ローカル対戦時はスキルのみ盤面カットインを共通適用
     myEngine.cutinMax = 50;
     myEngine.cutinTimer = 50;
     myEngine.cutinText = res.text;
@@ -997,7 +1018,6 @@ function activateLocalOpponentSkill(opp) {
   opp.skillState.nextRequiredScore = opp.engine.score + PLAYER_SKILL_SCORE_STEP;
   updateSkillButtonUI();
 
-  // ローカル対戦時はスキルのみ盤面カットインを共通適用
   opp.engine.cutinMax = 50;
   opp.engine.cutinTimer = 50;
   opp.engine.cutinText = res.text;
@@ -1081,7 +1101,6 @@ function resetGameLogic() {
     ? `1P: ${myRenderer.theme.name}`
     : myRenderer.theme.name;
 
-  // ① 連鎖・同時消しはヘッダーバナー表示
   myEngine.onChainEnd = (chain) => {
     showPlayerHeaderCutin(myRenderer.theme, `${chain} CHAIN!!`, '#ffd700');
   };
@@ -1136,6 +1155,7 @@ function resetGameLogic() {
         <div class="garbage-preview-box">
           <span class="preview-label">予告</span>
           <div id="rival-garbage-preview-${i}" class="preview-list"></div>
+          <span id="rival-skill-badge-${i}" class="skill-count-badge" style="display:none;"></span>
         </div>
         <div class="board-header my-board-header">
           <span style="color: ${nameColor};" id="rival-name-label-${i}">${oppName} <span class="target-badge">🎯</span></span>
@@ -1154,6 +1174,7 @@ function resetGameLogic() {
         <div class="garbage-preview-box">
           <span class="preview-label">予告</span>
           <div id="rival-garbage-preview-${i}" class="preview-list"></div>
+          <span id="rival-skill-badge-${i}" class="skill-count-badge" style="display:none;"></span>
         </div>
         <div class="board-header">
           <span style="color: ${nameColor};" id="rival-name-label-${i}">${oppName} <span class="target-badge">🎯 TARGET</span></span>
@@ -1181,7 +1202,7 @@ function resetGameLogic() {
       sharedSeed
     );
     rEngine.garbageQueue = [];
-    rEngine.allowBoardCutin = true; // 通常対戦の相手、およびローカル対戦のスキル時のみ盤面カットイン
+    rEngine.allowBoardCutin = true;
 
     const oppInputState = isLocalHuman ? createPlayerInputState() : null;
     if (isLocalHuman) {
@@ -1192,7 +1213,6 @@ function resetGameLogic() {
     }
 
     if (currentMode === 'local') {
-      // ローカル対戦時は全員バナースタイルで連鎖・同時消し表示（スキルのみ盤面カットイン）
       rEngine.onChainEnd = (chain) => {
         showHeaderCutinById(`rival-header-cutin-${i}`, rRenderer.theme, `${chain} CHAIN!!`, '#ffd700');
       };
@@ -1225,14 +1245,15 @@ function resetGameLogic() {
         const comLv = (currentMode === 'local' && slotCfg) ? slotCfg.comLevel : currentComLevel;
         const useCheat = ((currentMode === 'com' || currentMode === 'single_survival' || currentMode === 'local') && currentSkillEnabled);
         if (useCheat && typeof cheat === 'function') {
-          rAI = new cheat(rEngine, comLv, oppId);
+          const comMaxSkills = (currentMode === 'single_survival' || currentMode === 'local') ? 3 : 10;
+          rAI = new cheat(rEngine, comLv, oppId, { maxSkillUses: comMaxSkills });
         } else {
           rAI = new ComAI(rEngine, comLv, oppId);
         }
       }
     }
 
-    opponents.push({
+    const oppObj = {
       id: oppId,
       name: oppName,
       type: isLocalHuman ? 'local_human' : 'com',
@@ -1249,7 +1270,9 @@ function resetGameLogic() {
         usesLeft: currentSkillEnabled ? PLAYER_SKILL_MAX : 0,
         nextRequiredScore: 0
       } : null
-    });
+    };
+    opponents.push(oppObj);
+    updateRivalSkillBadge(oppObj, i);
   }
   
   updateGarbagePreview(myEngine, 'my-garbage-preview');
@@ -1568,16 +1591,18 @@ function updateGarbagePreview(engine, containerId) {
 
   container.innerHTML = '';
   
-  let compressed = [];
+  // 同じサイズ・種類（w, h, isHard）は最初に出現したアイコンへ合算して圧縮表示
+  const compressed = [];
+  const mapByKey = new Map();
   engine.garbageQueue.forEach(g => {
-    if (compressed.length > 0) {
-       let last = compressed[compressed.length - 1];
-       if (last.w === g.w && last.h === g.h && last.isHard === g.isHard) {
-          last.count++;
-          return;
-       }
+    const key = `${g.w}_${g.h}_${!!g.isHard}`;
+    if (mapByKey.has(key)) {
+      mapByKey.get(key).count++;
+    } else {
+      const entry = { ...g, count: 1 };
+      mapByKey.set(key, entry);
+      compressed.push(entry);
     }
-    compressed.push({ ...g, count: 1 });
   });
 
   compressed.forEach((g, idx) => {
@@ -1585,20 +1610,20 @@ function updateGarbagePreview(engine, containerId) {
     block.style.backgroundColor = g.isHard ? '#a8b2bd' : '#5c636a';
     block.style.border = '1px solid #dee2e6';
     block.style.borderRadius = '2px';
-    block.style.width = `${Math.min(36, Math.max(12, g.w * 5))}px`;
-    block.style.height = `${Math.min(18, Math.max(8, g.h * 4))}px`;
+    block.style.width = `${Math.min(36, Math.max(14, g.w * 5))}px`;
+    block.style.height = `${Math.min(18, Math.max(10, g.h * 4))}px`;
     block.style.flexShrink = '0';
     block.style.display = 'flex';
     block.style.alignItems = 'center';
     block.style.justifyContent = 'center';
     
     if (idx > 0) {
-       block.style.opacity = '0.5';
+       block.style.opacity = '0.65';
     }
     
     if (g.count > 1) {
        const span = document.createElement('span');
-       span.innerText = `x${g.count}`;
+       span.innerText = `×${g.count}`;
        span.style.color = '#fff';
        span.style.fontSize = '9px';
        span.style.fontWeight = 'bold';
@@ -1639,7 +1664,7 @@ function gameLoop(time) {
              let nextLv = getSurvivalLevel(survivalBaseLevel, n);
              opp.level = nextLv;
              opp.ai = (currentSkillEnabled && typeof cheat === 'function')
-               ? new cheat(opp.engine, nextLv, opp.id)
+               ? new cheat(opp.engine, nextLv, opp.id, { maxSkillUses: 3 })
                : new ComAI(opp.engine, nextLv, opp.id);
              document.getElementById(`rival-name-label-0`).innerHTML = `${opp.renderer.theme.name} Lv.${nextLv} <span class="target-badge">🎯 TARGET</span>`;
            }
@@ -1685,6 +1710,7 @@ function gameLoop(time) {
          }
       }
       updateGarbagePreview(opp.engine, `rival-garbage-preview-${i}`);
+      updateRivalSkillBadge(opp, i);
     }
   });
   
@@ -1966,7 +1992,6 @@ function adjustLayout() {
 
   if (!myWrapper || !controls || !exitBtn || !gameArea || !gameContainer) return;
 
-  // ローカル対戦専用：強制的に横画面UI（常に1列横並び・縦向き画面時は90°回転）
   if (currentMode === 'local') {
     const isGameVisible = gameArea.style.display !== 'none';
     if (isPortrait && isGameVisible) {
@@ -2038,7 +2063,6 @@ function adjustLayout() {
     return;
   }
 
-  // 通常モード用にローカル用強制横画面クラスとスタイルをリセット
   document.body.classList.remove('local-force-landscape');
   controls.style.display = 'flex';
   controls.style.alignItems = 'center';
@@ -2315,7 +2339,6 @@ window.addEventListener('DOMContentLoaded', () => {
   }
   toggleHandedness();
 
-  // ゲーム画面中の不意なスクロールやズームを防止
   const gameAreaEl = document.getElementById('game-area');
   gameAreaEl.addEventListener('touchstart', (e) => {
     if (e.touches.length > 1) {
@@ -2347,3 +2370,651 @@ window.addEventListener('DOMContentLoaded', () => {
   if (typeof initAssetsSystem === 'function') initAssetsSystem();
   if (typeof initStorySystem === 'function') initStorySystem();
 });
+6. js/network.js
+JavaScript
+// --- オンライン対戦 ---
+const PEER_PREFIX = 'pdw-26-';
+
+function generateShortRoomCode() {
+  const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+  let res = '';
+  for (let i = 0; i < 4; i++) res += chars.charAt(Math.floor(Math.random() * chars.length));
+  return res;
+}
+
+function createRoom() {
+  let code = document.getElementById('peer-room-id').value.trim();
+  if (!code) { code = generateShortRoomCode(); document.getElementById('peer-room-id').value = code; }
+  const fullPeerId = PEER_PREFIX + code.toUpperCase();
+  
+  if (peer) { try { peer.destroy(); } catch(e){} }
+  peer = new Peer(fullPeerId);
+  
+  const maxPlayers = parseInt(document.getElementById('online-max-players').value) || 2;
+  currentMode = 'online_host';
+  onlineConnections = [];
+
+  peer.on('open', () => {
+    document.getElementById('main-menu-actions').style.display = 'none';
+    const waiting = document.getElementById('room-waiting');
+    waiting.style.display = 'flex';
+    document.getElementById('waiting-code-container').style.display = 'block';
+    document.getElementById('waiting-code').innerText = code.toUpperCase();
+    document.getElementById('waiting-max').innerText = maxPlayers;
+    document.getElementById('waiting-count').innerText = 1;
+    document.getElementById('waiting-status-text').innerText = '参加者を待っています...';
+    document.getElementById('force-start-btn').style.display = 'inline-block';
+    navigator.clipboard?.writeText(code.toUpperCase()); 
+    showToast(`部屋コード [${code.toUpperCase()}] をコピーしました！`);
+  });
+
+  peer.on('connection', (c) => {
+    c.on('open', () => {
+      if (currentMode !== 'online_host') { c.close(); return; }
+      if (onlineConnections.length >= maxPlayers - 1) { c.close(); return; }
+      
+      onlineConnections.push(c);
+      bindConnEvents(c, true); 
+      document.getElementById('waiting-count').innerText = 1 + onlineConnections.length;
+      
+      if (onlineConnections.length >= maxPlayers - 1) {
+        startCountdown();
+      }
+    });
+  });
+}
+
+function cancelRoom() {
+  onlineConnections.forEach(c => c.close());
+  onlineConnections = [];
+  if (peer) { peer.destroy(); peer = null; }
+  document.getElementById('room-waiting').style.display = 'none';
+  document.getElementById('main-menu-actions').style.display = 'flex';
+}
+
+function joinRoom() {
+  const code = document.getElementById('peer-room-id').value.trim();
+  if (!code) { showToast('部屋コードを入力してください'); return; }
+  const targetPeerId = PEER_PREFIX + code.toUpperCase();
+
+  if (peer) { try { peer.destroy(); } catch(e){} }
+  peer = new Peer();
+  currentMode = 'online_client';
+
+  peer.on('open', () => {
+    const c = peer.connect(targetPeerId);
+    c.on('open', () => { 
+      onlineConnections = [c];
+      bindConnEvents(c, false); 
+      document.getElementById('main-menu-actions').style.display = 'none';
+      const waiting = document.getElementById('room-waiting');
+      waiting.style.display = 'flex';
+      document.getElementById('waiting-code-container').style.display = 'none';
+      document.getElementById('waiting-status-text').innerText = '部屋に参加しました。ホストの開始を待機中...';
+      document.getElementById('waiting-count').innerText = '-';
+      document.getElementById('waiting-max').innerText = '-';
+      document.getElementById('force-start-btn').style.display = 'none';
+    });
+    c.on('error', () => { showToast('部屋への接続に失敗しました'); });
+  });
+}
+
+function startCountdown() {
+  if (countdownTimer) clearInterval(countdownTimer);
+  document.getElementById('countdown-overlay').style.display = 'flex';
+  document.getElementById('countdown-text').innerText = '10';
+
+  if (myOnlineId === 'host' || currentMode === 'online_host') {
+    document.getElementById('countdown-start-btn').style.display = 'inline-block';
+    document.getElementById('countdown-start-btn').focus();
+    onlineConnections.forEach(c => {
+      if (c.open) c.send({ type: 'start_countdown' });
+    });
+  } else {
+    document.getElementById('countdown-start-btn').style.display = 'none';
+  }
+
+  let count = 10;
+  countdownTimer = setInterval(() => {
+    count--;
+    if (count >= 0) {
+      document.getElementById('countdown-text').innerText = count;
+    } else {
+      clearInterval(countdownTimer);
+      if (myOnlineId === 'host' || currentMode === 'online_host') {
+        forceStartRoom();
+      }
+    }
+  }, 1000);
+}
+
+function forceStartRoom() {
+  if (countdownTimer) clearInterval(countdownTimer);
+  document.getElementById('countdown-overlay').style.display = 'none';
+
+  const maxPlayers = parseInt(document.getElementById('online-max-players').value);
+  const comLvl = parseInt(document.getElementById('online-com-level')?.value) || 3;
+  const comUseCheat = !!document.getElementById('online-skill-toggle')?.checked;
+  currentComLevel = comLvl;
+  let players = [{ id: 'host', type: 'player', name: 'HOST' }];
+  
+  onlineConnections.forEach((c, idx) => {
+    const cId = `client_${idx}`;
+    c._clientId = cId;
+    players.push({ id: cId, type: 'player', name: `PLAYER ${idx+1}`, conn: c });
+  });
+
+  const currentCount = players.length;
+  for(let i = 0; i < maxPlayers - currentCount; i++) {
+    players.push({ id: `com_${i}`, type: 'com', level: comLvl, useCheat: comUseCheat, name: `COM ${i+1}` });
+  }
+
+  matchPlayersConfig = players;
+  startPrepareMatchFromHost();
+}
+
+function startPrepareMatchFromHost() {
+  boardReady = {};
+  rematchReady = {};
+  
+  const skillEnabled = !!document.getElementById('online-skill-toggle')?.checked;
+  const configBase = matchPlayersConfig.map(pl => ({
+    id: pl.id, type: pl.type, level: pl.level, useCheat: !!pl.useCheat, name: pl.name
+  }));
+  const matchId = Date.now();
+  const sharedSeed = Math.floor(Math.random() * 0xFFFFFFFF);
+  
+  onlineConnections.forEach(c => {
+    const cId = c._clientId;
+    const config = { players: configBase, myId: cId, matchId: matchId, seed: sharedSeed, skillEnabled };
+    if (c.open) c.send({ type: 'prepare_match', config });
+  });
+  
+  const hostConfig = { players: configBase, myId: 'host', matchId: matchId, seed: sharedSeed, skillEnabled };
+  prepareMatchLocal(hostConfig);
+}
+
+function prepareMatchLocal(config) {
+  if (countdownTimer) clearInterval(countdownTimer);
+  document.getElementById('countdown-overlay').style.display = 'none';
+  document.getElementById('result-overlay').style.display = 'none';
+
+  currentMode = 'online';
+  currentMatchId = config.matchId;
+  myOnlineId = config.myId;
+  matchPlayersConfig = config.players; 
+  currentSkillEnabled = !!config.skillEnabled;
+  matchState = 'preparing';
+  isPracticeMode = false;
+
+  document.getElementById('menu-overlay').style.display = 'none';
+  document.getElementById('game-area').style.display = 'flex';
+
+  setupInput();
+  resetGameLogicOnline(config);
+  
+  if (loopId) cancelAnimationFrame(loopId);
+  lastTime = performance.now();
+  accumulator = 0;
+  loopId = requestAnimationFrame(gameLoop);
+  
+  startSyncInterval();
+
+  if (typeof sendMyAppearanceOnline === 'function') {
+    sendMyAppearanceOnline();
+  }
+
+  setTimeout(() => {
+    if (myOnlineId === 'host') {
+      handleBoardReady('host');
+    } else {
+      if (onlineConnections[0] && onlineConnections[0].open) {
+        onlineConnections[0].send({ type: 'board_ready', senderId: myOnlineId });
+      }
+    }
+  }, 800);
+}
+
+function handleBoardReady(senderId) {
+  if (myOnlineId !== 'host') return;
+  boardReady[senderId] = true;
+  
+  let allReady = true;
+  const humanIds = matchPlayersConfig.filter(p => p.type === 'player').map(p => p.id);
+  humanIds.forEach(id => {
+    if (!boardReady[id]) allReady = false;
+  });
+  
+  if (allReady) {
+    onlineConnections.forEach(c => {
+      if (c.open) c.send({ type: 'start_match_execute' });
+    });
+    executeStartMatch();
+  }
+}
+
+function executeStartMatch() {
+  matchState = 'ready';
+  
+  readyBgm();
+  showReadyGo(); 
+
+  if (loopId) cancelAnimationFrame(loopId);
+  lastTime = performance.now();
+  accumulator = 0;
+  loopId = requestAnimationFrame(gameLoop);
+  
+  startSyncInterval();
+}
+
+function resetGameLogicOnline(config) {
+  isMatchOver = false;
+  isDeadInMatch = false;
+  isPracticeMode = false;
+  myTargetIndex = -1;
+  currentSkillEnabled = !!config.skillEnabled;
+  if (typeof hidePlayerHeaderCutin === 'function') hidePlayerHeaderCutin();
+  
+  rematchReady = {};
+  config.players.forEach(p => {
+    if (p.type !== 'com') rematchReady[p.id] = false;
+  });
+
+  const handicap = parseInt(document.getElementById('handicap-val').value) || 3;
+  const sharedSeed = config.seed !== undefined ? config.seed : Math.floor(Math.random() * 0xFFFFFFFF);
+  const resolvedCharId = resolvePlayableCharId(selectedCharId);
+
+  myRenderer = new BoardRenderer('my-canvas');
+  myRenderer.theme = buildThemeForCharacter(
+    resolvedCharId,
+    (resolvedCharId === 'custom' && CustomAssets.chara) ? CustomAssets.chara.dataUrl : null,
+    true,
+    resolvedCharId === 'custom' ? getPlayerDisplayName() : null
+  );
+  document.getElementById('player-label').innerText = myRenderer.theme.name;
+
+  myEngine = new PonEngine(
+    (state) => { if (state === 'gameover') checkMatchEnd(); },
+    (totalBlocks, isHard) => { distributeGarbageOnline(myOnlineId, totalBlocks, isHard); },
+    handicap,
+    true,
+    sharedSeed
+  );
+  myEngine.onRowPushed = handleMyRowPushed;
+  myEngine.garbageQueue = [];
+  myEngine.onChainEnd = (chain) => {
+    if (typeof showPlayerHeaderCutin === 'function') {
+      showPlayerHeaderCutin(myRenderer.theme, `${chain} CHAIN!!`, '#ffd700');
+    }
+  };
+  myEngine.onSimultaneousMatch = (size) => {
+    if (typeof showPlayerHeaderCutin === 'function') {
+      showPlayerHeaderCutin(myRenderer.theme, `${size}個消し！`, '#00d4ff');
+    }
+  };
+
+  if (typeof initPlayerSkillState === 'function') {
+    initPlayerSkillState(currentSkillEnabled);
+  }
+
+  const rivalsArea = document.getElementById('rivals-area');
+  const rivalsTopArea = document.getElementById('rivals-top-area');
+  rivalsArea.innerHTML = '';
+  rivalsTopArea.innerHTML = '';
+  opponents = [];
+
+  const CheatClass = (typeof cheat === 'function' && cheat)
+                  || (typeof Cheat === 'function' && Cheat)
+                  || (typeof CheatAI === 'function' && CheatAI);
+
+  let index = 0;
+  config.players.forEach(p => {
+    if (p.id === myOnlineId) return;
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'board-wrapper rival-board';
+    if (p.type === 'com') wrapper.classList.add('com-board');
+    wrapper.id = `rival-wrapper-${index}`;
+    const targetIdx = index;
+    wrapper.onclick = () => selectTarget(targetIdx);
+
+    let nameColor = p.type === 'com' ? '#aaaaaa' : '#e94560';
+
+    wrapper.innerHTML = `
+      <div class="garbage-preview-box">
+        <span class="preview-label">予告</span>
+        <div id="rival-garbage-preview-${index}" class="preview-list"></div>
+        <span id="rival-skill-badge-${index}" class="skill-count-badge" style="display:none;"></span>
+      </div>
+      <div class="board-header">
+        <span style="color: ${nameColor};">${p.name} <span class="target-badge">🎯 TARGET</span></span>
+        <span id="rival-score-label-${index}">SCORE: 0</span>
+      </div>
+      <div class="canvas-container"><canvas id="rival-canvas-${index}"></canvas></div>
+    `;
+    rivalsArea.appendChild(wrapper);
+
+    const rRenderer = new BoardRenderer(`rival-canvas-${index}`);
+    let rEngine = null, rAI = null;
+
+    if (p.type === 'com' && myOnlineId === 'host') {
+      rEngine = new PonEngine(
+        (state) => { 
+          if (state === 'gameover') {
+            checkMatchEnd();
+            onlineConnections.forEach(c => {
+              if (c && c.open) c.send({ type: 'sync', senderId: p.id, gameOver: true });
+            });
+          } 
+        },
+        (totalBlocks, isHard) => { distributeGarbageOnline(p.id, totalBlocks, isHard); },
+        3,
+        false,
+        sharedSeed
+      );
+      rEngine.garbageQueue = [];
+      if (p.useCheat && CheatClass) {
+        // オンライン対戦時のCOMスキル上限は3回
+        rAI = new CheatClass(rEngine, p.level || 2, p.id, { maxSkillUses: 3 });
+      } else {
+        rAI = new ComAI(rEngine, p.level || 2, p.id);
+      }
+    } else {
+      rEngine = new PonEngine(null, null, 3, false, sharedSeed);
+      rEngine.garbageQueue = [];
+    }
+
+    rEngine.gameOver = false;
+
+    const fallbackCharId = p.type === 'com' ? CHARACTERS[(index + 1) % CHARACTERS.length].id : 'main00';
+    rRenderer.theme = buildThemeForCharacter(p.charId || fallbackCharId, null, false);
+    const initialSkillRem = (p.type === 'com' && p.useCheat) || (p.type === 'player' && currentSkillEnabled)
+      ? 3
+      : undefined;
+
+    const oppObj = {
+      id: p.id,
+      name: p.name,
+      type: p.type,
+      engine: rEngine,
+      renderer: rRenderer,
+      ai: rAI,
+      syncedSkillRemaining: initialSkillRem,
+      index: index
+    };
+    opponents.push(oppObj);
+    if (typeof updateRivalSkillBadge === 'function') updateRivalSkillBadge(oppObj, index);
+    index++;
+  });
+
+  updateGarbagePreview(myEngine, 'my-garbage-preview');
+  opponents.forEach((opp, i) => updateGarbagePreview(opp.engine, `rival-garbage-preview-${i}`));
+  updateTargetUI();
+  if (typeof updateSkillButtonUI === 'function') updateSkillButtonUI();
+  adjustLayout();
+}
+
+function startSyncInterval() {
+  if (syncIntervalId) clearInterval(syncIntervalId);
+  syncIntervalId = setInterval(() => {
+    if (!myEngine) return;
+    const mySkillRem = (typeof playerSkillState !== 'undefined' && playerSkillState.enabled)
+      ? playerSkillState.usesLeft
+      : undefined;
+    
+    if (!isPracticeMode && !isMatchOver) {
+       const syncData = { 
+         type: 'sync', senderId: myOnlineId, grid: myEngine.grid, nextRow: myEngine.nextRow, 
+         riseOffset: myEngine.riseOffset, score: myEngine.score, 
+         garbageQueue: myEngine.garbageQueue, gameOver: myEngine.gameOver,
+         skillRemaining: mySkillRem
+       };
+       onlineConnections.forEach(c => { if (c && c.open) c.send(syncData); });
+    } else {
+       const syncData = { 
+         type: 'sync', senderId: myOnlineId, gameOver: isDeadInMatch, skillRemaining: mySkillRem
+       };
+       onlineConnections.forEach(c => { if (c && c.open) c.send(syncData); });
+    }
+
+    if (myOnlineId === 'host') {
+      opponents.forEach(opp => {
+        if (opp.type === 'com' && opp.engine) {
+          const comSyncData = {
+            type: 'sync', senderId: opp.id, grid: opp.engine.grid, nextRow: opp.engine.nextRow, 
+            riseOffset: opp.engine.riseOffset, score: opp.engine.score, 
+            garbageQueue: opp.engine.garbageQueue, gameOver: opp.engine.gameOver,
+            skillRemaining: (opp.ai && typeof opp.ai.getRemainingSkills === 'function') ? opp.ai.getRemainingSkills() : undefined
+          };
+          onlineConnections.forEach(c => { if (c && c.open) c.send(comSyncData); });
+        }
+      });
+    }
+  }, 100);
+}
+
+function createOnlineSubstituteAI(opp) {
+  if (currentSkillEnabled && typeof cheat === 'function') {
+    const rem = opp.syncedSkillRemaining !== undefined ? Math.min(3, Math.max(0, opp.syncedSkillRemaining)) : 3;
+    const ai = new cheat(opp.engine, currentComLevel, opp.id, { maxSkillUses: 3 });
+    ai.skillUsesLeft = rem;
+    return ai;
+  }
+  return new ComAI(opp.engine, currentComLevel, opp.id);
+}
+
+function replaceClientWithCom(leftId) {
+   const opp = opponents.find(o => o.id === leftId);
+   if (opp && opp.type !== 'com') {
+      opp.type = 'com';
+      opp.name = opp.name + ' (COM)';
+      
+      if (!opp.engine.gameOver) {
+         opp.engine.onStateChange = (state) => { if (state === 'gameover') checkMatchEnd(); };
+         opp.engine.onSendGarbage = (totalBlocks, isHard) => { distributeGarbageOnline(opp.id, totalBlocks, isHard); };
+         opp.ai = createOnlineSubstituteAI(opp);
+         showToast(`${opp.name} が退出したためCOMが代役に入りました。`);
+      } else {
+         opp.ai = createOnlineSubstituteAI(opp);
+      }
+      
+      const configP = matchPlayersConfig.find(p => p.id === leftId);
+      if (configP) {
+         configP.type = 'com';
+         configP.level = currentComLevel;
+         configP.useCheat = currentSkillEnabled;
+         configP.name = opp.name;
+      }
+   }
+}
+
+function handlePlayerLeftHost(leftId) {
+   replaceClientWithCom(leftId);
+   onlineConnections.forEach(c => {
+     if (c.open) c.send({ type: 'player_left', leftId: leftId });
+   });
+   if (matchState === 'gameover' && rematchReady[myOnlineId]) {
+     checkRematchCondition();
+   } else if (matchState === 'preparing') {
+     handleBoardReady('host'); 
+   }
+   checkMatchEnd();
+}
+
+function handleHostDisconnected() {
+  if (!isMatchOver) {
+     hostDisconnected = true;
+     showToast("ホストとの接続が切れました。試合終了後に退出します。");
+     opponents.forEach(opp => {
+       if (opp.type !== 'com' && !opp.engine.gameOver) {
+         opp.type = 'com';
+         opp.name = opp.name + ' (COM)';
+         opp.engine.onStateChange = (state) => { if (state === 'gameover') checkMatchEnd(); };
+         opp.engine.onSendGarbage = () => {}; 
+         opp.ai = createOnlineSubstituteAI(opp);
+       } else if (opp.type === 'com' && !opp.engine.gameOver) {
+         opp.ai = createOnlineSubstituteAI(opp);
+         opp.engine.onSendGarbage = () => {}; 
+       }
+     });
+  } else {
+     if (currentMode === 'online') {
+        showToast("ホストが退出したため解散します。");
+        setTimeout(() => exitGame(), 2000);
+     }
+  }
+}
+
+function bindConnEvents(c, isHostMode) {
+  c.on('data', (data) => {
+    if (data.type === 'sync') {
+      const senderOpp = opponents.find(o => o.id === data.senderId);
+      if (senderOpp && senderOpp.engine) {
+        if (data.grid) senderOpp.engine.grid = data.grid;
+        if (data.nextRow) senderOpp.engine.nextRow = data.nextRow;
+        if (data.riseOffset !== undefined) senderOpp.engine.riseOffset = data.riseOffset;
+        if (data.score !== undefined) senderOpp.engine.score = data.score;
+        if (data.garbageQueue) senderOpp.engine.garbageQueue = data.garbageQueue;
+        if (data.skillRemaining !== undefined) senderOpp.syncedSkillRemaining = data.skillRemaining;
+
+        if (data.gameOver !== undefined) {
+           const wasGameOver = senderOpp.engine.gameOver;
+           senderOpp.engine.gameOver = data.gameOver;
+           if (!wasGameOver && data.gameOver) {
+              checkMatchEnd();
+           }
+        }
+      }
+      if (isHostMode) {
+        onlineConnections.forEach(otherC => {
+          if (otherC !== c && otherC.open) otherC.send(data);
+        });
+      }
+    } 
+    else if (data.type === 'start_countdown') {
+      startCountdown();
+    }
+    else if (data.type === 'garbage_request' && isHostMode) {
+      for (const [tId, count] of Object.entries(data.targets)) {
+        playGarbageSendAnimation(data.senderId, tId, data.isHard);
+        if (tId === 'host') {
+          if (!isPracticeMode) sendBlocksToOpponent({ engine: myEngine }, count, data.isHard);
+        } else {
+          const opp = opponents.find(o => o.id === tId);
+          if (opp && opp.type === 'com') sendBlocksToOpponent(opp, count, data.isHard);
+        }
+      }
+      onlineConnections.forEach(otherC => {
+        if (otherC.open) otherC.send({ type: 'add_garbage_multi', senderId: data.senderId, targets: data.targets, isHard: data.isHard });
+      });
+    }
+    else if (data.type === 'add_garbage_multi') {
+      for (const tId of Object.keys(data.targets)) {
+         if (data.senderId !== myOnlineId) {
+           playGarbageSendAnimation(data.senderId, tId, data.isHard);
+         }
+      }
+      if (data.targets[myOnlineId] && !isPracticeMode) {
+        sendBlocksToOpponent({ engine: myEngine }, data.targets[myOnlineId], data.isHard);
+      }
+    }
+    else if (data.type === 'prepare_match') {
+      prepareMatchLocal(data.config);
+    }
+    else if (data.type === 'board_ready') {
+      if (isHostMode) handleBoardReady(data.senderId);
+    }
+    else if (data.type === 'start_match_execute') {
+      executeStartMatch();
+    }
+    else if (data.type === 'rematch_ready') {
+      rematchReady[data.senderId] = true;
+      if (isHostMode) checkRematchCondition();
+    }
+    else if (data.type === 'player_left') {
+      if (!isHostMode) {
+        replaceClientWithCom(data.leftId);
+        checkMatchEnd();
+      }
+    }
+    else if (data.type === 'appearance_sync') {
+      const targetOpp = opponents.find(o => o.id === data.senderId);
+      if (targetOpp && targetOpp.renderer) {
+        targetOpp.renderer.theme = buildThemeForCharacter(data.charId, data.customCharaUrl, false, data.customName);
+        const nameEl = targetOpp.renderer.canvas.closest('.board-wrapper')?.querySelector('.board-header span');
+        if (nameEl) {
+          const chName = data.customName || getCharacterById(data.charId).name;
+          nameEl.innerHTML = `${chName} (${targetOpp.name}) <span class="target-badge">🎯 TARGET</span>`;
+        }
+      }
+      if (isHostMode) {
+        onlineConnections.forEach(otherC => {
+          if (otherC !== c && otherC.open) otherC.send(data);
+        });
+      }
+    }
+    else if (data.type === 'online_cutin') {
+      const targetOpp = opponents.find(o => o.id === data.senderId);
+      if (targetOpp && targetOpp.engine) {
+        targetOpp.engine.cutinMax = 50;
+        targetOpp.engine.cutinTimer = 50;
+        targetOpp.engine.cutinText = data.text;
+      }
+      if (isHostMode) {
+        onlineConnections.forEach(otherC => {
+          if (otherC !== c && otherC.open) otherC.send(data);
+        });
+      }
+    }
+    else if (data.type === 'cheat_corrupt_row') {
+      if (data.targetId === myOnlineId && myEngine && !myEngine.gameOver && !isPracticeMode) {
+        if (typeof applyCorruptRowToEngine === 'function') applyCorruptRowToEngine(myEngine, data.row);
+      }
+    }
+    else if (data.type === 'leave') {
+      if (isHostMode) {
+        handlePlayerLeftHost(data.senderId);
+      } else {
+        if (data.senderId === 'host') {
+           handleHostDisconnected();
+        } else {
+           replaceClientWithCom(data.senderId);
+           checkMatchEnd();
+        }
+      }
+    }
+  });
+  c.on('close', () => {
+    if (isHostMode) {
+      const index = onlineConnections.indexOf(c);
+      if (index !== -1) {
+         const leftId = c._clientId;
+         onlineConnections.splice(index, 1);
+         if (leftId) handlePlayerLeftHost(leftId);
+      }
+    } else {
+      handleHostDisconnected();
+    }
+  });
+}
+
+function sendOnlineCutin(senderId, text) {
+  const payload = { type: 'online_cutin', senderId, text };
+  onlineConnections.forEach(c => {
+    if (c && c.open) c.send(payload);
+  });
+}
+
+function sendMyAppearanceOnline() {
+  const resolved = resolvePlayableCharId(selectedCharId);
+  const payload = {
+    type: 'appearance_sync',
+    senderId: myOnlineId,
+    charId: resolved,
+    customCharaUrl: (resolved === 'custom' && CustomAssets.chara) ? CustomAssets.chara.dataUrl : null,
+    customName: resolved === 'custom' ? getPlayerDisplayName() : null
+  };
+  onlineConnections.forEach(c => {
+    if (c && c.open) c.send(payload);
+  });
+}

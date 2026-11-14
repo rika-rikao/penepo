@@ -1,3 +1,4 @@
+
 // ==========================================
 // 対戦・ターゲット・ローカルマルチ・ゲーム管理システム
 // ==========================================
@@ -189,7 +190,6 @@ function renderLocalMenuUI() {
     padWrap.append('パッド:', pSel);
     cfgEl.appendChild(padWrap);
 
-    // プレイヤーが使うスキル1つを選択
     const skWrap = document.createElement('label');
     skWrap.style.display = 'flex';
     skWrap.style.alignItems = 'center';
@@ -951,6 +951,37 @@ function updateSkillButtonUI() {
   }
 }
 
+function updateRivalSkillBadge(opp, index) {
+  const badge = document.getElementById(`rival-skill-badge-${index}`);
+  if (!badge || !opp) return;
+
+  // ローカル対戦の人間プレイヤーは下部のスキルバーで表示するため二重表示しない
+  if (opp.type === 'local_human') {
+    badge.style.display = 'none';
+    return;
+  }
+
+  let rem;
+  if (opp.ai && typeof opp.ai.getRemainingSkills === 'function') {
+    rem = opp.ai.getRemainingSkills();
+  } else if (opp.syncedSkillRemaining !== undefined && opp.syncedSkillRemaining !== null) {
+    rem = opp.syncedSkillRemaining;
+  }
+
+  if (rem === undefined || rem === null) {
+    badge.style.display = 'none';
+    return;
+  }
+
+  const text = `⚡${rem}`;
+  if (badge.dataset.lastVal !== text) {
+    badge.dataset.lastVal = text;
+    badge.innerText = text;
+  }
+  badge.style.display = 'inline-block';
+  badge.classList.toggle('empty', rem <= 0);
+}
+
 function activatePlayerSkill() {
   if (!playerSkillState.enabled || !myEngine || myEngine.gameOver || isPracticeMode) return;
   if (matchState !== 'playing' || isMatchOver) return;
@@ -971,7 +1002,6 @@ function activatePlayerSkill() {
   updateSkillButtonUI();
 
   if (currentMode === 'local') {
-    // ローカル対戦時はスキルのみ盤面カットインを共通適用
     myEngine.cutinMax = 50;
     myEngine.cutinTimer = 50;
     myEngine.cutinText = res.text;
@@ -997,7 +1027,6 @@ function activateLocalOpponentSkill(opp) {
   opp.skillState.nextRequiredScore = opp.engine.score + PLAYER_SKILL_SCORE_STEP;
   updateSkillButtonUI();
 
-  // ローカル対戦時はスキルのみ盤面カットインを共通適用
   opp.engine.cutinMax = 50;
   opp.engine.cutinTimer = 50;
   opp.engine.cutinText = res.text;
@@ -1081,7 +1110,6 @@ function resetGameLogic() {
     ? `1P: ${myRenderer.theme.name}`
     : myRenderer.theme.name;
 
-  // ① 連鎖・同時消しはヘッダーバナー表示
   myEngine.onChainEnd = (chain) => {
     showPlayerHeaderCutin(myRenderer.theme, `${chain} CHAIN!!`, '#ffd700');
   };
@@ -1136,6 +1164,7 @@ function resetGameLogic() {
         <div class="garbage-preview-box">
           <span class="preview-label">予告</span>
           <div id="rival-garbage-preview-${i}" class="preview-list"></div>
+          <span id="rival-skill-badge-${i}" class="skill-count-badge" style="display:none;"></span>
         </div>
         <div class="board-header my-board-header">
           <span style="color: ${nameColor};" id="rival-name-label-${i}">${oppName} <span class="target-badge">🎯</span></span>
@@ -1154,6 +1183,7 @@ function resetGameLogic() {
         <div class="garbage-preview-box">
           <span class="preview-label">予告</span>
           <div id="rival-garbage-preview-${i}" class="preview-list"></div>
+          <span id="rival-skill-badge-${i}" class="skill-count-badge" style="display:none;"></span>
         </div>
         <div class="board-header">
           <span style="color: ${nameColor};" id="rival-name-label-${i}">${oppName} <span class="target-badge">🎯 TARGET</span></span>
@@ -1181,7 +1211,7 @@ function resetGameLogic() {
       sharedSeed
     );
     rEngine.garbageQueue = [];
-    rEngine.allowBoardCutin = true; // 通常対戦の相手、およびローカル対戦のスキル時のみ盤面カットイン
+    rEngine.allowBoardCutin = true;
 
     const oppInputState = isLocalHuman ? createPlayerInputState() : null;
     if (isLocalHuman) {
@@ -1192,7 +1222,6 @@ function resetGameLogic() {
     }
 
     if (currentMode === 'local') {
-      // ローカル対戦時は全員バナースタイルで連鎖・同時消し表示（スキルのみ盤面カットイン）
       rEngine.onChainEnd = (chain) => {
         showHeaderCutinById(`rival-header-cutin-${i}`, rRenderer.theme, `${chain} CHAIN!!`, '#ffd700');
       };
@@ -1217,22 +1246,23 @@ function resetGameLogic() {
       if (currentMode === 'story' && StoryManager.activeStage) {
         const stCfg = StoryManager.activeStageConfig || StoryManager.getStageConfig(StoryManager.activeStage);
         if (stCfg.useCheat && typeof cheat === 'function') {
-          rAI = new cheat(rEngine, stCfg.level, oppId, { skillType: stCfg.skillType });
+          rAI = new cheat(rEngine, stCfg.level, oppId, { skillType: stCfg.skillType, maxSkillUses: 10 });
         } else {
           rAI = new ComAI(rEngine, stCfg.level, oppId);
         }
       } else {
         const comLv = (currentMode === 'local' && slotCfg) ? slotCfg.comLevel : currentComLevel;
         const useCheat = ((currentMode === 'com' || currentMode === 'single_survival' || currentMode === 'local') && currentSkillEnabled);
+        const maxUses = (currentMode === 'single_survival' || currentMode === 'local') ? 3 : 10;
         if (useCheat && typeof cheat === 'function') {
-          rAI = new cheat(rEngine, comLv, oppId);
+          rAI = new cheat(rEngine, comLv, oppId, { maxSkillUses: maxUses });
         } else {
           rAI = new ComAI(rEngine, comLv, oppId);
         }
       }
     }
 
-    opponents.push({
+    const oppObj = {
       id: oppId,
       name: oppName,
       type: isLocalHuman ? 'local_human' : 'com',
@@ -1249,7 +1279,9 @@ function resetGameLogic() {
         usesLeft: currentSkillEnabled ? PLAYER_SKILL_MAX : 0,
         nextRequiredScore: 0
       } : null
-    });
+    };
+    opponents.push(oppObj);
+    updateRivalSkillBadge(oppObj, i);
   }
   
   updateGarbagePreview(myEngine, 'my-garbage-preview');
@@ -1561,49 +1593,52 @@ function pollGamepadInput() {
 function updateGarbagePreview(engine, containerId) {
   const container = document.getElementById(containerId);
   if (!container || !engine) return;
-  
-  const qStr = JSON.stringify(engine.garbageQueue);
-  if (container.dataset.qStr === qStr) return;
-  container.dataset.qStr = qStr;
+
+  // 連続していなくても同じ種類(w, h, isHard)のお邪魔はすべて1つのアイコン＋×Nバッジに圧縮
+  const compressed = [];
+  const keyMap = new Map();
+  engine.garbageQueue.forEach(g => {
+    const key = `${g.w}_${g.h}_${g.isHard ? 1 : 0}`;
+    if (keyMap.has(key)) {
+      keyMap.get(key).count++;
+    } else {
+      const entry = { w: g.w, h: g.h, isHard: !!g.isHard, count: 1 };
+      keyMap.set(key, entry);
+      compressed.push(entry);
+    }
+  });
+
+  const cStr = JSON.stringify(compressed);
+  if (container.dataset.qStr === cStr) return;
+  container.dataset.qStr = cStr;
 
   container.innerHTML = '';
-  
-  let compressed = [];
-  engine.garbageQueue.forEach(g => {
-    if (compressed.length > 0) {
-       let last = compressed[compressed.length - 1];
-       if (last.w === g.w && last.h === g.h && last.isHard === g.isHard) {
-          last.count++;
-          return;
-       }
-    }
-    compressed.push({ ...g, count: 1 });
-  });
 
   compressed.forEach((g, idx) => {
     const block = document.createElement('div');
     block.style.backgroundColor = g.isHard ? '#a8b2bd' : '#5c636a';
-    block.style.border = '1px solid #dee2e6';
+    block.style.border = idx === 0 ? '1px solid #ffd700' : '1px solid #dee2e6';
     block.style.borderRadius = '2px';
-    block.style.width = `${Math.min(36, Math.max(12, g.w * 5))}px`;
-    block.style.height = `${Math.min(18, Math.max(8, g.h * 4))}px`;
+    block.style.width = `${Math.min(34, Math.max(14, g.w * 5))}px`;
+    block.style.height = `${Math.min(18, Math.max(10, g.h * 4))}px`;
     block.style.flexShrink = '0';
     block.style.display = 'flex';
     block.style.alignItems = 'center';
     block.style.justifyContent = 'center';
-    
+
     if (idx > 0) {
-       block.style.opacity = '0.5';
+      block.style.opacity = '0.55';
     }
-    
+
     if (g.count > 1) {
-       const span = document.createElement('span');
-       span.innerText = `x${g.count}`;
-       span.style.color = '#fff';
-       span.style.fontSize = '9px';
-       span.style.fontWeight = 'bold';
-       span.style.textShadow = '1px 1px 1px #000';
-       block.appendChild(span);
+      const span = document.createElement('span');
+      span.innerText = `×${g.count}`;
+      span.style.color = '#fff';
+      span.style.fontSize = '9px';
+      span.style.fontWeight = 'bold';
+      span.style.lineHeight = '1';
+      span.style.textShadow = '1px 1px 1px #000';
+      block.appendChild(span);
     }
     container.appendChild(block);
   });
@@ -1639,7 +1674,7 @@ function gameLoop(time) {
              let nextLv = getSurvivalLevel(survivalBaseLevel, n);
              opp.level = nextLv;
              opp.ai = (currentSkillEnabled && typeof cheat === 'function')
-               ? new cheat(opp.engine, nextLv, opp.id)
+               ? new cheat(opp.engine, nextLv, opp.id, { maxSkillUses: 3 })
                : new ComAI(opp.engine, nextLv, opp.id);
              document.getElementById(`rival-name-label-0`).innerHTML = `${opp.renderer.theme.name} Lv.${nextLv} <span class="target-badge">🎯 TARGET</span>`;
            }
@@ -1685,6 +1720,7 @@ function gameLoop(time) {
          }
       }
       updateGarbagePreview(opp.engine, `rival-garbage-preview-${i}`);
+      updateRivalSkillBadge(opp, i);
     }
   });
   

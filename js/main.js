@@ -22,12 +22,28 @@ let currentSurvivalWins = 0;
 let rematchReady = {};
 let boardReady = {};
 
+// プレイヤーの選択スキル（1つ選択）
+let selectedPlayerSkill = localStorage.getItem('pdw_player_skill') || 'erase_color';
+
+function onPlayerSkillSelectChange(val) {
+  selectedPlayerSkill = val || 'erase_color';
+  localStorage.setItem('pdw_player_skill', selectedPlayerSkill);
+  syncPlayerSkillSelects();
+}
+
+function syncPlayerSkillSelects() {
+  ['story-skill-select', 'single-skill-select', 'com-skill-select', 'online-skill-select'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = selectedPlayerSkill;
+  });
+}
+
 // ローカル対戦用スロット設定（最大4P）
 let localSlotsConfig = [
-  { isCom: false, comLevel: 3, charId: 'main00' },
-  { isCom: false, comLevel: 3, charId: 'sub01' },
-  { isCom: true,  comLevel: 3, charId: 'sub02' },
-  { isCom: true,  comLevel: 3, charId: 'sub03' }
+  { isCom: false, comLevel: 3, charId: 'main00', skillId: 'erase_color' },
+  { isCom: false, comLevel: 3, charId: 'sub01',  skillId: 'erase_rows' },
+  { isCom: true,  comLevel: 3, charId: 'sub02',  skillId: 'purify_garbage' },
+  { isCom: true,  comLevel: 3, charId: 'sub03',  skillId: 'corrupt_enemy_row' }
 ];
 let activeLocalTab = 0;
 
@@ -39,12 +55,14 @@ function showToast(msg) {
 function showSingleMenu() {
   document.getElementById('main-menu-actions').style.display = 'none';
   document.getElementById('single-menu').style.display = 'flex';
+  syncPlayerSkillSelects();
   renderCharPicker('single-char-picker', { storyOnly: false });
   updateSingleMenu();
 }
 function showComMenu() {
   document.getElementById('main-menu-actions').style.display = 'none';
   document.getElementById('com-menu').style.display = 'flex';
+  syncPlayerSkillSelects();
   renderCharPicker('com-char-picker', { storyOnly: false });
 }
 function showLocalMenu() {
@@ -55,6 +73,7 @@ function showLocalMenu() {
 function showOnlineMenu() {
   document.getElementById('main-menu-actions').style.display = 'none';
   document.getElementById('online-menu').style.display = 'flex';
+  syncPlayerSkillSelects();
   renderCharPicker('online-char-picker', { storyOnly: false });
 }
 function showRankingMenu() {
@@ -107,7 +126,7 @@ function renderLocalMenuUI() {
 
   if (activeLocalTab === 0) {
     const lbl = document.createElement('span');
-    lbl.innerHTML = `<b>1P</b>（操作: 人間）`;
+    lbl.innerHTML = `<b>1P</b>（人間）`;
     cfgEl.appendChild(lbl);
   } else {
     const typeWrap = document.createElement('label');
@@ -125,7 +144,7 @@ function renderLocalMenuUI() {
       slot.isCom = (sel.value === 'com');
       renderLocalMenuUI();
     };
-    typeWrap.append(`${activeLocalTab + 1}P種別:`, sel);
+    typeWrap.append(`${activeLocalTab + 1}P:`, sel);
     cfgEl.appendChild(typeWrap);
 
     if (slot.isCom) {
@@ -169,6 +188,29 @@ function renderLocalMenuUI() {
     };
     padWrap.append('パッド:', pSel);
     cfgEl.appendChild(padWrap);
+
+    // プレイヤーが使うスキル1つを選択
+    const skWrap = document.createElement('label');
+    skWrap.style.display = 'flex';
+    skWrap.style.alignItems = 'center';
+    skWrap.style.gap = '4px';
+    const skSel = document.createElement('select');
+    skSel.className = 'input-box';
+    skSel.style.width = 'auto';
+    skSel.style.padding = '3px 8px';
+    skSel.style.fontSize = '0.78rem';
+    skSel.innerHTML = `
+      <option value="erase_color">マーク全消し</option>
+      <option value="erase_rows">1・5・9段消し</option>
+      <option value="purify_garbage">お邪魔浄化</option>
+      <option value="corrupt_enemy_row">お邪魔侵食</option>
+    `;
+    skSel.value = slot.skillId || 'erase_color';
+    skSel.onchange = () => {
+      slot.skillId = skSel.value;
+    };
+    skWrap.append('スキル:', skSel);
+    cfgEl.appendChild(skWrap);
   }
 
   renderCharPicker('local-char-picker', {
@@ -224,7 +266,6 @@ function backToMainMenu() {
   document.getElementById('com-menu').style.display = 'none'; 
   document.getElementById('single-menu').style.display = 'none'; 
   document.getElementById('local-menu').style.display = 'none';
-  document.getElementById('online-menu').style.display = 'flex' ? 'none' : 'none';
   document.getElementById('online-menu').style.display = 'none';
   document.getElementById('ranking-menu').style.display = 'none'; 
   document.getElementById('story-menu').style.display = 'none';
@@ -832,7 +873,7 @@ function initPlayerSkillState(enabled) {
   updateSkillButtonUI();
 }
 
-function renderLocalSkillBarElement(barId, skillState, curScore) {
+function renderLocalSkillBarElement(barId, skillState, curScore, skillId) {
   const bar = document.getElementById(barId);
   if (!bar) return;
   if (!skillState || !skillState.enabled || currentMode !== 'local') {
@@ -840,20 +881,21 @@ function renderLocalSkillBarElement(barId, skillState, curScore) {
     return;
   }
   bar.style.display = 'flex';
+  const skName = (typeof SKILL_LABELS !== 'undefined' && SKILL_LABELS[skillId]) ? SKILL_LABELS[skillId] : 'スキル';
   if (skillState.usesLeft <= 0) {
     bar.classList.remove('ready');
-    bar.innerHTML = `<div class="local-skill-bar-fill" style="width:0%"></div><span class="local-skill-bar-text">スキル終了 (0/${PLAYER_SKILL_MAX})</span>`;
+    bar.innerHTML = `<div class="local-skill-bar-fill" style="width:0%"></div><span class="local-skill-bar-text">${skName} 終了 (0/${PLAYER_SKILL_MAX})</span>`;
     return;
   }
   const remain = Math.max(0, skillState.nextRequiredScore - curScore);
   if (remain === 0) {
     bar.classList.add('ready');
-    bar.innerHTML = `<div class="local-skill-bar-fill" style="width:100%"></div><span class="local-skill-bar-text">スキル発動可! (${skillState.usesLeft}/${PLAYER_SKILL_MAX})</span>`;
+    bar.innerHTML = `<div class="local-skill-bar-fill" style="width:100%"></div><span class="local-skill-bar-text">${skName} OK! (${skillState.usesLeft}/${PLAYER_SKILL_MAX})</span>`;
   } else {
     bar.classList.remove('ready');
     const gained = Math.max(0, PLAYER_SKILL_SCORE_STEP - remain);
     const pct = Math.min(100, Math.floor((gained / PLAYER_SKILL_SCORE_STEP) * 100));
-    bar.innerHTML = `<div class="local-skill-bar-fill" style="width:${pct}%"></div><span class="local-skill-bar-text">スキル(${skillState.usesLeft}/${PLAYER_SKILL_MAX}) あと${remain}点</span>`;
+    bar.innerHTML = `<div class="local-skill-bar-fill" style="width:${pct}%"></div><span class="local-skill-bar-text">${skName}(${skillState.usesLeft}/${PLAYER_SKILL_MAX}) あと${remain}</span>`;
   }
 }
 
@@ -864,10 +906,10 @@ function updateSkillButtonUI() {
 
   if (currentMode === 'local') {
     if (btn) btn.style.display = 'none';
-    renderLocalSkillBarElement('my-local-skill-bar', playerSkillState, myEngine ? myEngine.score : 0);
+    renderLocalSkillBarElement('my-local-skill-bar', playerSkillState, myEngine ? myEngine.score : 0, localSlotsConfig[0].skillId);
     opponents.forEach((opp, i) => {
       if (opp.type === 'local_human' && opp.skillState) {
-        renderLocalSkillBarElement(`rival-local-skill-bar-${i}`, opp.skillState, opp.engine ? opp.engine.score : 0);
+        renderLocalSkillBarElement(`rival-local-skill-bar-${i}`, opp.skillState, opp.engine ? opp.engine.score : 0, opp.skillId);
       }
     });
     return;
@@ -884,11 +926,12 @@ function updateSkillButtonUI() {
   btn.style.display = 'flex';
 
   const curScore = myEngine ? myEngine.score : 0;
+  const skName = (typeof SKILL_LABELS !== 'undefined' && SKILL_LABELS[selectedPlayerSkill]) ? SKILL_LABELS[selectedPlayerSkill] : 'スキル';
   if (playerSkillState.usesLeft <= 0) {
     btn.disabled = true;
     btn.classList.remove('ready');
     prog.style.width = '0%';
-    label.innerText = `スキル終了\n(0/${PLAYER_SKILL_MAX})`;
+    label.innerText = `${skName}\n終了 (0/${PLAYER_SKILL_MAX})`;
     return;
   }
 
@@ -897,14 +940,14 @@ function updateSkillButtonUI() {
     btn.disabled = false;
     btn.classList.add('ready');
     prog.style.width = '100%';
-    label.innerText = `スキル発動!\n(${playerSkillState.usesLeft}/${PLAYER_SKILL_MAX})`;
+    label.innerText = `${skName}\n発動 (${playerSkillState.usesLeft}/${PLAYER_SKILL_MAX})`;
   } else {
     btn.disabled = true;
     btn.classList.remove('ready');
     const gained = Math.max(0, PLAYER_SKILL_SCORE_STEP - remain);
     const pct = Math.min(100, Math.floor((gained / PLAYER_SKILL_SCORE_STEP) * 100));
     prog.style.width = `${pct}%`;
-    label.innerText = `スキル(${playerSkillState.usesLeft}/${PLAYER_SKILL_MAX})\nあと${remain}点`;
+    label.innerText = `${skName}(${playerSkillState.usesLeft}/${PLAYER_SKILL_MAX})\nあと${remain}点`;
   }
 }
 
@@ -915,10 +958,11 @@ function activatePlayerSkill() {
   if (myEngine.score < playerSkillState.nextRequiredScore) return;
   if (typeof executePlayerCheatSkill !== 'function') return;
 
+  const chosenSkill = currentMode === 'local' ? (localSlotsConfig[0].skillId || 'erase_color') : selectedPlayerSkill;
   const senderId = currentMode === 'online' ? myOnlineId : 'player';
-  const res = executePlayerCheatSkill(myEngine, senderId, myTargetIndex);
+  const res = executePlayerCheatSkill(myEngine, senderId, myTargetIndex, chosenSkill);
   if (!res || !res.success) {
-    if (currentMode !== 'local') showToast('今はスキルを発動できる対象がありません');
+    if (currentMode !== 'local') showToast('今はそのスキルを発動できる対象がありません');
     return;
   }
 
@@ -946,7 +990,7 @@ function activateLocalOpponentSkill(opp) {
   if (opp.engine.score < opp.skillState.nextRequiredScore) return;
   if (typeof executePlayerCheatSkill !== 'function') return;
 
-  const res = executePlayerCheatSkill(opp.engine, opp.id, opp.targetId || -1);
+  const res = executePlayerCheatSkill(opp.engine, opp.id, opp.targetId || -1, opp.skillId || 'erase_color');
   if (!res || !res.success) return;
 
   opp.skillState.usesLeft--;
@@ -970,6 +1014,10 @@ function startGame(mode, level = 1, totalPlayers = 2, skillEnabled = false) {
   
   document.getElementById('menu-overlay').style.display = 'none';
   document.getElementById('game-area').style.display = 'flex';
+
+  if (currentMode === 'local') {
+    try { screen.orientation?.lock?.('landscape')?.catch(() => {}); } catch (e) {}
+  }
   
   setupInput();
   resetGameLogic();
@@ -1166,13 +1214,21 @@ function resetGameLogic() {
 
     let rAI = null;
     if (isComMode) {
-      const comLv = (currentMode === 'local' && slotCfg) ? slotCfg.comLevel : currentComLevel;
-      const useCheat = (currentMode === 'story' && StoryManager.activeStage && StoryManager.activeStage.useCheat)
-                    || ((currentMode === 'com' || currentMode === 'single_survival' || currentMode === 'local') && currentSkillEnabled);
-      if (useCheat && typeof cheat === 'function') {
-        rAI = new cheat(rEngine, comLv, oppId);
+      if (currentMode === 'story' && StoryManager.activeStage) {
+        const stCfg = StoryManager.activeStageConfig || StoryManager.getStageConfig(StoryManager.activeStage);
+        if (stCfg.useCheat && typeof cheat === 'function') {
+          rAI = new cheat(rEngine, stCfg.level, oppId, { skillType: stCfg.skillType });
+        } else {
+          rAI = new ComAI(rEngine, stCfg.level, oppId);
+        }
       } else {
-        rAI = new ComAI(rEngine, comLv, oppId);
+        const comLv = (currentMode === 'local' && slotCfg) ? slotCfg.comLevel : currentComLevel;
+        const useCheat = ((currentMode === 'com' || currentMode === 'single_survival' || currentMode === 'local') && currentSkillEnabled);
+        if (useCheat && typeof cheat === 'function') {
+          rAI = new cheat(rEngine, comLv, oppId);
+        } else {
+          rAI = new ComAI(rEngine, comLv, oppId);
+        }
       }
     }
 
@@ -1181,6 +1237,7 @@ function resetGameLogic() {
       name: oppName,
       type: isLocalHuman ? 'local_human' : 'com',
       playerSlotIndex: i + 1,
+      skillId: (isLocalHuman && slotCfg) ? (slotCfg.skillId || 'erase_color') : 'erase_color',
       engine: rEngine,
       renderer: rRenderer,
       ai: rAI,
@@ -1236,6 +1293,9 @@ function exitGame() {
   stopAllEngines();
   stopBgm();
   hidePlayerHeaderCutin();
+
+  document.body.classList.remove('local-force-landscape');
+  try { screen.orientation?.unlock?.(); } catch (e) {}
   
   myEngine = null; opponents = [];
   onlineConnections.forEach(c => c.close());
@@ -1704,6 +1764,20 @@ function handleKeyboardActionForPlayer(engine, cfgKey, stateObj, code, isRepeat,
   return handled;
 }
 
+function getCanvasCoordsFromPointer(cvs, e) {
+  const rect = cvs.getBoundingClientRect();
+  if (document.body.classList.contains('local-force-landscape')) {
+    return {
+      x: ((e.clientY - rect.top) / rect.height) * cvs.width,
+      y: ((rect.right - e.clientX) / rect.width) * cvs.height
+    };
+  }
+  return {
+    x: (e.clientX - rect.left) * (cvs.width / rect.width),
+    y: (e.clientY - rect.top) * (cvs.height / rect.height)
+  };
+}
+
 let inputSetupDone = false;
 function setupInput() {
   if (inputSetupDone) return;
@@ -1718,19 +1792,17 @@ function setupInput() {
   cvs.addEventListener('pointerdown', (e) => {
     if (isMatchOver && !isPracticeMode) return;
     isDown = true; cvs.setPointerCapture(e.pointerId);
-    const rect = cvs.getBoundingClientRect();
-    const scaleX = cvs.width / rect.width, scaleY = cvs.height / rect.height;
-    initialCanvasX = (e.clientX - rect.left) * scaleX;
-    initialCanvasY = (e.clientY - rect.top) * scaleY;
+    const pt = getCanvasCoordsFromPointer(cvs, e);
+    initialCanvasX = pt.x;
+    initialCanvasY = pt.y;
     grabbedCol = Math.max(0, Math.min(COLS - 1, Math.floor(initialCanvasX / CELL_PX)));
     grabbedRow = Math.max(0, Math.min(ROWS - 1, Math.floor((initialCanvasY + myEngine.riseOffset * CELL_PX) / CELL_PX)));
   });
 
   cvs.addEventListener('pointermove', (e) => {
     if (!isDown || !myEngine || (isMatchOver && !isPracticeMode)) return;
-    const rect = cvs.getBoundingClientRect();
-    const canvasX = (e.clientX - rect.left) * (cvs.width / rect.width);
-    let targetCol = Math.max(0, Math.min(COLS - 1, Math.floor(canvasX / CELL_PX)));
+    const pt = getCanvasCoordsFromPointer(cvs, e);
+    let targetCol = Math.max(0, Math.min(COLS - 1, Math.floor(pt.x / CELL_PX)));
     const continuous = document.getElementById('continuous-swipe').checked;
 
     while (targetCol > grabbedCol) {
@@ -1755,12 +1827,10 @@ function setupInput() {
     if (!isDown) return;
     isDown = false; cvs.releasePointerCapture(e.pointerId);
     if (isMatchOver && !isPracticeMode) return;
-    const rect = cvs.getBoundingClientRect();
-    const canvasX = (e.clientX - rect.left) * (cvs.width / rect.width);
-    const canvasY = (e.clientY - rect.top) * (cvs.height / rect.height);
+    const pt = getCanvasCoordsFromPointer(cvs, e);
     
-    if (Math.abs(canvasX - initialCanvasX) < CELL_PX * 0.3 && Math.abs(canvasY - initialCanvasY) < CELL_PX * 0.3) {
-      let c = Math.floor(canvasX / CELL_PX);
+    if (Math.abs(pt.x - initialCanvasX) < CELL_PX * 0.3 && Math.abs(pt.y - initialCanvasY) < CELL_PX * 0.3) {
+      let c = Math.floor(pt.x / CELL_PX);
       if (c >= COLS - 1) c = COLS - 2;
       if (myEngine) {
         if (myEngine.cursor.x !== c || myEngine.cursor.y !== grabbedRow) {
@@ -1896,8 +1966,18 @@ function adjustLayout() {
 
   if (!myWrapper || !controls || !exitBtn || !gameArea || !gameContainer) return;
 
-  // ローカル対戦専用レイアウト（2〜4人全員を均等サイズで配置）
+  // ローカル対戦専用：強制的に横画面UI（常に1列横並び・縦向き画面時は90°回転）
   if (currentMode === 'local') {
+    const isGameVisible = gameArea.style.display !== 'none';
+    if (isPortrait && isGameVisible) {
+      document.body.classList.add('local-force-landscape');
+    } else {
+      document.body.classList.remove('local-force-landscape');
+    }
+
+    const effW = isPortrait ? H : W;
+    const effH = isPortrait ? W : H;
+
     rivalsTopArea.style.display = 'none';
     controls.style.display = 'none';
     rivalsArea.style.display = 'contents';
@@ -1914,14 +1994,10 @@ function adjustLayout() {
     const baseW = 224;
     const baseH = currentSkillEnabled ? 545 : 515;
 
-    const scaleRow = Math.min(1.0, (W - 24 - (totalBoards - 1) * 10) / (totalBoards * baseW), (H - 56) / baseH);
-    const gridCols = 2;
-    const gridRows = Math.ceil(totalBoards / 2);
-    const scaleGrid = Math.min(1.0, (W - 24 - 10) / (gridCols * baseW), (H - 56 - (gridRows - 1) * 8) / (gridRows * baseH));
-
-    const useRow = scaleRow >= scaleGrid;
-    const scale = Math.max(0.32, useRow ? scaleRow : scaleGrid);
-    const cols = useRow ? totalBoards : gridCols;
+    const scale = Math.max(
+      0.32,
+      Math.min(1.0, (effW - 24 - (totalBoards - 1) * 10) / (totalBoards * baseW), (effH - 54) / baseH)
+    );
 
     gameContainer.style.position = 'relative';
     gameContainer.style.top = '';
@@ -1929,14 +2005,14 @@ function adjustLayout() {
     gameContainer.style.transform = '';
     gameContainer.style.width = '100%';
     gameContainer.style.height = '100%';
-    gameContainer.style.maxWidth = `${Math.ceil(cols * baseW * scale + (cols - 1) * 10 + 16)}px`;
+    gameContainer.style.maxWidth = '';
     gameContainer.style.flexDirection = 'row';
-    gameContainer.style.flexWrap = 'wrap';
+    gameContainer.style.flexWrap = 'nowrap';
     gameContainer.style.alignItems = 'center';
     gameContainer.style.alignContent = 'center';
     gameContainer.style.justifyContent = 'center';
-    gameContainer.style.gap = '8px';
-    gameContainer.style.padding = '36px 6px 6px 6px';
+    gameContainer.style.gap = '10px';
+    gameContainer.style.padding = '36px 8px 8px 8px';
 
     const mx = (baseW - baseW * scale) / -2;
     const my = (baseH - baseH * scale) / -2;
@@ -1962,7 +2038,8 @@ function adjustLayout() {
     return;
   }
 
-  // 通常モード用にローカル用スタイルをリセット
+  // 通常モード用にローカル用強制横画面クラスとスタイルをリセット
+  document.body.classList.remove('local-force-landscape');
   controls.style.display = 'flex';
   controls.style.alignItems = 'center';
   gameContainer.style.maxWidth = '';
@@ -2067,8 +2144,7 @@ function adjustLayout() {
     gameContainer.style.flexDirection = isLeft ? 'row' : 'row-reverse';
     gameContainer.style.alignItems = 'center';
     gameContainer.style.justifyContent = 'center';
-    gameContainer.style.paddingBottom = '0px'; 
-    gameContainer.style.paddingTop = '0px';
+    gameContainer.style.padding = '0px';
 
     controls.style.order = '';
     myWrapper.style.order = '';
@@ -2267,6 +2343,7 @@ window.addEventListener('DOMContentLoaded', () => {
     lastTouchEnd = now;
   }, { passive: false });
 
+  if (typeof syncPlayerSkillSelects === 'function') syncPlayerSkillSelects();
   if (typeof initAssetsSystem === 'function') initAssetsSystem();
   if (typeof initStorySystem === 'function') initStorySystem();
 });

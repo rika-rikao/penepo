@@ -14,9 +14,12 @@ class cheat extends ComAI {
     super(engine, level, id);
     this.turnCount = 0;
 
-    // COMは1試合最大10回まで
-    this.maxSkillUses = 10;
-    this.skillUsesLeft = 10;
+    // デフォルト10回、オンライン/ローカル/勝ち抜き時は options.maxSkillUses = 3
+    const limit = (options && typeof options.maxSkillUses === 'number' && options.maxSkillUses > 0)
+      ? options.maxSkillUses
+      : 10;
+    this.maxSkillUses = limit;
+    this.skillUsesLeft = limit;
 
     // 1スキル固定型('single') と 全スキル適切選択型('smart_all')
     this.skillType = options.skillType || (Math.random() < 0.5 ? 'single' : 'smart_all');
@@ -37,6 +40,10 @@ class cheat extends ComAI {
     }
   }
 
+  getRemainingSkills() {
+    return this.skillUsesLeft;
+  }
+
   update() {
     if (this.engine.gameOver || matchState !== 'playing') return;
     if (this.skillCooldown > 0) this.skillCooldown--;
@@ -53,7 +60,6 @@ class cheat extends ComAI {
 
       if (readyByTurn) {
         if (this.shouldHesitate(analysis)) {
-          // 渋って今回は見送る（毎フレーム判定し続けないよう小休止）
           this.skillCooldown = 150;
         } else if (this.tryActivateCheatSkill(analysis)) {
           this.skillUsesLeft--;
@@ -84,6 +90,9 @@ class cheat extends ComAI {
           maxH = Math.max(maxH, ROWS - r);
           if (b.type === 'garbage') {
             garbageCount++;
+            if (isTargetRow && (b.state === 'normal' || b.state === 'hover' || b.state === 'fall')) {
+              rowClearCount++;
+            }
           } else if (b.state === 'normal') {
             colorCounts[b.type] = (colorCounts[b.type] || 0) + 1;
             if (isTargetRow) rowClearCount++;
@@ -105,26 +114,24 @@ class cheat extends ComAI {
   }
 
   shouldHesitate(analysis) {
-    // 乱発型の低レベルCOMは渋らず無駄に使う
     if (this.isLowWasteful) return false;
 
-    // めったに使わない低レベルCOMは高確率で見送る
     if (this.level <= 25 && Math.random() < 0.65) {
       return true;
     }
 
-    const usesLeft = this.skillUsesLeft;
+    const remainRatio = this.skillUsesLeft / Math.max(1, this.maxSkillUses);
     const highValueSituation = analysis.isPinch
       || analysis.garbageCount >= 6
       || analysis.bestColorCount >= 9
       || analysis.rowClearCount >= 8;
 
-    // 残り数が少なくなると使うのを渋る
-    if (usesLeft <= 3) {
+    // 残り比率が少なくなると温存しやすくなる
+    if (remainRatio <= 0.35) {
       if (!highValueSituation) return Math.random() < 0.85;
-      return Math.random() < (0.15 + (3 - usesLeft) * 0.12);
+      return Math.random() < 0.25;
     }
-    if (usesLeft <= 6) {
+    if (remainRatio <= 0.67) {
       if (!analysis.isPinch && Math.random() < 0.42) return true;
     }
     return false;
@@ -142,9 +149,9 @@ class cheat extends ComAI {
       ? Math.max(520, 820 - this.level * 3)
       : Math.max(760, 1150 - this.level * 4);
 
-    // 残り回数が少なくなるほど再使用間隔も長くなる
-    if (this.skillUsesLeft <= 3) cd += 480;
-    else if (this.skillUsesLeft <= 6) cd += 240;
+    const remainRatio = this.skillUsesLeft / Math.max(1, this.maxSkillUses);
+    if (remainRatio <= 0.35) cd += 480;
+    else if (remainRatio <= 0.67) cd += 240;
     return cd;
   }
 
@@ -185,7 +192,6 @@ class cheat extends ComAI {
       return isAppropriate(this.fixedSkill) ? [this.fixedSkill] : [];
     }
 
-    // 全スキルから適切なものを選択（高レベルほど状況評価が正確）
     const scored = [];
     if (analysis.garbageCount > 0 && isAppropriate('purify_garbage')) {
       const s = analysis.garbageCount * 10 + (analysis.isPinch ? 80 : 15);
@@ -206,7 +212,6 @@ class cheat extends ComAI {
 
     if (scored.length === 0) return [];
 
-    // 低〜中レベルほど少し揺らぎを入れ、高レベルほど最適解を厳密に選ぶ
     const noiseRange = Math.max(4, Math.floor((100 - this.level) * 0.6));
     scored.forEach(item => {
       item.finalScore = item.score + (Math.random() * noiseRange);
@@ -327,25 +332,53 @@ function execSkillEraseColor(engine, senderId) {
 }
 
 function execSkillEraseRows(engine, senderId, targetRows) {
-  let erased = 0;
+  let normalErased = 0;
+  let garbageErased = 0;
+
   for (const r of targetRows) {
     if (r < 0 || r >= ROWS) continue;
     for (let c = 0; c < COLS; c++) {
       const b = engine.grid[r][c];
-      if (b && b.state === 'normal' && b.type !== 'garbage') {
+      if (!b) continue;
+      if (b.type === 'garbage') {
+        if (b.state === 'normal' || b.state === 'hover' || b.state === 'fall') {
+          engine.grid[r][c] = null;
+          garbageErased++;
+          // お邪魔が消滅した列の上にある通常ブロックを落下させる
+          for (let ur = r - 1; ur >= 0; ur--) {
+            const ub = engine.grid[ur][c];
+            if (ub && ub.type !== 'garbage' && ub.state !== 'match') {
+              ub.state = 'hover';
+              ub.timer = 14;
+              ub.chainEligible = true;
+            } else {
+              break;
+            }
+          }
+        }
+      } else if (b.state === 'normal') {
         b.state = 'match';
         b.timer = 46;
-        erased++;
+        normalErased++;
       }
     }
   }
-  if (erased === 0) return { success: false };
 
-  SE.play('normalErase');
+  const totalErased = normalErased + garbageErased;
+  if (totalErased === 0) return { success: false };
+
+  if (garbageErased > 0 && typeof engine.regroupGarbage === 'function') {
+    engine.regroupGarbage();
+    SE.play('garbageErase');
+  }
+  if (normalErased > 0) {
+    SE.play('normalErase');
+  }
+
   engine.stopTimer = Math.max(engine.stopTimer, 60);
-  engine.score += erased * 15;
-  if (erased >= 5 && engine.onSendGarbage) {
-    engine.onSendGarbage(Math.min(12, Math.floor(erased / 2) + 2), false);
+  engine.score += totalErased * 15;
+  if (normalErased >= 5 && engine.onSendGarbage) {
+    engine.onSendGarbage(Math.min(12, Math.floor(normalErased / 2) + 2), false);
   }
   return { success: true, text: 'SKILL: 1・5・9段消し!' };
 }
@@ -359,7 +392,7 @@ function execSkillPurifyGarbage(engine) {
       if (b && b.type === 'garbage') {
         b.type = normalColors[Math.floor(Math.random() * normalColors.length)].id;
         b.state = 'hover';
-        b.timer = 12;
+        b.timer = 14;
         b.fallY = 0;
         b.chainEligible = true;
         b.particleTimer = 25;

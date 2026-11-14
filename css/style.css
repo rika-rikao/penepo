@@ -234,6 +234,7 @@ body {
   display: flex; flex-direction: column; align-items: center; z-index: 10;
   transition: transform 0.1s ease-out, border 0.2s, box-shadow 0.2s;
   position: relative;
+  width: 224px; max-width: 224px; flex-shrink: 0;
 }
 
 /* 自分のボード用の緑色装飾 */
@@ -246,7 +247,7 @@ body {
   background: #000; box-shadow: 0 0 15px rgba(0,0,0,0.8); overflow: hidden; 
   touch-action: none;
 }
-.rival-board { cursor: pointer; border-radius: 8px; padding: 2px; }
+.rival-board { cursor: pointer; border-radius: 8px; padding: 2px; width: 228px; max-width: 228px; }
 .rival-board.com-board .canvas-container { border-color: #8a8a8a; }
 .rival-board.targeted .canvas-container { border-color: #ff007f !important; box-shadow: 0 0 18px #ff007f !important; }
 .target-badge {
@@ -257,11 +258,11 @@ body {
 @keyframes pulse { from { transform: scale(0.95); opacity: 0.8; } to { transform: scale(1.1); opacity: 1; } }
 
 .garbage-preview-box {
-  height: 24px; width: 100%; margin-bottom: 4px; display: flex; gap: 4px; align-items: center;
+  height: 24px; width: 100%; max-width: 100%; margin-bottom: 4px; display: flex; gap: 4px; align-items: center;
   background: rgba(0,0,0,0.45); border-radius: 6px; padding: 2px 6px; overflow: hidden; border: 1px solid rgba(255,255,255,0.15);
 }
-.preview-label { font-size: 0.7rem; color: #4ecca3; margin-right: 4px; font-weight: bold; }
-.preview-list { display: flex; gap: 4px; align-items: center; height: 100%; overflow: hidden; }
+.preview-label { font-size: 0.7rem; color: #4ecca3; margin-right: 2px; font-weight: bold; flex-shrink: 0; }
+.preview-list { display: flex; gap: 4px; align-items: center; height: 100%; flex: 1; min-width: 0; overflow: hidden; }
 
 .action-btn { background: linear-gradient(135deg, #e94560, #ff6b6b); border: none; color: #fff; font-weight: bold; padding: 12px; border-radius: 25px; width: 100%; cursor: pointer; }
 .action-btn:active { transform: scale(0.92); }

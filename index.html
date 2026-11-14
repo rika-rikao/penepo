@@ -62,8 +62,13 @@
       </div>
 
       <div class="settings-section">
-        <h3>🎨 カスタム画像（縦横比自動圧縮・保存）</h3>
-        <p style="font-size:0.78rem; color:#aaa; margin-bottom: 5px;">立ち絵はP2P対戦相手にも自動で軽量反映されます。</p>
+        <h3>🎨 カスタム画像・名前（縦横比自動圧縮・保存）</h3>
+        <p style="font-size:0.78rem; color:#aaa; margin-bottom: 6px;">立ち絵と名前はストーリー会話やP2P対戦相手にも反映されます。</p>
+
+        <div class="custom-asset-row" style="margin-bottom:6px;">
+          <div style="font-size:0.82rem; font-weight:bold; white-space:nowrap;">マイキャラ名</div>
+          <input type="text" id="settings-player-name" class="input-box" style="flex:1; width:auto; padding:6px 10px; font-size:0.85rem;" maxlength="10" placeholder="マイキャラ (任意)" oninput="onPlayerNameInput(this.value)">
+        </div>
 
         <div class="custom-asset-row">
           <img id="custom-chara-thumb" class="custom-asset-thumb" alt="">
@@ -97,8 +102,25 @@
       </div>
 
       <div class="settings-section">
-        <h3>🎮 キー・パッド設定</h3>
-        <p style="font-size:0.8rem; color:#aaa; margin-bottom: 5px;">変更したい枠を押してから、キーやボタンを入力してください。</p>
+        <h3>🎮 キー・パッド設定（1P〜4P対応）</h3>
+        <div id="settings-pad-status" style="font-size:0.75rem; color:#4ecca3; margin: 4px 0;">パッドを接続してボタンを押すと認識されます</div>
+        <div id="settings-player-tabs" class="local-player-tabs" style="margin: 6px 0;">
+          <button type="button" class="small-btn active" onclick="selectSettingsPlayer(0)">1P</button>
+          <button type="button" class="small-btn" onclick="selectSettingsPlayer(1)">2P</button>
+          <button type="button" class="small-btn" onclick="selectSettingsPlayer(2)">3P</button>
+          <button type="button" class="small-btn" onclick="selectSettingsPlayer(3)">4P</button>
+        </div>
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; font-size:0.82rem;">
+          <span>使用ゲームパッド番号:</span>
+          <select id="settings-pad-slot" class="input-box" style="width:auto; padding:4px 8px; font-size:0.8rem;" onchange="onSettingsPadSlotChange(this.value)">
+            <option value="0">Pad 0</option>
+            <option value="1">Pad 1</option>
+            <option value="2">Pad 2</option>
+            <option value="3">Pad 3</option>
+            <option value="-1">使用しない</option>
+          </select>
+        </div>
+        <p style="font-size:0.78rem; color:#aaa; margin-bottom: 5px;">変更したい枠を押してから、キーやボタンを入力してください（Key解除はDelete）。</p>
         <div id="key-config-list" style="display:flex; flex-direction:column; gap:8px;"></div>
       </div>
 
@@ -118,64 +140,28 @@
   </div>
 
   <div id="menu-overlay">
-    <div id="main-menu" style="display:flex; flex-direction:column; gap:15px; align-items:center; width:100%; max-width:400px;">
+    <div id="main-menu" style="display:flex; flex-direction:column; gap:12px; align-items:center; width:100%; max-width:420px;">
       <h1 class="title">ぺねぽ</h1>
       
       <div class="char-select-bar">
         <span>ハンデ:</span>
-        <select id="handicap-val" class="input-box" style="width: auto; padding: 5px; font-size: 0.85rem; border-radius: 10px;">
+        <select id="handicap-val" class="input-box" style="width: auto; padding: 5px 10px; font-size: 0.85rem; border-radius: 10px;">
           <option value="1">1: 不利 (激ムズ)</option>
           <option value="2">2: やや不利</option>
           <option value="3" selected>3: 普通</option>
           <option value="4">4: やや有利</option>
           <option value="5">5: 有利 (やさしい)</option>
         </select>
-
-        <span>キャラ:</span>
-        <select id="player-char-select" class="input-box" style="width: auto; padding: 5px; font-size: 0.85rem; border-radius: 10px;" onchange="onPlayerCharChange(this.value)">
-          <option value="main00">フレア</option>
-          <option value="sub01">しずく</option>
-          <option value="sub02">シルル</option>
-          <option value="sub03">ブープル</option>
-          <option value="enemy01">ゴースト</option>
-          <option value="enemy02">コーレム</option>
-          <option value="enemy03">デビビ</option>
-          <option value="enemy04">マーオ</option>
-          <option value="custom" disabled>マイ立ち絵 (設定で登録)</option>
-        </select>
       </div>
 
-      <div id="main-menu-actions" style="display:flex; flex-direction:column; align-items:center; gap:15px; width:100%;">
+      <div id="main-menu-actions" style="display:flex; flex-direction:column; align-items:center; gap:10px; width:100%;">
         <button class="btn" onclick="StoryManager.openMenu()" style="border-color:#ffd700;">ストーリーモード</button>
         <button class="btn" onclick="showSingleMenu()">ひとりで練習</button>
         <button class="btn" onclick="showComMenu()">COMと対戦</button>
+        <button class="btn" onclick="showLocalMenu()" style="border-color:#ff9100;">ローカル対戦 (最大4P)</button>
+        <button class="btn" onclick="showOnlineMenu()" style="border-color:#00d4ff;">オンライン対戦</button>
         <button class="btn" onclick="showRankingMenu()">ランキング</button>
         <button class="btn" onclick="openSettings()" style="background:#1a4d3e; border-color:#4ecca3;">⚙️設定</button>
-        
-        <div style="border-top:1px solid rgba(255,255,255,0.2); width:100%; margin:5px 0;"></div>
-        
-        <div class="online-menu-section" style="display:flex; flex-direction:column; align-items:center; gap:8px;">
-          <input type="text" id="peer-room-id" class="input-box" placeholder="部屋コード (最大4人)" maxlength="10">
-          <div style="font-size: 0.9rem; color: #4ecca3; display: flex; align-items: center; gap: 8px;">
-            <span>人数:</span>
-            <select id="online-max-players" class="input-box" style="width: auto; padding: 5px; font-size: 0.85rem; border-radius: 10px;">
-              <option value="2" selected>2人対戦</option>
-              <option value="3">3人対戦</option>
-              <option value="4">4人対戦</option>
-            </select>
-          </div>
-          <div style="font-size: 0.85rem; color: #4ecca3; display: flex; align-items: center; justify-content: space-between; width: 240px; background: rgba(0,0,0,0.3); padding: 4px 10px; border-radius: 10px;">
-            <span>不足COM強さ: <b style="color:#ff007f;">Lv.<span id="online-com-level-val">3</span></b></span>
-            <input type="range" id="online-com-level" min="1" max="99" step="1" value="3" style="width:90px;" oninput="document.getElementById('online-com-level-val').innerText = this.value">
-          </div>
-          <label class="switch-wrapper" style="background: rgba(0,0,0,0.3); padding: 5px 10px; border-radius: 10px; font-size: 0.8rem;">
-            <input type="checkbox" id="online-cheat-toggle"> 不足COMにCheat AI(上限3回)
-          </label>
-          <div style="display:flex; gap:10px;">
-            <button class="btn" style="min-width:115px; padding:10px 16px; font-size:1rem;" onclick="createRoom()">部屋を作る</button>
-            <button class="btn" style="min-width:115px; padding:10px 16px; font-size:1rem;" onclick="joinRoom()">部屋に入る</button>
-          </div>
-        </div>
       </div>
       
       <div id="room-waiting" style="display:none; flex-direction:column; align-items:center; gap:10px; margin-top:10px; background:#162447; padding:15px; border-radius:10px; border:1px solid #e94560; width:100%; box-sizing:border-box;">
@@ -186,17 +172,39 @@
         <button id="force-start-btn" class="btn" style="padding:10px 16px; font-size:1rem; margin-top:10px; display:none;" onclick="startCountdown()">この人数で開始(不足はCOM)</button>
         <button class="btn" style="padding:8px 16px; font-size:0.9rem; background:#444; border-color:#888;" onclick="cancelRoom()">キャンセル</button>
       </div>
-
     </div>
 
     <div id="story-menu">
+      <button class="btn menu-back-top-btn" onclick="backToMainMenu()">← 戻る</button>
       <h2 style="color:#ffd700">ストーリーモード</h2>
+      <div id="story-char-picker" class="char-picker-panel"></div>
+      <div style="font-size:0.86rem; color:#ffd700; display:flex; align-items:center; gap:8px;">
+        <span>難易度:</span>
+        <select id="story-difficulty" class="input-box" style="width:auto; padding:5px 10px; font-size:0.84rem; border-radius:10px;" onchange="StoryManager.onDifficultyChange(this.value)">
+          <option value="easy">やさしい</option>
+          <option value="normal" selected>ふつう</option>
+          <option value="hard">むずかしい</option>
+          <option value="unfair">りふじん（全員スキルあり）</option>
+        </select>
+      </div>
+      <div class="skill-rule-row">
+        <label class="switch-wrapper skill-rule-box">
+          <input type="checkbox" id="story-skill-toggle"> プレイヤースキル（最大3回）
+        </label>
+        <select id="story-skill-select" class="input-box skill-select-box" onchange="onPlayerSkillSelectChange(this.value)">
+          <option value="erase_color">マーク全消し</option>
+          <option value="erase_rows">1・5・9段消し</option>
+          <option value="purify_garbage">お邪魔浄化</option>
+          <option value="corrupt_enemy_row">お邪魔侵食</option>
+        </select>
+      </div>
       <div id="story-stage-list" class="story-stage-list"></div>
-      <button class="btn" style="background:#444; border-color:#888;" onclick="backToMainMenu()">戻る</button>
     </div>
     
-    <div id="single-menu" style="display:none; flex-direction:column; gap:12px; align-items:center; width:100%;">
+    <div id="single-menu" style="display:none; flex-direction:column; gap:10px; align-items:center; width:100%; max-width:380px;">
+      <button class="btn menu-back-top-btn" onclick="backToMainMenu()">← 戻る</button>
       <h2 style="color:#4ecca3">ひとりで練習</h2>
+      <div id="single-char-picker" class="char-picker-panel"></div>
       <div style="font-size:0.9rem; color:#4ecca3; display:flex; align-items:center; gap:8px;">
         <span>モード:</span>
         <select id="single-mode-select" class="input-box" style="width: auto; padding: 5px; font-size: 0.85rem; border-radius: 10px;" onchange="updateSingleMenu()">
@@ -204,6 +212,17 @@
           <option value="ta">タイムアタック (3分)</option>
           <option value="sa">スコアアタック</option>
           <option value="survival">勝ち抜きモード</option>
+        </select>
+      </div>
+      <div class="skill-rule-row">
+        <label class="switch-wrapper skill-rule-box">
+          <input type="checkbox" id="single-skill-toggle"> スキルあり（最大3回）
+        </label>
+        <select id="single-skill-select" class="input-box skill-select-box" onchange="onPlayerSkillSelectChange(this.value)">
+          <option value="erase_color">マーク全消し</option>
+          <option value="erase_rows">1・5・9段消し</option>
+          <option value="purify_garbage">お邪魔浄化</option>
+          <option value="corrupt_enemy_row">お邪魔侵食</option>
         </select>
       </div>
       
@@ -215,14 +234,13 @@
         <label style="display:flex; align-items:center; gap:5px;"><input type="checkbox" id="survival-clear-garbage" checked> COM撃破時に予告お邪魔を無効化</label>
         <label style="display:flex; align-items:center; gap:5px;"><input type="checkbox" id="survival-cancel-sent" checked> 次COMへのお邪魔持ち越しを無効化</label>
         <label style="display:flex; align-items:center; gap:5px;"><input type="checkbox" id="survival-keep-speed"> 自動せり上がり速度を初期値に固定</label>
-        <label style="display:flex; align-items:center; gap:5px;"><input type="checkbox" id="survival-cheat-toggle"> Cheat AI（スキル発動あり・上限3回）</label>
       </div>
 
       <button class="btn" onclick="startSingleMode()">スタート</button>
-      <button class="btn" style="background:#444; border-color:#888;" onclick="backToMainMenu()">戻る</button>
     </div>
 
     <div id="ranking-menu" style="display:none; flex-direction:column; gap:12px; align-items:center; width:100%;">
+      <button class="btn menu-back-top-btn" onclick="backToMainMenu()">← 戻る</button>
       <h2 style="color:#ffd700">ランキング</h2>
       <div style="font-size:0.9rem; color:#4ecca3; display:flex; align-items:center; gap:8px;">
         <select id="ranking-mode-select" class="input-box" style="width: auto; padding: 5px; font-size: 0.85rem; border-radius: 10px;" onchange="showRankingMenu()">
@@ -234,11 +252,12 @@
         </select>
       </div>
       <div id="ranking-list" style="width:100%; max-width: 300px; background:rgba(0,0,0,0.5); border-radius:8px; padding:10px; font-size:0.9rem; line-height:1.8;"></div>
-      <button class="btn" style="background:#444; border-color:#888;" onclick="backToMainMenu()">戻る</button>
     </div>
 
-    <div id="com-menu" style="display:none; flex-direction:column; gap:12px; align-items:center; width:100%; max-width:350px;">
+    <div id="com-menu" style="display:none; flex-direction:column; gap:10px; align-items:center; width:100%; max-width:380px;">
+      <button class="btn menu-back-top-btn" onclick="backToMainMenu()">← 戻る</button>
       <h2 style="color:#4ecca3">CPU対戦設定</h2>
+      <div id="com-char-picker" class="char-picker-panel"></div>
       <div style="font-size:0.9rem; color:#4ecca3; display:flex; align-items:center; gap:8px;">
         <span>対戦人数:</span>
         <select id="com-player-count" class="input-box" style="width: auto; padding: 5px; font-size: 0.85rem; border-radius: 10px;">
@@ -259,36 +278,94 @@
           <span>99:げきむず</span>
         </div>
       </div>
-      <label class="switch-wrapper" style="background:rgba(0,0,0,0.3); padding:8px 14px; border-radius:10px;">
-        <input type="checkbox" id="com-cheat-toggle"> Cheat AI（スキル発動あり・上限3回）
-      </label>
+      <div class="skill-rule-row">
+        <label class="switch-wrapper skill-rule-box">
+          <input type="checkbox" id="com-cheat-toggle"> スキルあり（プレイヤー＆COM）
+        </label>
+        <select id="com-skill-select" class="input-box skill-select-box" onchange="onPlayerSkillSelectChange(this.value)">
+          <option value="erase_color">マーク全消し</option>
+          <option value="erase_rows">1・5・9段消し</option>
+          <option value="purify_garbage">お邪魔浄化</option>
+          <option value="corrupt_enemy_row">お邪魔侵食</option>
+        </select>
+      </div>
       <button class="btn" onclick="startComGameFromSlider()">スタート</button>
-      <button class="btn" style="background:#444; border-color:#888;" onclick="backToMainMenu()">戻る</button>
+    </div>
+
+    <div id="local-menu" style="display:none; flex-direction:column; gap:8px; align-items:center; width:100%; max-width:420px;">
+      <button class="btn menu-back-top-btn" onclick="backToMainMenu()">← 戻る</button>
+      <h2 style="color:#ff9100">ローカル対戦 (最大4人)</h2>
+      <div style="font-size:0.88rem; color:#4ecca3; display:flex; align-items:center; gap:8px;">
+        <span>対戦人数:</span>
+        <select id="local-player-count" class="input-box" style="width:auto; padding:5px 10px; font-size:0.85rem; border-radius:10px;" onchange="onLocalCountChange()">
+          <option value="2" selected>2人対戦</option>
+          <option value="3">3人対戦</option>
+          <option value="4">4人対戦</option>
+        </select>
+      </div>
+      <div id="local-pad-status" style="font-size:0.74rem; color:#00d4ff; text-align:center;">接続パッドを確認中...</div>
+      <div id="local-player-tabs" class="local-player-tabs"></div>
+      <div id="local-slot-config" class="local-slot-config"></div>
+      <div id="local-char-picker" class="char-picker-panel"></div>
+      <label class="switch-wrapper skill-rule-box">
+        <input type="checkbox" id="local-skill-toggle"> スキルあり（最大3回 / スキルのみ盤面カットイン）
+      </label>
+      <button class="btn" onclick="startLocalGame()">スタート</button>
+    </div>
+
+    <div id="online-menu" style="display:none; flex-direction:column; gap:10px; align-items:center; width:100%; max-width:380px;">
+      <button class="btn menu-back-top-btn" onclick="backToMainMenu()">← 戻る</button>
+      <h2 style="color:#00d4ff">オンライン対戦 (P2P)</h2>
+      <div id="online-char-picker" class="char-picker-panel"></div>
+      <input type="text" id="peer-room-id" class="input-box" placeholder="部屋コード (最大4人)" maxlength="10">
+      <div style="font-size: 0.9rem; color: #4ecca3; display: flex; align-items: center; gap: 8px;">
+        <span>人数:</span>
+        <select id="online-max-players" class="input-box" style="width: auto; padding: 5px; font-size: 0.85rem; border-radius: 10px;">
+          <option value="2" selected>2人対戦</option>
+          <option value="3">3人対戦</option>
+          <option value="4">4人対戦</option>
+        </select>
+      </div>
+      <div style="font-size: 0.85rem; color: #4ecca3; display: flex; align-items: center; justify-content: space-between; width: 240px; background: rgba(0,0,0,0.3); padding: 4px 10px; border-radius: 10px;">
+        <span>不足COM強さ: <b style="color:#ff007f;">Lv.<span id="online-com-level-val">3</span></b></span>
+        <input type="range" id="online-com-level" min="1" max="99" step="1" value="3" style="width:90px;" oninput="document.getElementById('online-com-level-val').innerText = this.value">
+      </div>
+      <div class="skill-rule-row">
+        <label class="switch-wrapper skill-rule-box">
+          <input type="checkbox" id="online-skill-toggle"> スキルあり（ホストのルール）
+        </label>
+        <select id="online-skill-select" class="input-box skill-select-box" onchange="onPlayerSkillSelectChange(this.value)">
+          <option value="erase_color">マーク全消し</option>
+          <option value="erase_rows">1・5・9段消し</option>
+          <option value="purify_garbage">お邪魔浄化</option>
+          <option value="corrupt_enemy_row">お邪魔侵食</option>
+        </select>
+      </div>
+      <div style="display:flex; gap:10px;">
+        <button class="btn" style="min-width:115px; padding:10px 16px; font-size:1rem;" onclick="createRoom()">部屋を作る</button>
+        <button class="btn" style="min-width:115px; padding:10px 16px; font-size:1rem;" onclick="joinRoom()">部屋に入る</button>
+      </div>
     </div>
   </div>
 
   <div id="game-area" class="right-handed">
     <button id="exit-btn" class="action-btn retire-btn absolute-top" onclick="exitGame()">退出 (リタイア)</button>
     <div id="rivals-top-area" style="display:none;"></div>
-    <div id="external-cutin" class="external-cutin" aria-hidden="true">
-      <img id="external-cutin-img" class="external-cutin-img" alt="">
-      <div class="external-cutin-info">
-        <div id="external-cutin-name" class="external-cutin-name"></div>
-        <div id="external-cutin-value" class="external-cutin-value"></div>
-      </div>
-    </div>
-    
 
     <div id="game-container">
-      <div id="controls-container" style="display: flex; flex-direction: column; justify-content: flex-end; gap: 10px; z-index: 20; width: 110px;">
+      <div id="controls-container" style="display: flex; flex-direction: column; justify-content: flex-end; gap: 6px; z-index: 20; width: 110px;">
         <button id="layout-toggle-btn" class="small-btn" tabindex="-1" onclick="toggleLandscapeLayout()" style="display:none; width:100%; font-size:0.75rem; padding:5px 2px; text-align:center;">UI: 横並び</button>
-        <label id="handedness-wrapper" class="switch-wrapper" style="background: rgba(0,0,0,0.85); padding: 6px 8px; border-radius: 10px; flex-direction: column; gap: 4px; border: 1px solid #4ecca3;">
+        <label id="handedness-wrapper" class="switch-wrapper" style="background: rgba(0,0,0,0.85); padding: 5px 8px; border-radius: 10px; flex-direction: column; gap: 3px; border: 1px solid #4ecca3;">
           <input type="checkbox" id="handedness-toggle" tabindex="-1" onchange="toggleHandedness()"> <span id="handedness-text" style="font-size: 0.75rem;">右利きモード</span>
         </label>
-        <label id="swipe-wrapper" class="switch-wrapper" style="background: rgba(0,0,0,0.65); padding: 6px 8px; border-radius: 10px; flex-direction: column; gap: 4px; border: 1px solid rgba(255,255,255,0.1);">
+        <label id="swipe-wrapper" class="switch-wrapper" style="background: rgba(0,0,0,0.65); padding: 5px 8px; border-radius: 10px; flex-direction: column; gap: 3px; border: 1px solid rgba(255,255,255,0.1);">
           <input type="checkbox" id="continuous-swipe" tabindex="-1" checked>連続移動
         </label>
-        <button class="action-btn" id="rise-btn" tabindex="-1" style="height: 60px; font-size: 1.05rem; box-shadow: 0 4px #8a0c24;">せり上げ</button>
+        <button class="action-btn skill-action-btn" id="skill-btn" tabindex="-1" onclick="activatePlayerSkill()" style="display:none;">
+          <span id="skill-btn-progress" class="skill-btn-progress"></span>
+          <span id="skill-btn-label" class="skill-btn-label">スキル (3/3)</span>
+        </button>
+        <button class="action-btn" id="rise-btn" tabindex="-1" style="height: 54px; font-size: 1.0rem; box-shadow: 0 4px #8a0c24;">せり上げ</button>
       </div>
 
       <div class="board-wrapper my-board" id="my-wrapper">
@@ -296,12 +373,18 @@
           <span class="preview-label">予告</span>
           <div id="my-garbage-preview" class="preview-list"></div>
         </div>
-        <div class="board-header">
+        <div class="board-header my-board-header">
           <span id="player-label">YOU</span>
           <span id="timer-label" style="color:#ffd700;">00:00</span>
           <span id="score-label">SCORE: 0</span>
+          <div id="my-header-cutin" class="header-cutin" aria-hidden="true">
+            <img id="my-header-cutin-img" class="header-cutin-img" alt="">
+            <span id="my-header-cutin-name" class="header-cutin-name"></span>
+            <span id="my-header-cutin-text" class="header-cutin-text"></span>
+          </div>
         </div>
         <div class="canvas-container"><canvas id="my-canvas"></canvas></div>
+        <div id="my-local-skill-bar" class="local-skill-bar" style="display:none;"></div>
       </div>
       
       <div id="rivals-area" style="display: none; gap: 10px; align-items: center; justify-content: center;"></div>

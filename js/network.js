@@ -261,6 +261,7 @@ function resetGameLogicOnline(config) {
     resolvedCharId === 'custom' ? getPlayerDisplayName() : null
   );
   document.getElementById('player-label').innerText = myRenderer.theme.name;
+  if (typeof applyCustomBoardFrame === 'function') applyCustomBoardFrame(myRenderer.theme);
 
   myEngine = new PonEngine(
     (state) => { if (state === 'gameover') checkMatchEnd(); },

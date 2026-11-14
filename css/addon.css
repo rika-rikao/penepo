@@ -443,3 +443,64 @@
   #story-menu { max-width: 540px; gap: 6px; }
   .story-stage-list { max-height: 30vh; }
 }
+
+/* ローカル対戦用メニュー・盤面スキルバー */
+.local-player-tabs {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  width: 100%;
+}
+.local-player-tabs .small-btn.active {
+  background: #e94560;
+  border-color: #ffd700;
+  font-weight: bold;
+}
+.local-slot-config {
+  width: 100%;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 145, 0, 0.45);
+  border-radius: 10px;
+  padding: 8px 10px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 0.8rem;
+}
+.local-skill-bar {
+  width: 100%;
+  height: 22px;
+  margin-top: 3px;
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.9);
+  border: 1px solid #ff007f;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.72rem;
+  font-weight: bold;
+  color: #fff;
+}
+.local-skill-bar.ready {
+  background: linear-gradient(90deg, #ff007f, #ff8c00);
+  border-color: #ffd700;
+  box-shadow: 0 0 8px rgba(255, 215, 0, 0.7);
+}
+.local-skill-bar-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: rgba(255, 0, 127, 0.45);
+  transition: width 0.2s;
+  pointer-events: none;
+}
+.local-skill-bar-text {
+  position: relative;
+  z-index: 2;
+}

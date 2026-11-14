@@ -402,7 +402,7 @@ function resumeBgm() {
   }
 }
 
-// --- コンフィグ・ゲームパッド管理 ---
+// --- コンフィグ・ゲームパッド管理（1P〜4P対応） ---
 const ACTION_LABELS = {
   Up: '上', Down: '下', Left: '左', Right: '右', Swap: '入替',
   GrabLeft: 'カーソル左つかみ', GrabRight: 'カーソル右つかみ',
@@ -434,6 +434,39 @@ let padConfig = {
   Pause: 9
 };
 
+function createDefaultPadConfig() {
+  return {
+    Up: 12, Down: 13, Left: 14, Right: 15,
+    Swap: 0,
+    GrabLeft: 2, GrabRight: 1,
+    ToggleContinuous: 3,
+    Rise1: 5, Rise2: 7,
+    TargetRight: 5, TargetLeft: 4,
+    Skill: 6,
+    Pause: 9
+  };
+}
+
+function createEmptyKeyConfig() {
+  const obj = {};
+  Object.keys(ACTION_LABELS).forEach(k => obj[k] = '');
+  return obj;
+}
+
+// 2Pデフォルトキー（1Pと重複しないWASD側）
+function createDefaultP2KeyConfig() {
+  return {
+    Up: 'KeyW', Down: 'KeyS', Left: 'KeyA', Right: 'KeyD',
+    Swap: 'KeyG',
+    GrabLeft: 'KeyT', GrabRight: 'KeyY',
+    ToggleContinuous: 'KeyR',
+    Rise1: 'KeyV', Rise2: 'KeyB',
+    TargetRight: 'Digit2', TargetLeft: 'Digit1',
+    Skill: 'KeyH',
+    Pause: ''
+  };
+}
+
 try {
   const sKey = localStorage.getItem('pdw_key'), sPad = localStorage.getItem('pdw_pad');
   if (sKey) {
@@ -454,17 +487,73 @@ try {
   }
 } catch(e) {}
 
+let playerConfigs = [
+  { key: keyConfig, pad: padConfig, padSlot: 0 },
+  { key: createDefaultP2KeyConfig(), pad: createDefaultPadConfig(), padSlot: 1 },
+  { key: createEmptyKeyConfig(), pad: createDefaultPadConfig(), padSlot: 2 },
+  { key: createEmptyKeyConfig(), pad: createDefaultPadConfig(), padSlot: 3 }
+];
+
+try {
+  const savedSlot0 = localStorage.getItem('pdw_pad_slot_0');
+  if (savedSlot0 !== null) playerConfigs[0].padSlot = parseInt(savedSlot0, 10);
+  const savedMulti = localStorage.getItem('pdw_multi_configs');
+  if (savedMulti) {
+    const parsed = JSON.parse(savedMulti);
+    [1, 2, 3].forEach(idx => {
+      if (parsed[idx]) {
+        if (parsed[idx].key) {
+          Object.keys(ACTION_LABELS).forEach(k => {
+            if (parsed[idx].key[k] !== undefined) playerConfigs[idx].key[k] = parsed[idx].key[k];
+          });
+        }
+        if (parsed[idx].pad) {
+          Object.keys(ACTION_LABELS).forEach(k => {
+            if (parsed[idx].pad[k] !== undefined) playerConfigs[idx].pad[k] = parsed[idx].pad[k];
+          });
+        }
+        if (parsed[idx].padSlot !== undefined) {
+          playerConfigs[idx].padSlot = parsed[idx].padSlot;
+        }
+      }
+    });
+  }
+} catch (e) {}
+
+let settingsPlayerIdx = 0;
 let assigningAction = null, assignType = null;
+
+function selectSettingsPlayer(idx) {
+  settingsPlayerIdx = idx;
+  assigningAction = null;
+  document.querySelectorAll('#settings-player-tabs button').forEach((btn, i) => {
+    btn.classList.toggle('active', i === idx);
+  });
+  const sel = document.getElementById('settings-pad-slot');
+  if (sel) sel.value = String(playerConfigs[idx].padSlot);
+  renderConfigUI();
+}
+
+function onSettingsPadSlotChange(val) {
+  playerConfigs[settingsPlayerIdx].padSlot = parseInt(val, 10);
+}
 
 function openSettings() { 
   document.getElementById('settings-overlay').style.display = 'block'; 
-  renderConfigUI();
+  selectSettingsPlayer(settingsPlayerIdx);
 }
+
 function closeSettings() { 
   document.getElementById('settings-overlay').style.display = 'none'; 
   assigningAction = null;
   localStorage.setItem('pdw_key', JSON.stringify(keyConfig));
   localStorage.setItem('pdw_pad', JSON.stringify(padConfig));
+  localStorage.setItem('pdw_pad_slot_0', String(playerConfigs[0].padSlot));
+  localStorage.setItem('pdw_multi_configs', JSON.stringify({
+    1: playerConfigs[1],
+    2: playerConfigs[2],
+    3: playerConfigs[3]
+  }));
 
   if (bgmNeedsPlay && !isBgmPlaying && matchState !== 'playing') {
     const expectedFile = bgmPlaylist[currentBgmIndex];
@@ -492,6 +581,8 @@ function closeSettings() {
 
 function renderConfigUI() {
   const list = document.getElementById('key-config-list');
+  if (!list) return;
+  const cfg = playerConfigs[settingsPlayerIdx];
   list.innerHTML = '';
   Object.keys(ACTION_LABELS).forEach(action => {
     const row = document.createElement('div');
@@ -503,12 +594,13 @@ function renderConfigUI() {
     
     const kBtn = document.createElement('button'); kBtn.className = 'config-btn';
     kBtn.style.width = '95px'; kBtn.style.flexShrink = '0';
-    kBtn.innerText = `Key: ${(keyConfig[action] || '').replace('Arrow','').replace('Key','')}`;
+    const rawKey = cfg.key[action] || '';
+    kBtn.innerText = `Key: ${rawKey ? rawKey.replace('Arrow','').replace('Key','') : 'なし'}`;
     kBtn.onclick = () => { assigningAction = action; assignType = 'key'; kBtn.innerText = '押してください'; };
     
     const pBtn = document.createElement('button'); pBtn.className = 'config-btn';
     pBtn.style.width = '95px'; pBtn.style.flexShrink = '0';
-    pBtn.innerText = `Pad: ${padConfig[action] !== null && padConfig[action] !== undefined ? padConfig[action] : 'なし'}`;
+    pBtn.innerText = `Pad: ${cfg.pad[action] !== null && cfg.pad[action] !== undefined ? cfg.pad[action] : 'なし'}`;
     pBtn.onclick = () => { assigningAction = action; assignType = 'pad'; pBtn.innerText = '押してください'; };
     
     row.append(lbl, kBtn, pBtn);
@@ -516,89 +608,123 @@ function renderConfigUI() {
   });
 }
 
-// ゲームパッドによるメニュー操作用グローバルループ
+function getConnectedPadsSummaryText() {
+  const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()) : [];
+  const connected = [];
+  for (let i = 0; i < 4; i++) {
+    if (pads[i] && pads[i].connected) {
+      connected.push(`Pad${i}: OK`);
+    }
+  }
+  return connected.length > 0
+    ? `検出済みパッド → ${connected.join(' / ')}`
+    : '検出済みパッド: なし（接続してどれかボタンを押すと認識されます）';
+}
+
+// ゲームパッドによるメニュー操作 & 設定画面のボタン割り当て用グローバルループ
 let globalPadPrevState = {};
 setInterval(() => {
-  const pad = navigator.getGamepads()[0];
+  const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()) : [];
+
+  const settingsPadStatus = document.getElementById('settings-pad-status');
+  if (settingsPadStatus && document.getElementById('settings-overlay').style.display === 'block') {
+    settingsPadStatus.innerText = getConnectedPadsSummaryText();
+  }
+  const localPadStatus = document.getElementById('local-pad-status');
+  if (localPadStatus && document.getElementById('local-menu')?.style.display === 'flex') {
+    localPadStatus.innerText = getConnectedPadsSummaryText();
+  }
+
+  if (assigningAction && assignType === 'pad') {
+    const targetSlot = playerConfigs[settingsPlayerIdx].padSlot;
+    const scanOrder = [];
+    if (targetSlot >= 0 && pads[targetSlot]) scanOrder.push(pads[targetSlot]);
+    pads.forEach(p => { if (p && !scanOrder.includes(p)) scanOrder.push(p); });
+
+    for (const p of scanOrder) {
+      const pressedIdx = p.buttons.findIndex(b => b.pressed);
+      if (pressedIdx !== -1) {
+        playerConfigs[settingsPlayerIdx].pad[assigningAction] = pressedIdx;
+        assigningAction = null;
+        renderConfigUI();
+        return;
+      }
+    }
+    return;
+  }
+
+  const slot0 = playerConfigs[0].padSlot;
+  const pad = (slot0 >= 0 && pads[slot0]) ? pads[slot0] : pads.find(p => p && p.connected);
   if (!pad) return;
   let pressed = {};
   pad.buttons.forEach((b, i) => pressed[i] = b.pressed);
   
-  if (assigningAction && assignType === 'pad') {
-    const pIdx = Object.keys(pressed).find(i => pressed[i]);
-    if (pIdx !== undefined) {
-      padConfig[assigningAction] = parseInt(pIdx);
-      assigningAction = null;
-      renderConfigUI();
-    }
-  } else {
-    const justPressed = (btnIdx) => btnIdx !== null && btnIdx !== undefined && pressed[btnIdx] && !globalPadPrevState[btnIdx];
-    
-    if (typeof matchState !== 'undefined' && matchState !== 'playing') {
-      const activeEl = document.activeElement;
-      const isSelect = activeEl && activeEl.tagName === 'SELECT';
-      const isRange = activeEl && activeEl.tagName === 'INPUT' && activeEl.type === 'range';
-      const isCheckbox = activeEl && activeEl.tagName === 'INPUT' && activeEl.type === 'checkbox';
+  const justPressed = (btnIdx) => btnIdx !== null && btnIdx !== undefined && pressed[btnIdx] && !globalPadPrevState[btnIdx];
+  
+  if (typeof matchState !== 'undefined' && matchState !== 'playing') {
+    const activeEl = document.activeElement;
+    const isSelect = activeEl && activeEl.tagName === 'SELECT';
+    const isRange = activeEl && activeEl.tagName === 'INPUT' && activeEl.type === 'range';
+    const isCheckbox = activeEl && activeEl.tagName === 'INPUT' && activeEl.type === 'checkbox';
 
-      if (isSelect) {
-        if (justPressed(padConfig.Left)) {
-          if (activeEl.selectedIndex > 0) {
-            activeEl.selectedIndex--;
-            activeEl.dispatchEvent(new Event('change', { bubbles: true }));
-            SE.play('cursorMove');
-          }
-        } else if (justPressed(padConfig.Right)) {
-          if (activeEl.selectedIndex < activeEl.options.length - 1) {
-            activeEl.selectedIndex++;
-            activeEl.dispatchEvent(new Event('change', { bubbles: true }));
-            SE.play('cursorMove');
-          }
-        } else if (justPressed(padConfig.Up)) {
-          moveMenuFocus(-1);
-        } else if (justPressed(padConfig.Down)) {
-          moveMenuFocus(1);
-        }
-      } else if (isRange) {
-        const step = parseFloat(activeEl.step) || 1;
-        const min = parseFloat(activeEl.min) || 0;
-        const max = parseFloat(activeEl.max) || 100;
-        let val = parseFloat(activeEl.value);
-        if (justPressed(padConfig.Left)) {
-          val = Math.max(min, val - step);
-          activeEl.value = val;
-          activeEl.dispatchEvent(new Event('input', { bubbles: true }));
+    if (isSelect) {
+      if (justPressed(padConfig.Left)) {
+        if (activeEl.selectedIndex > 0) {
+          activeEl.selectedIndex--;
           activeEl.dispatchEvent(new Event('change', { bubbles: true }));
           SE.play('cursorMove');
-        } else if (justPressed(padConfig.Right)) {
-          val = Math.min(max, val + step);
-          activeEl.value = val;
-          activeEl.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      } else if (justPressed(padConfig.Right)) {
+        if (activeEl.selectedIndex < activeEl.options.length - 1) {
+          activeEl.selectedIndex++;
           activeEl.dispatchEvent(new Event('change', { bubbles: true }));
           SE.play('cursorMove');
-        } else if (justPressed(padConfig.Up)) {
-          moveMenuFocus(-1);
-        } else if (justPressed(padConfig.Down)) {
-          moveMenuFocus(1);
         }
-      } else {
-        if (justPressed(padConfig.Up) || justPressed(padConfig.Left)) {
-          moveMenuFocus(-1);
-        }
-        if (justPressed(padConfig.Down) || justPressed(padConfig.Right)) {
-          moveMenuFocus(1);
-        }
+      } else if (justPressed(padConfig.Up)) {
+        moveMenuFocus(-1);
+      } else if (justPressed(padConfig.Down)) {
+        moveMenuFocus(1);
       }
+    } else if (isRange) {
+      const step = parseFloat(activeEl.step) || 1;
+      const min = parseFloat(activeEl.min) || 0;
+      const max = parseFloat(activeEl.max) || 100;
+      let val = parseFloat(activeEl.value);
+      if (justPressed(padConfig.Left)) {
+        val = Math.max(min, val - step);
+        activeEl.value = val;
+        activeEl.dispatchEvent(new Event('input', { bubbles: true }));
+        activeEl.dispatchEvent(new Event('change', { bubbles: true }));
+        SE.play('cursorMove');
+      } else if (justPressed(padConfig.Right)) {
+        val = Math.min(max, val + step);
+        activeEl.value = val;
+        activeEl.dispatchEvent(new Event('input', { bubbles: true }));
+        activeEl.dispatchEvent(new Event('change', { bubbles: true }));
+        SE.play('cursorMove');
+      } else if (justPressed(padConfig.Up)) {
+        moveMenuFocus(-1);
+      } else if (justPressed(padConfig.Down)) {
+        moveMenuFocus(1);
+      }
+    } else {
+      if (justPressed(padConfig.Up) || justPressed(padConfig.Left)) {
+        moveMenuFocus(-1);
+      }
+      if (justPressed(padConfig.Down) || justPressed(padConfig.Right)) {
+        moveMenuFocus(1);
+      }
+    }
 
-      if (justPressed(padConfig.Swap)) {
-        if (activeEl) {
-          if (isCheckbox) {
-            activeEl.checked = !activeEl.checked;
-            activeEl.dispatchEvent(new Event('change', { bubbles: true }));
-            SE.play('cursorMove');
-          } else if (activeEl.click) {
-            activeEl.click();
-            SE.play('cursorMove');
-          }
+    if (justPressed(padConfig.Swap)) {
+      if (activeEl) {
+        if (isCheckbox) {
+          activeEl.checked = !activeEl.checked;
+          activeEl.dispatchEvent(new Event('change', { bubbles: true }));
+          SE.play('cursorMove');
+        } else if (activeEl.click) {
+          activeEl.click();
+          SE.play('cursorMove');
         }
       }
     }

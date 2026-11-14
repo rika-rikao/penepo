@@ -535,16 +535,12 @@ function drawBoardFgAddon(ctx, canvas, engine, renderer) {
     ctx.restore();
   }
 
-  // カスタムフレーム画像
-  function applyCustomBoardFrame(theme) {
-  const frameEl = document.getElementById('my-custom-frame');
-  if (!frameEl) return;
+  // カスタムフレーム画像（最前面枠）
   if (theme && theme.frameSrc) {
-    frameEl.src = theme.frameSrc;
-    frameEl.style.display = 'block';
-  } else {
-    frameEl.removeAttribute('src');
-    frameEl.style.display = 'none';
+    const frameImg = getCachedImage(theme.frameSrc);
+    if (frameImg) {
+      ctx.drawImage(frameImg, 0, 0, W, H);
+    }
   }
 }
 

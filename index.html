@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -102,8 +103,25 @@
       </div>
 
       <div class="settings-section">
-        <h3>🎮 キー・パッド設定</h3>
-        <p style="font-size:0.8rem; color:#aaa; margin-bottom: 5px;">変更したい枠を押してから、キーやボタンを入力してください。</p>
+        <h3>🎮 キー・パッド設定（1P〜4P対応）</h3>
+        <div id="settings-pad-status" style="font-size:0.75rem; color:#4ecca3; margin: 4px 0;">パッドを接続してボタンを押すと認識されます</div>
+        <div id="settings-player-tabs" class="local-player-tabs" style="margin: 6px 0;">
+          <button type="button" class="small-btn active" onclick="selectSettingsPlayer(0)">1P</button>
+          <button type="button" class="small-btn" onclick="selectSettingsPlayer(1)">2P</button>
+          <button type="button" class="small-btn" onclick="selectSettingsPlayer(2)">3P</button>
+          <button type="button" class="small-btn" onclick="selectSettingsPlayer(3)">4P</button>
+        </div>
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; font-size:0.82rem;">
+          <span>使用ゲームパッド番号:</span>
+          <select id="settings-pad-slot" class="input-box" style="width:auto; padding:4px 8px; font-size:0.8rem;" onchange="onSettingsPadSlotChange(this.value)">
+            <option value="0">Pad 0</option>
+            <option value="1">Pad 1</option>
+            <option value="2">Pad 2</option>
+            <option value="3">Pad 3</option>
+            <option value="-1">使用しない</option>
+          </select>
+        </div>
+        <p style="font-size:0.78rem; color:#aaa; margin-bottom: 5px;">変更したい枠を押してから、キーやボタンを入力してください（Key解除はDelete）。</p>
         <div id="key-config-list" style="display:flex; flex-direction:column; gap:8px;"></div>
       </div>
 
@@ -137,10 +155,11 @@
         </select>
       </div>
 
-      <div id="main-menu-actions" style="display:flex; flex-direction:column; align-items:center; gap:12px; width:100%;">
+      <div id="main-menu-actions" style="display:flex; flex-direction:column; align-items:center; gap:10px; width:100%;">
         <button class="btn" onclick="StoryManager.openMenu()" style="border-color:#ffd700;">ストーリーモード</button>
         <button class="btn" onclick="showSingleMenu()">ひとりで練習</button>
         <button class="btn" onclick="showComMenu()">COMと対戦</button>
+        <button class="btn" onclick="showLocalMenu()" style="border-color:#ff9100;">ローカル対戦 (最大4P)</button>
         <button class="btn" onclick="showOnlineMenu()" style="border-color:#00d4ff;">オンライン対戦</button>
         <button class="btn" onclick="showRankingMenu()">ランキング</button>
         <button class="btn" onclick="openSettings()" style="background:#1a4d3e; border-color:#4ecca3;">⚙️設定</button>
@@ -241,6 +260,27 @@
       <button class="btn" style="background:#444; border-color:#888;" onclick="backToMainMenu()">戻る</button>
     </div>
 
+    <div id="local-menu" style="display:none; flex-direction:column; gap:8px; align-items:center; width:100%; max-width:420px;">
+      <h2 style="color:#ff9100">ローカル対戦 (最大4人)</h2>
+      <div style="font-size:0.88rem; color:#4ecca3; display:flex; align-items:center; gap:8px;">
+        <span>対戦人数:</span>
+        <select id="local-player-count" class="input-box" style="width:auto; padding:5px 10px; font-size:0.85rem; border-radius:10px;" onchange="onLocalCountChange()">
+          <option value="2" selected>2人対戦</option>
+          <option value="3">3人対戦</option>
+          <option value="4">4人対戦</option>
+        </select>
+      </div>
+      <div id="local-pad-status" style="font-size:0.74rem; color:#00d4ff; text-align:center;">接続パッドを確認中...</div>
+      <div id="local-player-tabs" class="local-player-tabs"></div>
+      <div id="local-slot-config" class="local-slot-config"></div>
+      <div id="local-char-picker" class="char-picker-panel"></div>
+      <label class="switch-wrapper skill-rule-box">
+        <input type="checkbox" id="local-skill-toggle"> スキルあり（最大3回 / スキルのみ盤面カットイン）
+      </label>
+      <button class="btn" onclick="startLocalGame()">スタート</button>
+      <button class="btn" style="background:#444; border-color:#888;" onclick="backToMainMenu()">戻る</button>
+    </div>
+
     <div id="online-menu" style="display:none; flex-direction:column; gap:10px; align-items:center; width:100%; max-width:380px;">
       <h2 style="color:#00d4ff">オンライン対戦 (P2P)</h2>
       <div id="online-char-picker" class="char-picker-panel"></div>
@@ -304,6 +344,7 @@
           </div>
         </div>
         <div class="canvas-container"><canvas id="my-canvas"></canvas></div>
+        <div id="my-local-skill-bar" class="local-skill-bar" style="display:none;"></div>
       </div>
       
       <div id="rivals-area" style="display: none; gap: 10px; align-items: center; justify-content: center;"></div>

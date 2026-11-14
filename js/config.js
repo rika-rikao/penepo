@@ -57,6 +57,45 @@ const SE = {
     source.connect(gainNode);
     gainNode.connect(audioCtx.destination);
     source.start(0);
+  },
+  playCountdown(step) {
+    const customKey = step === 'go' ? 'countdownGo' : `countdown${step}`;
+    if (this.buffers[customKey]) {
+      this.play(customKey);
+      return;
+    }
+    this.playSynthCountdown(step);
+  },
+  playSynthCountdown(step) {
+    if (this.volume <= 0) return;
+    try {
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      const now = audioCtx.currentTime;
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      const isGo = step === 'go';
+
+      osc.type = isGo ? 'triangle' : 'sine';
+      const baseFreq = isGo ? 1046.5 : 587.33;
+      const duration = isGo ? 0.32 : 0.14;
+
+      osc.frequency.setValueAtTime(baseFreq, now);
+      if (isGo) {
+        osc.frequency.exponentialRampToValueAtTime(1318.5, now + 0.08);
+      }
+
+      const peak = Math.max(0.001, this.volume * (isGo ? 0.45 : 0.35));
+      gain.gain.setValueAtTime(0.001, now);
+      gain.gain.linearRampToValueAtTime(peak, now + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start(now);
+      osc.stop(now + duration + 0.02);
+    } catch (e) {
+      console.warn('Countdown Synth Error:', e);
+    }
   }
 };
 SE.load();

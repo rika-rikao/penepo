@@ -32,6 +32,7 @@ const SE = {
     fanfareMax: 'assets/se/Fanfare_max.m4a',
   },
   buffers: {},
+  customBuffers: {},
   volume: 0.5,
   async load() {
     for (const [key, path] of Object.entries(this.files)) {
@@ -47,16 +48,70 @@ const SE = {
       }
     }
   },
-  play(key) {
-    if (!this.buffers[key]) return;
+  async setCustomSound(key, arrayBuffer) {
+    try {
+      const decoded = await new Promise((resolve, reject) => {
+        audioCtx.decodeAudioData(arrayBuffer, resolve, reject);
+      });
+      this.customBuffers[key] = decoded;
+      return true;
+    } catch (e) {
+      console.warn('Custom SE Decode Error:', key, e);
+      return false;
+    }
+  },
+  clearCustomSound(key) {
+    delete this.customBuffers[key];
+  },
+  playBuffer(buffer) {
+    if (!buffer) return false;
     if (audioCtx.state === 'suspended') audioCtx.resume();
     const source = audioCtx.createBufferSource();
-    source.buffer = this.buffers[key];
+    source.buffer = buffer;
     const gainNode = audioCtx.createGain();
     gainNode.gain.value = this.volume;
     source.connect(gainNode);
     gainNode.connect(audioCtx.destination);
     source.start(0);
+    return true;
+  },
+  playSynthTone(freq, duration = 0.14, type = 'triangle', gainScale = 0.45) {
+    if (this.volume <= 0) return;
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    const now = audioCtx.currentTime;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, now);
+    const peak = Math.max(0.001, this.volume * gainScale);
+    gain.gain.setValueAtTime(0.001, now);
+    gain.gain.linearRampToValueAtTime(peak, now + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start(now);
+    osc.stop(now + duration + 0.02);
+  },
+  playCountdown(step) {
+    const specificKey = `countdown_${step}`;
+    if (this.customBuffers[specificKey]) {
+      this.playBuffer(this.customBuffers[specificKey]);
+      return;
+    }
+    if (step !== 'go' && this.customBuffers.countdown) {
+      this.playBuffer(this.customBuffers.countdown);
+      return;
+    }
+    if (step === 'go') {
+      this.playSynthTone(1046.5, 0.28, 'triangle', 0.55);
+    } else {
+      this.playSynthTone(523.25, 0.14, 'triangle', 0.45);
+    }
+  },
+  play(key) {
+    const buf = this.customBuffers[key] || this.buffers[key];
+    if (!buf) return;
+    this.playBuffer(buf);
   }
 };
 SE.load();

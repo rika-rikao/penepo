@@ -708,15 +708,38 @@ function clearReadyGoTimers() {
   readyGoTimers = [];
   const overlay = document.getElementById('ready-go-overlay');
   if (overlay) overlay.style.display = 'none';
+  const countEl = document.getElementById('ready-countdown-text');
+  if (countEl) {
+    countEl.style.display = 'none';
+    countEl.style.opacity = '0';
+    countEl.innerText = '';
+  }
+}
+
+function animateReadySubCountdown(countEl, num) {
+  if (!countEl) return;
+  countEl.style.display = 'block';
+  countEl.style.transition = 'none';
+  countEl.style.opacity = '0';
+  countEl.style.transform = 'scale(1.45)';
+  countEl.innerText = String(num);
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      countEl.style.transition = 'all 0.22s cubic-bezier(0.175, 0.885, 0.32, 1.275)';
+      countEl.style.opacity = '1';
+      countEl.style.transform = 'scale(1)';
+    });
+  });
 }
 
 function showReadyGo() {
   clearReadyGoTimers();
   const overlay = document.getElementById('ready-go-overlay');
   const text = document.getElementById('ready-go-text');
+  const countEl = document.getElementById('ready-countdown-text');
   overlay.style.display = 'flex';
   
-  text.innerText = 'READY?';
+  text.innerText = 'READY';
   text.style.transition = 'none';
   text.style.opacity = '0';
   text.style.transform = 'scale(0.5)';
@@ -730,8 +753,30 @@ function showReadyGo() {
     });
   });
 
+  // 3 -> 2 -> 1 カウントダウン（READY はそのまま表示維持）
+  animateReadySubCountdown(countEl, 3);
+  if (typeof SE.playCountdown === 'function') SE.playCountdown(3);
+
+  const tCount2 = setTimeout(() => {
+    if (matchState === 'gameover' || document.getElementById('game-area').style.display === 'none') return;
+    animateReadySubCountdown(countEl, 2);
+    if (typeof SE.playCountdown === 'function') SE.playCountdown(2);
+  }, 1000);
+  readyGoTimers.push(tCount2);
+
+  const tCount1 = setTimeout(() => {
+    if (matchState === 'gameover' || document.getElementById('game-area').style.display === 'none') return;
+    animateReadySubCountdown(countEl, 1);
+    if (typeof SE.playCountdown === 'function') SE.playCountdown(1);
+  }, 2000);
+  readyGoTimers.push(tCount1);
+
   const t1 = setTimeout(() => {
     if (matchState === 'gameover' || document.getElementById('game-area').style.display === 'none') return;
+    if (countEl) {
+      countEl.style.display = 'none';
+      countEl.innerText = '';
+    }
     text.style.transition = 'none';
     text.style.opacity = '0';
     text.style.transform = 'scale(1.5)';
@@ -746,6 +791,7 @@ function showReadyGo() {
       });
     });
 
+    if (typeof SE.playCountdown === 'function') SE.playCountdown('go');
     matchState = 'playing';
     resumeBgm();
 
@@ -760,7 +806,7 @@ function showReadyGo() {
     }, 800);
     readyGoTimers.push(t2);
 
-  }, 1500);
+  }, 3000);
   readyGoTimers.push(t1);
 }
 
@@ -1105,6 +1151,9 @@ function resetGameLogic() {
     true,
     resolvedCharId === 'custom' ? getPlayerDisplayName() : null
   );
+  if (typeof applyBoardFrame === 'function') {
+    applyBoardFrame('my-wrapper', myRenderer.theme.frameSrc);
+  }
   document.getElementById('player-label').innerText = currentMode === 'local'
     ? `1P: ${myRenderer.theme.name}`
     : myRenderer.theme.name;

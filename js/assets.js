@@ -1,5 +1,5 @@
 // ==========================================
-// キャラクター定義 & 2-3-3-2アイコン選択 & カスタム画像 & 描画補助
+// キャラクター定義 & 2-3-3-2アイコン選択 & カスタム画像・ボイス・SE・ZIP一括読込 & 描画補助
 // ==========================================
 const CHARACTERS = [
   { id: 'main00', name: 'フレア',   role: 'main',  file: 'assets/img/chara/main00.png',  color: '#ff3366' },
@@ -256,6 +256,27 @@ async function deleteCustomAssetDB(key) {
   });
 }
 
+function arrayBufferToDataUrl(buffer, mime = 'application/octet-stream') {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+  }
+  return `data:${mime};base64,${btoa(binary)}`;
+}
+
+function dataUrlToArrayBuffer(dataUrl) {
+  const idx = dataUrl.indexOf(',');
+  const base64 = idx >= 0 ? dataUrl.slice(idx + 1) : dataUrl;
+  const binStr = atob(base64);
+  const bytes = new Uint8Array(binStr.length);
+  for (let i = 0; i < binStr.length; i++) {
+    bytes[i] = binStr.charCodeAt(i);
+  }
+  return bytes.buffer;
+}
+
 async function loadAllCustomAssets() {
   try {
     const db = await openAssetDB();
@@ -265,12 +286,26 @@ async function loadAllCustomAssets() {
       req.onsuccess = () => resolve(req.result || []);
       req.onerror = () => reject(req.error);
     });
-    items.forEach(item => {
-      if (item && item.key && item.dataUrl) {
+    for (const item of items) {
+      if (!item || !item.key || !item.dataUrl) continue;
+      if (item.key.startsWith('voice_')) {
+        const vCat = item.key.slice(6);
+        if (typeof VOICE !== 'undefined') {
+          const buf = dataUrlToArrayBuffer(item.dataUrl);
+          await VOICE.setCustomVoice(vCat, buf, { dataUrl: item.dataUrl, name: item.name || vCat, size: buf.byteLength });
+        }
+      } else if (item.key.startsWith('se_')) {
+        const seKey = item.key.slice(3);
+        if (typeof SE !== 'undefined') {
+          const buf = dataUrlToArrayBuffer(item.dataUrl);
+          await SE.setCustomSound(seKey, buf, { dataUrl: item.dataUrl, name: item.name || seKey, size: buf.byteLength });
+        }
+      } else {
         CustomAssets[item.key] = item;
         getCachedImage(item.dataUrl);
       }
-    });
+    }
+    applyGlobalFrameTheme(CustomAssets.frame ? CustomAssets.frame.dataUrl : null);
   } catch (e) {
     console.warn('CustomAssets load skip:', e);
   }
@@ -291,7 +326,7 @@ function loadImageFromFile(file) {
   });
 }
 
-async function compressImageSmart(file, kind) {
+async function compressImageSmart(file, kind, overrideName = null) {
   const img = await loadImageFromFile(file);
   const srcW = img.naturalWidth || img.width;
   const srcH = img.naturalHeight || img.height;
@@ -357,7 +392,7 @@ async function compressImageSmart(file, kind) {
     width: outW,
     height: outH,
     orientation,
-    name: file.name
+    name: overrideName || file.name || `${kind}.png`
   };
 }
 
@@ -376,6 +411,9 @@ async function handleCustomAssetUpload(kind, inputEl) {
       storySelectedCharId = 'custom';
       localStorage.setItem('pdw_char_id', 'custom');
       localStorage.setItem('pdw_story_char_id', 'custom');
+    }
+    if (kind === 'frame') {
+      applyGlobalFrameTheme(record.dataUrl);
     }
     refreshCustomAssetsUI();
     showToast(`${kind === 'chara' ? '立ち絵' : kind === 'bg' ? '背景' : 'フレーム'}を保存しました (${record.width}x${record.height})`);
@@ -400,8 +438,66 @@ async function clearCustomAsset(kind) {
       localStorage.setItem('pdw_story_char_id', 'main00');
     }
   }
+  if (kind === 'frame') {
+    applyGlobalFrameTheme(null);
+  }
   refreshCustomAssetsUI();
   showToast('リセットしました');
+}
+
+// --- カスタムボイス個別登録・解除・試聴 ---
+async function handleCustomVoiceUpload(category, inputEl) {
+  const file = inputEl.files && inputEl.files[0];
+  if (!file || typeof VOICE === 'undefined') return;
+  try {
+    const buf = await file.arrayBuffer();
+    const mime = file.type || guessMimeFromExt((file.name.split('.').pop() || '').toLowerCase());
+    const dataUrl = arrayBufferToDataUrl(buf, mime);
+    const ok = await VOICE.setCustomVoice(category, buf, { dataUrl, name: file.name, size: buf.byteLength });
+    if (!ok) {
+      showToast('非対応の音声ファイルです');
+      return;
+    }
+    await saveCustomAssetDB(`voice_${category}`, { dataUrl, name: file.name });
+    refreshCustomAssetsUI();
+    const labelMap = { attack: '攻撃(お邪魔)', win: '勝利時', lose: '敗北時' };
+    showToast(`カスタムボイス(${labelMap[category] || category})を保存しました`);
+  } catch (e) {
+    console.error(e);
+    showToast('ボイスの読み込みに失敗しました');
+  } finally {
+    inputEl.value = '';
+  }
+}
+
+async function clearCustomVoice(category) {
+  if (typeof VOICE !== 'undefined') {
+    VOICE.clearCustomVoice(category);
+  }
+  await deleteCustomAssetDB(`voice_${category}`).catch(() => {});
+  refreshCustomAssetsUI();
+  showToast('カスタムボイスを解除しました');
+}
+
+function testCustomVoice(category) {
+  if (typeof VOICE === 'undefined') return;
+  if (!VOICE.customBuffers[category]) {
+    showToast('未設定です');
+    return;
+  }
+  VOICE.play(category, { charId: 'custom', name: getPlayerDisplayName() });
+}
+
+async function clearAllCustomSE() {
+  if (typeof SE !== 'undefined') {
+    const keys = Object.keys(SE.customRawMap);
+    for (const k of keys) {
+      await deleteCustomAssetDB(`se_${k}`).catch(() => {});
+    }
+    SE.clearAllCustomSounds();
+  }
+  refreshCustomAssetsUI();
+  showToast('カスタムSEをすべて解除しました');
 }
 
 function refreshCustomAssetsUI() {
@@ -417,20 +513,268 @@ function refreshCustomAssetsUI() {
       info.innerText = data ? `${data.width}×${data.height} (${data.orientation})` : '未設定 (標準)';
     }
   });
+  ['attack', 'win', 'lose'].forEach(cat => {
+    const el = document.getElementById(`custom-voice-${cat}-info`);
+    if (el && typeof VOICE !== 'undefined') {
+      const meta = VOICE.customRawMap[cat];
+      el.innerText = meta ? `${meta.name}` : '未設定';
+    }
+  });
+  const seInfo = document.getElementById('custom-se-info');
+  if (seInfo && typeof SE !== 'undefined') {
+    const keys = Object.keys(SE.customBuffers);
+    seInfo.innerText = keys.length > 0 ? `登録済み (${keys.length}件): ${keys.join(', ')}` : '未設定 (標準SE)';
+  }
   const nameInput = document.getElementById('settings-player-name');
   if (nameInput) nameInput.value = playerCustomName;
 }
 
-function buildThemeForCharacter(charId, customCharaDataUrl = null, includeMyGlobalBgFrame = true, customName = null) {
+// --- 純JS ZIPパーサ＆カスタムセット一括読込 ---
+async function extractZipEntries(arrayBuffer) {
+  const bytes = new Uint8Array(arrayBuffer);
+  const view = new DataView(arrayBuffer);
+
+  let eocdOffset = -1;
+  const minPos = Math.max(0, bytes.length - 65558);
+  for (let i = bytes.length - 22; i >= minPos; i--) {
+    if (view.getUint32(i, true) === 0x06054b50) {
+      eocdOffset = i;
+      break;
+    }
+  }
+  if (eocdOffset === -1) throw new Error('ZIPの終端ヘッダが見つかりません');
+
+  const totalEntries = view.getUint16(eocdOffset + 10, true);
+  const cdOffset = view.getUint32(eocdOffset + 16, true);
+  const decoder = new TextDecoder('utf-8');
+  const results = [];
+
+  let ptr = cdOffset;
+  for (let i = 0; i < totalEntries; i++) {
+    if (ptr + 46 > bytes.length || view.getUint32(ptr, true) !== 0x02014b50) break;
+    const compMethod = view.getUint16(ptr + 10, true);
+    const compSize = view.getUint32(ptr + 20, true);
+    const fnameLen = view.getUint16(ptr + 28, true);
+    const extraLen = view.getUint16(ptr + 30, true);
+    const commentLen = view.getUint16(ptr + 32, true);
+    const localHeaderOffset = view.getUint32(ptr + 42, true);
+
+    const rawName = bytes.subarray(ptr + 46, ptr + 46 + fnameLen);
+    const fileName = decoder.decode(rawName);
+    ptr += 46 + fnameLen + extraLen + commentLen;
+
+    if (!fileName || fileName.endsWith('/') || fileName.startsWith('__MACOSX/')) continue;
+    const baseName = fileName.split('/').pop();
+    if (!baseName || baseName.startsWith('.')) continue;
+
+    if (localHeaderOffset + 30 > bytes.length || view.getUint32(localHeaderOffset, true) !== 0x04034b50) continue;
+    const lFnameLen = view.getUint16(localHeaderOffset + 26, true);
+    const lExtraLen = view.getUint16(localHeaderOffset + 28, true);
+    const dataStart = localHeaderOffset + 30 + lFnameLen + lExtraLen;
+    const compSlice = bytes.subarray(dataStart, dataStart + compSize);
+
+    let fileBuf = null;
+    if (compMethod === 0) {
+      fileBuf = compSlice.slice().buffer;
+    } else if (compMethod === 8) {
+      if (typeof DecompressionStream === 'undefined') {
+        throw new Error('お使いのブラウザはDeflate展開に対応していません');
+      }
+      const ds = new DecompressionStream('deflate-raw');
+      const writer = ds.writable.getWriter();
+      writer.write(compSlice);
+      writer.close();
+      fileBuf = await new Response(ds.readable).arrayBuffer();
+    } else {
+      continue;
+    }
+
+    results.push({ path: fileName, baseName, buffer: fileBuf });
+  }
+  return results;
+}
+
+function guessMimeFromExt(ext) {
+  const map = {
+    png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif',
+    mp3: 'audio/mpeg', m4a: 'audio/mp4', aac: 'audio/aac', wav: 'audio/wav', ogg: 'audio/ogg', opus: 'audio/opus', webm: 'audio/webm'
+  };
+  return map[ext] || 'application/octet-stream';
+}
+
+function matchVoiceCategoryFromPath(lowerPath, lowerStem) {
+  const isVoiceDir = lowerPath.includes('voice/');
+  if (lowerPath.includes('voice/attack') || lowerStem === 'ata' || lowerStem === 'attack' || lowerStem.endsWith('_ata') || lowerStem.endsWith('_attack')) {
+    return 'attack';
+  }
+  if (lowerPath.includes('voice/win') || lowerStem === 'win' || lowerStem.endsWith('_win')) {
+    return 'win';
+  }
+  if (lowerPath.includes('voice/lose') || lowerStem === 'lose' || lowerStem.endsWith('_lose')) {
+    return 'lose';
+  }
+  if (isVoiceDir) {
+    if (lowerStem.includes('ata') || lowerStem.includes('attack')) return 'attack';
+    if (lowerStem.includes('win')) return 'win';
+    if (lowerStem.includes('lose')) return 'lose';
+  }
+  return null;
+}
+
+function matchSeKeyFromPath(lowerPath, lowerStem) {
+  const map = [
+    ['countdown_3', ['countdown_3', 'cd_3', 'count_3', 'count3', '3']],
+    ['countdown_2', ['countdown_2', 'cd_2', 'count_2', 'count2', '2']],
+    ['countdown_1', ['countdown_1', 'cd_1', 'count_1', 'count1', '1']],
+    ['countdown_go', ['countdown_go', 'cd_go', 'count_go', 'countgo', 'go']],
+    ['countdown', ['countdown']],
+    ['cursorMove', ['cursor_move', 'cursormove', 'cursor']],
+    ['falledBlock', ['falled_block', 'falledblock', 'falled', 'fall']],
+    ['garbageErase', ['garbage_block_erase', 'garbage_erase', 'garbageerase', 'garbage']],
+    ['normalErase', ['nomal_block_erase', 'normal_block_erase', 'normal_erase', 'normalerase', 'erase']],
+    ['fanfareMin', ['fanfare_min', 'fanfaremin', 'chain4']],
+    ['fanfareMid', ['fanfare_mid', 'fanfaremid', 'chain5']],
+    ['fanfareMax', ['fanfare_max', 'fanfaremax', 'chain6']],
+    ['skill', ['skill_activate', 'skill']]
+  ];
+  for (const [key, aliases] of map) {
+    if (aliases.includes(lowerStem)) return key;
+  }
+  for (const [key, aliases] of map) {
+    if (aliases.some(a => a.length > 2 && (lowerStem.startsWith(a) || lowerPath.includes(`/${a}`)))) {
+      return key;
+    }
+  }
+  return null;
+}
+
+async function handleCustomZipUpload(inputEl) {
+  const file = inputEl.files && inputEl.files[0];
+  if (!file) return;
+  try {
+    showToast('ZIPを展開して読み込み中...');
+    const zipBuf = await file.arrayBuffer();
+    const entries = await extractZipEntries(zipBuf);
+    let loadedImg = 0, loadedVoice = 0, loadedSe = 0, loadedBgm = 0;
+    const bgmFiles = [];
+
+    for (const entry of entries) {
+      const lowerPath = entry.path.toLowerCase();
+      const lowerBase = entry.baseName.toLowerCase();
+      const dotIdx = lowerBase.lastIndexOf('.');
+      const ext = dotIdx >= 0 ? lowerBase.slice(dotIdx + 1) : '';
+      const stem = dotIdx >= 0 ? lowerBase.slice(0, dotIdx) : lowerBase;
+
+      if (lowerBase === 'name.txt') {
+        const txt = new TextDecoder('utf-8').decode(entry.buffer).trim().split(/\r?\n/)[0];
+        if (txt) onPlayerNameInput(txt);
+        continue;
+      }
+      if (lowerBase === 'meta.json') {
+        try {
+          const meta = JSON.parse(new TextDecoder('utf-8').decode(entry.buffer));
+          if (meta && typeof meta.name === 'string' && meta.name.trim()) {
+            onPlayerNameInput(meta.name.trim());
+          }
+        } catch (_) {}
+        continue;
+      }
+
+      if (['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(ext)) {
+        let kind = null;
+        if (stem.includes('chara') || stem.includes('stand') || stem.includes('立ち絵')) kind = 'chara';
+        else if (stem.includes('frame') || stem.includes('border') || stem.includes('フレーム')) kind = 'frame';
+        else if (stem === 'bg' || stem.includes('background') || stem.includes('背景') || stem.startsWith('bg_')) kind = 'bg';
+
+        if (kind) {
+          const blob = new Blob([entry.buffer], { type: guessMimeFromExt(ext) });
+          const record = await compressImageSmart(blob, kind, entry.baseName);
+          CustomAssets[kind] = record;
+          AssetCache.delete(record.dataUrl);
+          getCachedImage(record.dataUrl);
+          await saveCustomAssetDB(kind, record);
+          if (kind === 'chara') {
+            selectedCharId = 'custom';
+            storySelectedCharId = 'custom';
+            localStorage.setItem('pdw_char_id', 'custom');
+            localStorage.setItem('pdw_story_char_id', 'custom');
+          }
+          if (kind === 'frame') {
+            applyGlobalFrameTheme(record.dataUrl);
+          }
+          loadedImg++;
+        }
+        continue;
+      }
+
+      if (['mp3', 'm4a', 'aac', 'wav', 'ogg', 'opus', 'webm'].includes(ext)) {
+        const mime = guessMimeFromExt(ext);
+        if (lowerPath.includes('bgm/') || stem.startsWith('bgm')) {
+          bgmFiles.push(new File([entry.buffer], entry.baseName, { type: mime }));
+          loadedBgm++;
+          continue;
+        }
+        const voiceCat = matchVoiceCategoryFromPath(lowerPath, stem);
+        if (voiceCat && typeof VOICE !== 'undefined') {
+          const dataUrl = arrayBufferToDataUrl(entry.buffer, mime);
+          const ok = await VOICE.setCustomVoice(voiceCat, entry.buffer, {
+            dataUrl,
+            name: entry.baseName,
+            size: entry.buffer.byteLength
+          });
+          if (ok) {
+            await saveCustomAssetDB(`voice_${voiceCat}`, { dataUrl, name: entry.baseName });
+            loadedVoice++;
+          }
+          continue;
+        }
+        const seKey = matchSeKeyFromPath(lowerPath, stem);
+        if (seKey && typeof SE !== 'undefined') {
+          const dataUrl = arrayBufferToDataUrl(entry.buffer, mime);
+          const ok = await SE.setCustomSound(seKey, entry.buffer, {
+            dataUrl,
+            name: entry.baseName,
+            size: entry.buffer.byteLength
+          });
+          if (ok) {
+            await saveCustomAssetDB(`se_${seKey}`, { dataUrl, name: entry.baseName });
+            loadedSe++;
+          }
+        }
+      }
+    }
+
+    if (bgmFiles.length > 0 && typeof handleBgmFiles === 'function') {
+      handleBgmFiles(bgmFiles);
+    }
+
+    refreshCustomAssetsUI();
+    const infoEl = document.getElementById('custom-zip-info');
+    if (infoEl) {
+      infoEl.innerText = `読込完了: 画像${loadedImg} / Voice${loadedVoice} / SE${loadedSe} / BGM${loadedBgm}`;
+    }
+    showToast(`ZIP読込完了 (画像:${loadedImg}, Voice:${loadedVoice}, SE:${loadedSe}, BGM:${loadedBgm})`);
+  } catch (e) {
+    console.error(e);
+    showToast('ZIPの読み込みに失敗しました: ' + (e.message || ''));
+  } finally {
+    inputEl.value = '';
+  }
+}
+
+function buildThemeForCharacter(charId, customCharaDataUrl = null, includeMyGlobalBgFrame = true, customName = null, customFrameDataUrl = null) {
   const charDef = getCharacterById(charId);
   const charSrc = customCharaDataUrl || charDef.file;
   getCachedImage(charSrc);
   const bgSrc = includeMyGlobalBgFrame && CustomAssets.bg ? CustomAssets.bg.dataUrl : null;
-  const frameSrc = includeMyGlobalBgFrame && CustomAssets.frame ? CustomAssets.frame.dataUrl : null;
+  const frameSrc = customFrameDataUrl !== null
+    ? customFrameDataUrl
+    : (includeMyGlobalBgFrame && CustomAssets.frame ? CustomAssets.frame.dataUrl : null);
   if (bgSrc) getCachedImage(bgSrc);
   if (frameSrc) getCachedImage(frameSrc);
   return {
     charId: charDef.id,
+    voiceName: charDef.name,
     name: customName || charDef.name,
     color: charDef.color,
     charSrc,
@@ -460,6 +804,17 @@ function applyBoardFrame(wrapperId, frameSrc) {
   }
 }
 
+// 各種ボタンの背景となる部分へのフレーム適用
+function applyGlobalFrameTheme(frameSrc) {
+  if (frameSrc) {
+    document.documentElement.style.setProperty('--custom-frame-url', `url("${frameSrc}")`);
+    document.body.classList.add('has-custom-frame');
+  } else {
+    document.documentElement.style.removeProperty('--custom-frame-url');
+    document.body.classList.remove('has-custom-frame');
+  }
+}
+
 // --- Canvas 描画補助（縦横アス比対応） ---
 function drawImageCover(ctx, img, x, y, w, h) {
   const iw = img.naturalWidth || img.width;
@@ -478,7 +833,6 @@ function drawBoardBgAddon(ctx, canvas, engine, renderer) {
   const W = canvas.width;
   const H = canvas.height;
 
-  // 1. カスタムパズル背景（盤面全体に cover 配置）
   if (theme.bgSrc) {
     const bgImg = getCachedImage(theme.bgSrc);
     if (bgImg) {
@@ -486,7 +840,6 @@ function drawBoardBgAddon(ctx, canvas, engine, renderer) {
     }
   }
 
-  // 2. 立ち絵（盤面背景全体に映るよう cover 配置、はっきり見える不透明度）
   if (theme.charSrc) {
     const charImg = getCachedImage(theme.charSrc);
     if (charImg) {
@@ -497,7 +850,6 @@ function drawBoardBgAddon(ctx, canvas, engine, renderer) {
     }
   }
 
-  // ブロックの輪郭を損なわない程度の軽い暗めフィルター
   if (theme.bgSrc || theme.charSrc) {
     ctx.fillStyle = 'rgba(0, 0, 0, 0.16)';
     ctx.fillRect(0, 0, W, H);

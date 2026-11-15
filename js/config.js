@@ -1,4 +1,4 @@
-if ('serviceWorker' in navigator) {
+if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   navigator.serviceWorker.register('sw.js').catch(err => console.error('SW Register Error:', err));
 }
 
@@ -12,14 +12,21 @@ const COLORS = [
 ];
 
 // ==========================================
-// SE & BGM 制御 (Web Audio API & HTML5 Audio)
+// SE & BGM 制御 (Web Audio API & HTML5 Audio フォールバック)
 // ==========================================
 const AudioContext = window.AudioContext || window.webkitAudioContext;
 const audioCtx = new AudioContext();
 
-document.body.addEventListener('pointerdown', () => {
-  if (audioCtx.state === 'suspended') audioCtx.resume();
-}, { once: true });
+function ensureAudioCtxResumed() {
+  if (audioCtx.state === 'suspended') {
+    audioCtx.resume().catch(() => {});
+  }
+  if (typeof SE !== 'undefined' && typeof SE.unlockFallbackAudios === 'function') {
+    SE.unlockFallbackAudios();
+  }
+}
+document.addEventListener('pointerdown', ensureAudioCtxResumed, { passive: true });
+document.addEventListener('keydown', ensureAudioCtxResumed, { passive: true });
 
 const SE = {
   files: {
@@ -32,60 +39,152 @@ const SE = {
     fanfareMax: 'assets/se/Fanfare_max.m4a',
   },
   buffers: {},
+  fallbackPaths: {},
+  fallbackAudios: {},
+  _fallbackUnlocked: false,
   customBuffers: {},
+  customRawMap: {},   // { key: { dataUrl, name, size } }
+  remoteBuffers: {},  // { senderId: { key: AudioBuffer } }
   volume: 0.5,
+  prepareFallbackAudio(key, path) {
+    this.fallbackPaths[key] = path;
+    if (!this.fallbackAudios[key]) {
+      const a = new Audio(path);
+      a.preload = 'auto';
+      try { a.load(); } catch (e) {}
+      this.fallbackAudios[key] = a;
+    }
+  },
+  unlockFallbackAudios() {
+    if (this._fallbackUnlocked) return;
+    const entries = Object.entries(this.fallbackAudios);
+    if (entries.length === 0) return;
+    this._fallbackUnlocked = true;
+    entries.forEach(([key, a]) => {
+      if (this.buffers[key]) return;
+      try {
+        const prevMuted = a.muted;
+        a.muted = true;
+        const p = a.play();
+        if (p && typeof p.then === 'function') {
+          p.then(() => {
+            a.pause();
+            try { a.currentTime = 0; } catch (e) {}
+            a.muted = prevMuted;
+          }).catch(() => {
+            a.muted = prevMuted;
+          });
+        } else {
+          a.muted = prevMuted;
+        }
+      } catch (e) {}
+    });
+  },
   async load() {
+    const isFileProto = (location.protocol === 'file:');
     for (const [key, path] of Object.entries(this.files)) {
+      this.fallbackPaths[key] = path;
+      if (isFileProto) {
+        this.prepareFallbackAudio(key, path);
+        continue;
+      }
       try {
         const response = await fetch(path);
+        if (!response.ok) {
+          this.prepareFallbackAudio(key, path);
+          continue;
+        }
         const arrayBuffer = await response.arrayBuffer();
         const decoded = await new Promise((resolve, reject) => {
           audioCtx.decodeAudioData(arrayBuffer, resolve, reject);
         });
         this.buffers[key] = decoded;
       } catch (e) {
-        console.warn('SE Load Error:', key, e);
+        console.warn('SE Load Error (fallback ready):', key, e);
+        this.prepareFallbackAudio(key, path);
       }
     }
   },
-  async setCustomSound(key, arrayBuffer) {
+  async setCustomSound(key, arrayBuffer, meta = null) {
     try {
+      const copy = arrayBuffer.slice(0);
       const decoded = await new Promise((resolve, reject) => {
-        audioCtx.decodeAudioData(arrayBuffer, resolve, reject);
+        audioCtx.decodeAudioData(copy, resolve, reject);
       });
       this.customBuffers[key] = decoded;
+      if (meta) this.customRawMap[key] = meta;
       return true;
     } catch (e) {
       console.warn('Custom SE Decode Error:', key, e);
       return false;
     }
   },
+  async setRemoteSound(senderId, key, arrayBuffer) {
+    try {
+      const copy = arrayBuffer.slice(0);
+      const decoded = await new Promise((resolve, reject) => {
+        audioCtx.decodeAudioData(copy, resolve, reject);
+      });
+      if (!this.remoteBuffers[senderId]) this.remoteBuffers[senderId] = {};
+      this.remoteBuffers[senderId][key] = decoded;
+      return true;
+    } catch (e) {
+      return false;
+    }
+  },
   clearCustomSound(key) {
     delete this.customBuffers[key];
+    delete this.customRawMap[key];
   },
-  playBuffer(buffer) {
+  clearAllCustomSounds() {
+    this.customBuffers = {};
+    this.customRawMap = {};
+  },
+  clearRemoteSounds(senderId) {
+    if (senderId) delete this.remoteBuffers[senderId];
+    else this.remoteBuffers = {};
+  },
+  playBuffer(buffer, gainMultiplier = 1.0) {
     if (!buffer) return false;
-    if (audioCtx.state === 'suspended') audioCtx.resume();
+    ensureAudioCtxResumed();
     const source = audioCtx.createBufferSource();
     source.buffer = buffer;
     const gainNode = audioCtx.createGain();
-    gainNode.gain.value = this.volume;
+    gainNode.gain.value = Math.min(2.0, this.volume * gainMultiplier);
     source.connect(gainNode);
     gainNode.connect(audioCtx.destination);
     source.start(0);
     return true;
   },
-  playSynthTone(freq, duration = 0.14, type = 'triangle', gainScale = 0.45) {
+  playFallbackAudio(key, path) {
+    if ((!path && !this.fallbackAudios[key]) || this.volume <= 0) return;
+    try {
+      const base = this.fallbackAudios[key];
+      const vol = Math.max(0, Math.min(1, this.volume));
+      if (base && (base.paused || base.ended)) {
+        base.muted = false;
+        base.volume = vol;
+        try { base.currentTime = 0; } catch (e) {}
+        base.play().catch(() => {});
+      } else {
+        const a = base ? base.cloneNode(true) : new Audio(path);
+        a.muted = false;
+        a.volume = vol;
+        a.play().catch(() => {});
+      }
+    } catch (e) {}
+  },
+  playSynthTone(freq, duration = 0.16, type = 'triangle', gainScale = 0.95) {
     if (this.volume <= 0) return;
-    if (audioCtx.state === 'suspended') audioCtx.resume();
+    ensureAudioCtxResumed();
     const now = audioCtx.currentTime;
     const osc = audioCtx.createOscillator();
     const gain = audioCtx.createGain();
     osc.type = type;
     osc.frequency.setValueAtTime(freq, now);
-    const peak = Math.max(0.001, this.volume * gainScale);
+    const peak = Math.max(0.001, Math.min(1.5, this.volume * gainScale));
     gain.gain.setValueAtTime(0.001, now);
-    gain.gain.linearRampToValueAtTime(peak, now + 0.01);
+    gain.gain.linearRampToValueAtTime(peak, now + 0.008);
     gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
     osc.connect(gain);
     gain.connect(audioCtx.destination);
@@ -103,20 +202,217 @@ const SE = {
       return;
     }
     if (step === 'go') {
-      this.playSynthTone(1046.5, 0.28, 'triangle', 0.55);
+      this.playSynthTone(1046.5, 0.34, 'triangle', 1.15);
+      this.playSynthTone(1567.98, 0.30, 'triangle', 0.70);
+      this.playSynthTone(2093.0, 0.24, 'sine', 0.45);
     } else {
-      this.playSynthTone(523.25, 0.14, 'triangle', 0.45);
+      this.playSynthTone(523.25, 0.19, 'triangle', 1.05);
+      this.playSynthTone(1046.5, 0.15, 'sine', 0.55);
     }
+  },
+  playForSender(senderId, key) {
+    const rMap = senderId && this.remoteBuffers[senderId];
+    if (rMap && rMap[key]) {
+      this.playBuffer(rMap[key]);
+      return;
+    }
+    this.play(key);
   },
   play(key) {
     const buf = this.customBuffers[key] || this.buffers[key];
-    if (!buf) return;
-    this.playBuffer(buf);
+    if (buf) {
+      this.playBuffer(buf);
+      return;
+    }
+    if (this.fallbackPaths[key] || this.fallbackAudios[key]) {
+      this.playFallbackAudio(key, this.fallbackPaths[key]);
+    }
   }
 };
 SE.load();
 
-// iOS等(WebKit)での音量調整不具合を解消するためのWeb Audio API BGMラッパー
+// ==========================================
+// VOICE 制御（attack / win / lose 拡張子非依存 & カスタムボイス対応）
+// ==========================================
+const VOICE = {
+  exts: ['m4a', 'mp3', 'wav', 'ogg', 'aac', 'opus', 'webm'],
+  suffixMap: {
+    attack: 'ata',
+    win: 'win',
+    lose: 'lose'
+  },
+  resolvedCache: {},   // { key: { type: 'buffer'|'url'|'none', data } }
+  resolvingMap: {},    // { key: Promise }
+  customBuffers: {},   // { attack?: AudioBuffer, win?: AudioBuffer, lose?: AudioBuffer }
+  customRawMap: {},    // { attack?: { dataUrl, name, size }, ... }
+  remoteBuffers: {},   // { [senderId]: { attack?: AudioBuffer, ... } }
+  lastPlayedMap: {},
+
+  async setCustomVoice(category, arrayBuffer, meta = null) {
+    if (!this.suffixMap[category]) return false;
+    try {
+      const copy = arrayBuffer.slice(0);
+      const decoded = await new Promise((resolve, reject) => {
+        audioCtx.decodeAudioData(copy, resolve, reject);
+      });
+      this.customBuffers[category] = decoded;
+      if (meta) this.customRawMap[category] = meta;
+      return true;
+    } catch (_) {
+      return false;
+    }
+  },
+  clearCustomVoice(category) {
+    delete this.customBuffers[category];
+    delete this.customRawMap[category];
+  },
+  clearAllCustomVoices() {
+    this.customBuffers = {};
+    this.customRawMap = {};
+  },
+  async setRemoteVoice(senderId, category, arrayBuffer) {
+    if (!senderId || !this.suffixMap[category]) return false;
+    try {
+      const copy = arrayBuffer.slice(0);
+      const decoded = await new Promise((resolve, reject) => {
+        audioCtx.decodeAudioData(copy, resolve, reject);
+      });
+      if (!this.remoteBuffers[senderId]) this.remoteBuffers[senderId] = {};
+      this.remoteBuffers[senderId][category] = decoded;
+      return true;
+    } catch (_) {
+      return false;
+    }
+  },
+  clearRemoteVoices(senderId) {
+    if (senderId) delete this.remoteBuffers[senderId];
+    else this.remoteBuffers = {};
+  },
+
+  probeAudioUrl(url) {
+    return new Promise((resolve) => {
+      try {
+        const audio = new Audio();
+        let settled = false;
+        const done = (ok) => {
+          if (settled) return;
+          settled = true;
+          audio.oncanplaythrough = null;
+          audio.onloadeddata = null;
+          audio.onerror = null;
+          resolve(ok ? url : null);
+        };
+        audio.preload = 'auto';
+        audio.oncanplaythrough = () => done(true);
+        audio.onloadeddata = () => done(true);
+        audio.onerror = () => done(false);
+        audio.src = url;
+        audio.load();
+        setTimeout(() => done(false), 1800);
+      } catch (_) {
+        resolve(null);
+      }
+    });
+  },
+
+  async resolveCharacterVoice(category, charName) {
+    const suffix = this.suffixMap[category];
+    if (!suffix || !charName) return { type: 'none' };
+    const cacheKey = `${category}::${charName}`;
+    if (this.resolvedCache[cacheKey]) return this.resolvedCache[cacheKey];
+    if (this.resolvingMap[cacheKey]) return this.resolvingMap[cacheKey];
+
+    const isFileProto = (location.protocol === 'file:');
+    const encodedName = encodeURIComponent(charName);
+    const task = (async () => {
+      for (const ext of this.exts) {
+        const rawPath = `assets/voice/${category}/${charName}_${suffix}.${ext}`;
+        const urlPath = `assets/voice/${category}/${encodedName}_${suffix}.${ext}`;
+        if (isFileProto) {
+          const okUrl = await this.probeAudioUrl(rawPath);
+          if (okUrl) {
+            const entry = { type: 'url', data: okUrl };
+            this.resolvedCache[cacheKey] = entry;
+            return entry;
+          }
+          continue;
+        }
+        try {
+          const res = await fetch(urlPath);
+          if (!res || !res.ok) continue;
+          const buf = await res.arrayBuffer();
+          const decoded = await new Promise((resolve, reject) => {
+            audioCtx.decodeAudioData(buf, resolve, reject);
+          });
+          const entry = { type: 'buffer', data: decoded };
+          this.resolvedCache[cacheKey] = entry;
+          return entry;
+        } catch (_) {
+          // 存在しない・デコード不可時はエラー出力せず次拡張子へ
+        }
+      }
+      const noneEntry = { type: 'none' };
+      this.resolvedCache[cacheKey] = noneEntry;
+      return noneEntry;
+    })().finally(() => {
+      delete this.resolvingMap[cacheKey];
+    });
+
+    this.resolvingMap[cacheKey] = task;
+    return task;
+  },
+
+  playFallbackUrl(url) {
+    if (!url || SE.volume <= 0) return;
+    try {
+      const a = new Audio(url);
+      a.volume = Math.max(0, Math.min(1, SE.volume));
+      a.play().catch(() => {});
+    } catch (_) {}
+  },
+
+  async play(category, themeOrName, senderId = null) {
+    if (SE.volume <= 0 || !this.suffixMap[category]) return;
+
+    const charId = (themeOrName && typeof themeOrName === 'object') ? themeOrName.charId : null;
+    const charName = (themeOrName && typeof themeOrName === 'object')
+      ? (themeOrName.voiceName || themeOrName.name)
+      : String(themeOrName || '');
+
+    const dedupKey = `${category}_${senderId || charId || charName}`;
+    const now = performance.now();
+    if (this.lastPlayedMap[dedupKey] && (now - this.lastPlayedMap[dedupKey]) < 320) {
+      return;
+    }
+    this.lastPlayedMap[dedupKey] = now;
+
+    // 1. オンライン相手のリモートカスタムボイス
+    if (senderId && this.remoteBuffers[senderId] && this.remoteBuffers[senderId][category]) {
+      SE.playBuffer(this.remoteBuffers[senderId][category], 1.15);
+      return;
+    }
+
+    // 2. ローカルプレイヤーのカスタムキャラ時はカスタムボイスのみ参照（無ければスキップ）
+    if (charId === 'custom') {
+      if (this.customBuffers[category]) {
+        SE.playBuffer(this.customBuffers[category], 1.15);
+      }
+      return;
+    }
+
+    // 3. 標準キャラクターのボイス（拡張子無視、未準備ならスキップ）
+    if (!charName) return;
+    const resolved = await this.resolveCharacterVoice(category, charName);
+    if (!resolved || resolved.type === 'none') return;
+    if (resolved.type === 'buffer') {
+      SE.playBuffer(resolved.data, 1.15);
+    } else if (resolved.type === 'url') {
+      this.playFallbackUrl(resolved.data);
+    }
+  }
+};
+
+// iOS等(WebKit)での音量調整不具合解消＆file://環境フォールバック付き BGMラッパー
 class WebAudioBGMPlayer {
   constructor(ctx, src = '') {
     this.ctx = ctx;
@@ -125,6 +421,19 @@ class WebAudioBGMPlayer {
     this.source = null;
     this.buffer = null;
     
+    this.fallbackAudio = new Audio();
+    this.fallbackAudio.preload = 'auto';
+    this.useFallback = false;
+    this._unlocked = false;
+    this._unlockReqId = 0;
+    this.fallbackAudio.addEventListener('ended', () => {
+      if (this.useFallback && !this._isManualStop) {
+        this.isPlaying = false;
+        this.pauseTime = 0;
+        if (this.onended) this.onended();
+      }
+    });
+
     this._src = src;
     this._volume = 0.5;
     this._muted = false;
@@ -146,9 +455,12 @@ class WebAudioBGMPlayer {
     if (this._src !== value) {
       this.pause();
       this._playRequestId++;
+      this._unlockReqId++;
       this._src = value;
       this.pauseTime = 0;
-      this.buffer = null; // 新しいsrcになったらバッファクリア
+      this.buffer = null;
+      this.useFallback = false;
+      this.fallbackAudio.src = '';
       this._loadingPromise = null;
       this._loadingSrc = null;
     }
@@ -167,11 +479,15 @@ class WebAudioBGMPlayer {
   }
   
   updateGain() {
-    // GainNodeを使って強制的にWeb Audio経由で音量反映・ミュート制御を行う
     this.gainNode.gain.value = this._muted ? 0 : this._volume;
+    this.fallbackAudio.volume = Math.max(0, Math.min(1, this._volume));
+    this.fallbackAudio.muted = !!this._muted;
   }
   
   get currentTime() {
+    if (this.useFallback) {
+      return this.fallbackAudio.currentTime || 0;
+    }
     if (this.isPlaying) {
       let t = this.pauseTime + (this.ctx.currentTime - this.startTime);
       if (this.buffer && this.loop) return t % this.buffer.duration;
@@ -181,6 +497,11 @@ class WebAudioBGMPlayer {
     return this.pauseTime;
   }
   set currentTime(v) {
+    if (this.useFallback) {
+      try { this.fallbackAudio.currentTime = v; } catch (e) {}
+      this.pauseTime = v;
+      return;
+    }
     const wasPlaying = this.isPlaying;
     if (wasPlaying) {
       this.pause();
@@ -196,48 +517,115 @@ class WebAudioBGMPlayer {
       this.onended = callback;
     }
   }
+
+  activateFallbackSync(targetSrc) {
+    this.buffer = null;
+    this.useFallback = true;
+    if (this.fallbackAudio.getAttribute('src') !== targetSrc) {
+      this.fallbackAudio.src = targetSrc;
+      this.fallbackAudio.load();
+    }
+    this.fallbackAudio.loop = this.loop;
+    this.updateGain();
+  }
+
+  unlock() {
+    if (!this.useFallback || !this._src || this._unlocked) return;
+    const unlockId = ++this._unlockReqId;
+    this.fallbackAudio.muted = true;
+    try {
+      const p = this.fallbackAudio.play();
+      if (p && typeof p.then === 'function') {
+        p.then(() => {
+          this._unlocked = true;
+          if (!this.isPlaying && this._unlockReqId === unlockId) {
+            this.fallbackAudio.pause();
+            try { this.fallbackAudio.currentTime = 0; } catch (e) {}
+            this.updateGain();
+          }
+        }).catch(() => {
+          this.updateGain();
+        });
+      }
+    } catch (e) {
+      this.updateGain();
+    }
+  }
   
   async load() {
     if (!this._src) return;
-    if (this.buffer) return;
+    if (this.buffer || this.useFallback) return;
     if (this._loadingPromise && this._loadingSrc === this._src) {
       return this._loadingPromise;
     }
     const targetSrc = this._src;
+    const isFileProto = (location.protocol === 'file:');
+    if (isFileProto && !targetSrc.startsWith('data:')) {
+      this.activateFallbackSync(targetSrc);
+      return Promise.resolve();
+    }
+
     this._loadingSrc = targetSrc;
     this._loadingPromise = (async () => {
       try {
-        // File API等で生成されたBlob(ObjectURL)も正常にfetch可能
         const response = await fetch(targetSrc);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const arrayBuffer = await response.arrayBuffer();
         const decoded = await this.ctx.decodeAudioData(arrayBuffer);
         if (this._src === targetSrc) {
           this.buffer = decoded;
         }
+        return;
       } catch (e) {
-        console.warn('BGM Load Error:', e);
-        if (this._src === targetSrc) {
-          this.buffer = null;
-        }
-      } finally {
-        if (this._loadingSrc === targetSrc) {
-          this._loadingPromise = null;
-        }
+        console.warn('BGM WebAudio Load Error (using HTMLAudio fallback):', e);
       }
-    })();
+      if (this._src === targetSrc) {
+        this.activateFallbackSync(targetSrc);
+      }
+    })().finally(() => {
+      if (this._loadingSrc === targetSrc) {
+        this._loadingPromise = null;
+      }
+    });
     return this._loadingPromise;
   }
   
   async play() {
     const reqId = ++this._playRequestId;
+    this._unlockReqId++;
     if (this.ctx.state === 'suspended') {
-      await this.ctx.resume();
+      await this.ctx.resume().catch(() => {});
       if (reqId !== this._playRequestId) return Promise.resolve();
     }
-    if (!this.buffer) {
+    if (!this.buffer && !this.useFallback) {
       await this.load();
       if (reqId !== this._playRequestId) return Promise.resolve();
     }
+
+    if (this.useFallback) {
+      if (this.isPlaying) this.pause(false);
+      if (reqId !== this._playRequestId) return Promise.resolve();
+      this._isManualStop = false;
+      this.fallbackAudio.loop = this.loop;
+      this.updateGain();
+      try {
+        if (this.pauseTime === 0) {
+          this.fallbackAudio.currentTime = 0;
+        } else if (this.pauseTime > 0 && isFinite(this.fallbackAudio.duration) && this.pauseTime < this.fallbackAudio.duration) {
+          this.fallbackAudio.currentTime = this.pauseTime;
+        }
+      } catch (e) {}
+      this.isPlaying = true;
+      try {
+        await this.fallbackAudio.play();
+        this._unlocked = true;
+      } catch (e) {
+        this.isPlaying = false;
+        console.warn('Fallback BGM play error:', e);
+      }
+      return Promise.resolve();
+    }
+
     if (!this.buffer) return Promise.resolve();
     
     if (this.isPlaying) this.pause(false);
@@ -254,7 +642,7 @@ class WebAudioBGMPlayer {
         this.isPlaying = false;
         this.pauseTime = 0;
         this.source = null;
-        if (this.onended) this.onended(); // 再生終了でイベント発火（プレイリスト遷移等）
+        if (this.onended) this.onended();
       }
     };
     
@@ -276,6 +664,16 @@ class WebAudioBGMPlayer {
   pause(invalidateRequest = true) {
     if (invalidateRequest) {
       this._playRequestId++;
+    }
+    if (this.useFallback) {
+      this._unlockReqId++;
+      if (this.isPlaying) {
+        this._isManualStop = true;
+        this.pauseTime = this.fallbackAudio.currentTime || 0;
+        this.fallbackAudio.pause();
+        this.isPlaying = false;
+      }
+      return;
     }
     if (this.isPlaying && this.source) {
       this._isManualStop = true;
@@ -312,13 +710,13 @@ panicBgmAudio.volume = initBgmVol;
 panicBgmAudio.muted = true; 
 
 document.getElementById('se-volume').value = SE.volume;
-document.getElementById('se-volume-val').innerText = Math.floor(SE.volume * 100);
+document.getElementById('se-volume-val').innerText = Math.round(SE.volume * 100);
 document.getElementById('bgm-volume').value = initBgmVol;
-document.getElementById('bgm-volume-val').innerText = Math.floor(initBgmVol * 100);
+document.getElementById('bgm-volume-val').innerText = Math.round(initBgmVol * 100);
 
 document.getElementById('se-volume').addEventListener('input', (e) => {
   SE.volume = parseFloat(e.target.value);
-  document.getElementById('se-volume-val').innerText = Math.floor(SE.volume * 100);
+  document.getElementById('se-volume-val').innerText = Math.round(SE.volume * 100);
   localStorage.setItem('pdw_se_vol', SE.volume);
 });
 
@@ -334,12 +732,18 @@ document.getElementById('bgm-volume').addEventListener('input', (e) => {
     bgmAudio.muted = false;
     panicBgmAudio.muted = true;
   }
-  document.getElementById('bgm-volume-val').innerText = Math.floor(vol * 100);
+  document.getElementById('bgm-volume-val').innerText = Math.round(vol * 100);
   localStorage.setItem('pdw_bgm_vol', vol);
 });
 
+function isAudioFileCandidate(file) {
+  if (!file) return false;
+  if (file.type && (file.type.startsWith('audio/') || file.type === 'video/mp4')) return true;
+  return /\.(mp3|m4a|aac|wav|ogg|opus|webm|flac)$/i.test(file.name || '');
+}
+
 function handleBgmFiles(files) {
-  const arr = Array.from(files).filter(f => f.type.startsWith('audio/'));
+  const arr = Array.from(files).filter(isAudioFileCandidate);
   if (arr.length > 0) {
     bgmPlaylist = arr;
     currentBgmIndex = 0;
@@ -347,7 +751,9 @@ function handleBgmFiles(files) {
     bgmAudio.src = URL.createObjectURL(expectedFile);
     bgmAudio._currentFile = expectedFile;
     bgmNeedsPlay = true;
-    showToast('BGMをセットしました。「設定を保存して閉じる」を押すと再生されます');
+    showToast(`BGMを${arr.length}曲セットしました。「設定を保存して閉じる」を押すと再生されます`);
+  } else {
+    showToast('対応する音声ファイルが見つかりませんでした');
   }
 }
 document.getElementById('bgm-file-input').addEventListener('change', e => handleBgmFiles(e.target.files));
@@ -372,7 +778,8 @@ function toggleBgmPlay() {
     panicBgmAudio.muted = !isPanic;
 
     bgmAudio.play().then(() => { 
-      panicBgmAudio.play().catch(()=>{});
+      panicBgmAudio.load();
+      panicBgmAudio.unlock();
       isBgmPlaying = true; 
       isBgmIntendedToPlay = true;
       bgmNeedsPlay = false; 
@@ -437,6 +844,8 @@ function readyBgm() {
 
   bgmAudio.load();
   panicBgmAudio.load();
+  bgmAudio.unlock();
+  panicBgmAudio.unlock();
 }
 
 function resumeBgm() {
@@ -455,6 +864,188 @@ function resumeBgm() {
     panicBgmAudio.currentTime = 0;
     panicBgmAudio.play().catch(e => console.warn(e));
   }
+}
+
+// ==========================================
+// スライダー拡張（バー直接ジャンプ＋つまみドラッグ維持＋桁編集HUD）
+// ==========================================
+function setRangeValueWithEvents(rangeEl, newVal) {
+  const min = parseFloat(rangeEl.min) || 0;
+  const max = parseFloat(rangeEl.max) || 100;
+  const step = parseFloat(rangeEl.step) || 1;
+  const decimals = (String(step).split('.')[1] || '').length;
+  let snapped = Math.round((newVal - min) / step) * step + min;
+  snapped = Math.max(min, Math.min(max, snapped));
+  snapped = Number(snapped.toFixed(decimals));
+  if (parseFloat(rangeEl.value) !== snapped) {
+    rangeEl.value = String(snapped);
+    rangeEl.dispatchEvent(new Event('input', { bubbles: true }));
+    rangeEl.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+}
+
+function enhanceRangeSlider(rangeEl) {
+  if (!rangeEl || rangeEl.dataset.enhanced === '1') return;
+  rangeEl.dataset.enhanced = '1';
+
+  let draggingFromBar = false;
+  const calcValueFromClientX = (clientX) => {
+    const rect = rangeEl.getBoundingClientRect();
+    const pad = 9;
+    const trackW = Math.max(1, rect.width - pad * 2);
+    const ratio = Math.max(0, Math.min(1, (clientX - (rect.left + pad)) / trackW));
+    const min = parseFloat(rangeEl.min) || 0;
+    const max = parseFloat(rangeEl.max) || 100;
+    return min + ratio * (max - min);
+  };
+
+  rangeEl.addEventListener('pointerdown', (e) => {
+    if (e.button !== undefined && e.button !== 0) return;
+    rangeEl.focus();
+    const rect = rangeEl.getBoundingClientRect();
+    const min = parseFloat(rangeEl.min) || 0;
+    const max = parseFloat(rangeEl.max) || 100;
+    const val = parseFloat(rangeEl.value);
+    const pad = 9;
+    const trackW = Math.max(1, rect.width - pad * 2);
+    const thumbX = rect.left + pad + ((val - min) / Math.max(1e-6, max - min)) * trackW;
+
+    if (Math.abs(e.clientX - thumbX) > 15) {
+      e.preventDefault();
+      draggingFromBar = true;
+      try { rangeEl.setPointerCapture(e.pointerId); } catch (_) {}
+      setRangeValueWithEvents(rangeEl, calcValueFromClientX(e.clientX));
+      SE.play('cursorMove');
+    }
+  });
+
+  rangeEl.addEventListener('pointermove', (e) => {
+    if (!draggingFromBar) return;
+    setRangeValueWithEvents(rangeEl, calcValueFromClientX(e.clientX));
+  });
+
+  const endBarDrag = (e) => {
+    if (!draggingFromBar) return;
+    draggingFromBar = false;
+    try { rangeEl.releasePointerCapture(e.pointerId); } catch (_) {}
+  };
+  rangeEl.addEventListener('pointerup', endBarDrag);
+  rangeEl.addEventListener('pointercancel', endBarDrag);
+}
+
+function enhanceAllRangeSliders() {
+  document.querySelectorAll('input[type="range"]').forEach(enhanceRangeSlider);
+}
+
+const rangeEditState = {
+  el: null,
+  digitIndex: 0
+};
+
+function getRangeDisplayMeta(rangeEl) {
+  const min = parseFloat(rangeEl.min) || 0;
+  const max = parseFloat(rangeEl.max) || 100;
+  const step = parseFloat(rangeEl.step) || 1;
+  const isRatioPercent = (max <= 1 && step < 0.1);
+  const scale = isRatioPercent ? 100 : 1;
+  const intMin = Math.round(min * scale);
+  const intMax = Math.round(max * scale);
+  const intVal = Math.round(parseFloat(rangeEl.value) * scale);
+  const digits = Math.max(2, String(intMax).length);
+  const suffix = isRatioPercent ? '%' : '';
+  return { scale, intMin, intMax, intVal, digits, suffix };
+}
+
+function adjustRangeDigit(rangeEl, digitIdx, deltaSign) {
+  const meta = getRangeDisplayMeta(rangeEl);
+  const power = Math.pow(10, meta.digits - 1 - digitIdx);
+  const nextInt = Math.max(meta.intMin, Math.min(meta.intMax, meta.intVal + deltaSign * power));
+  setRangeValueWithEvents(rangeEl, nextInt / meta.scale);
+  updateRangeDigitHUD();
+  SE.play('cursorMove');
+}
+
+function ensureRangeDigitHUD() {
+  let hud = document.getElementById('slider-digit-hud');
+  if (!hud) {
+    hud = document.createElement('div');
+    hud.id = 'slider-digit-hud';
+    document.body.appendChild(hud);
+  }
+  return hud;
+}
+
+function closeRangeDigitEdit() {
+  rangeEditState.el = null;
+  const hud = document.getElementById('slider-digit-hud');
+  if (hud) hud.style.display = 'none';
+}
+
+function updateRangeDigitHUD() {
+  const el = rangeEditState.el;
+  if (!el || !document.body.contains(el)) {
+    closeRangeDigitEdit();
+    return;
+  }
+  const hud = ensureRangeDigitHUD();
+  const meta = getRangeDisplayMeta(el);
+  if (rangeEditState.digitIndex >= meta.digits) rangeEditState.digitIndex = meta.digits - 1;
+  if (rangeEditState.digitIndex < 0) rangeEditState.digitIndex = 0;
+
+  const str = String(meta.intVal).padStart(meta.digits, '0');
+  hud.innerHTML = '';
+
+  const row = document.createElement('div');
+  row.className = 'slider-digit-row';
+
+  const minusBtn = document.createElement('button');
+  minusBtn.type = 'button';
+  minusBtn.className = 'small-btn';
+  minusBtn.innerText = '▼';
+  minusBtn.onclick = () => adjustRangeDigit(el, rangeEditState.digitIndex, -1);
+  row.appendChild(minusBtn);
+
+  for (let i = 0; i < meta.digits; i++) {
+    const box = document.createElement('button');
+    box.type = 'button';
+    box.className = 'slider-digit-box' + (i === rangeEditState.digitIndex ? ' active' : '');
+    box.innerText = str[i];
+    box.onclick = () => {
+      rangeEditState.digitIndex = i;
+      updateRangeDigitHUD();
+      SE.play('cursorMove');
+    };
+    row.appendChild(box);
+  }
+
+  if (meta.suffix) {
+    const suf = document.createElement('span');
+    suf.style.fontWeight = 'bold';
+    suf.innerText = meta.suffix;
+    row.appendChild(suf);
+  }
+
+  const plusBtn = document.createElement('button');
+  plusBtn.type = 'button';
+  plusBtn.className = 'small-btn';
+  plusBtn.innerText = '▲';
+  plusBtn.onclick = () => adjustRangeDigit(el, rangeEditState.digitIndex, 1);
+  row.appendChild(plusBtn);
+
+  const doneBtn = document.createElement('button');
+  doneBtn.type = 'button';
+  doneBtn.className = 'small-btn';
+  doneBtn.innerText = '確定';
+  doneBtn.onclick = () => closeRangeDigitEdit();
+  row.appendChild(doneBtn);
+
+  const hint = document.createElement('div');
+  hint.className = 'slider-digit-hint';
+  hint.innerText = '◀▶ 桁選択 / ▲▼ 数値変更 / 決定で終了';
+
+  hud.appendChild(row);
+  hud.appendChild(hint);
+  hud.style.display = 'flex';
 }
 
 // --- コンフィグ・ゲームパッド管理（1P〜4P対応） ---
@@ -596,9 +1187,11 @@ function onSettingsPadSlotChange(val) {
 function openSettings() { 
   document.getElementById('settings-overlay').style.display = 'block'; 
   selectSettingsPlayer(settingsPlayerIdx);
+  enhanceAllRangeSliders();
 }
 
 function closeSettings() { 
+  closeRangeDigitEdit();
   document.getElementById('settings-overlay').style.display = 'none'; 
   assigningAction = null;
   localStorage.setItem('pdw_key', JSON.stringify(keyConfig));
@@ -626,7 +1219,8 @@ function closeSettings() {
     panicBgmAudio.muted = !isPanic;
     
     bgmAudio.play().then(() => {
-      panicBgmAudio.play().catch(()=>{});
+      panicBgmAudio.load();
+      panicBgmAudio.unlock();
       isBgmPlaying = true; 
       isBgmIntendedToPlay = true;
       bgmNeedsPlay = false; 
@@ -678,6 +1272,10 @@ function getConnectedPadsSummaryText() {
 
 // ゲームパッドによるメニュー操作 & 設定画面のボタン割り当て用グローバルループ
 let globalPadPrevState = {};
+let globalPadHold = { Up: 0, Down: 0, Left: 0, Right: 0 };
+const GLOBAL_PAD_DAS = 10;
+const GLOBAL_PAD_ARR = 2;
+
 setInterval(() => {
   const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()) : [];
 
@@ -710,79 +1308,121 @@ setInterval(() => {
 
   const slot0 = playerConfigs[0].padSlot;
   const pad = (slot0 >= 0 && pads[slot0]) ? pads[slot0] : pads.find(p => p && p.connected);
-  if (!pad) return;
+  if (!pad) {
+    globalPadHold = { Up: 0, Down: 0, Left: 0, Right: 0 };
+    return;
+  }
   let pressed = {};
   pad.buttons.forEach((b, i) => pressed[i] = b.pressed);
   
   const justPressed = (btnIdx) => btnIdx !== null && btnIdx !== undefined && pressed[btnIdx] && !globalPadPrevState[btnIdx];
+  const isDirRepeat = (dirName, btnIdx) => {
+    if (btnIdx === null || btnIdx === undefined || !pressed[btnIdx]) {
+      globalPadHold[dirName] = 0;
+      return false;
+    }
+    const f = globalPadHold[dirName]++;
+    return f === 0 || (f >= GLOBAL_PAD_DAS && (f - GLOBAL_PAD_DAS) % GLOBAL_PAD_ARR === 0);
+  };
+
+  const isBattleEndShown = document.getElementById('battle-end-overlay')?.style.display === 'flex';
+  const isSharePrepShown = document.getElementById('share-prep-overlay')?.style.display === 'flex';
   
-  if (typeof matchState !== 'undefined' && matchState !== 'playing') {
+  if (typeof matchState !== 'undefined' && matchState !== 'playing' && !isBattleEndShown && !isSharePrepShown) {
     const activeEl = document.activeElement;
     const isSelect = activeEl && activeEl.tagName === 'SELECT';
     const isRange = activeEl && activeEl.tagName === 'INPUT' && activeEl.type === 'range';
     const isCheckbox = activeEl && activeEl.tagName === 'INPUT' && activeEl.type === 'checkbox';
 
+    if (rangeEditState.el && rangeEditState.el !== activeEl) {
+      closeRangeDigitEdit();
+    }
+
     if (isSelect) {
-      if (justPressed(padConfig.Left)) {
+      if (isDirRepeat('Left', padConfig.Left)) {
         if (activeEl.selectedIndex > 0) {
           activeEl.selectedIndex--;
           activeEl.dispatchEvent(new Event('change', { bubbles: true }));
           SE.play('cursorMove');
         }
-      } else if (justPressed(padConfig.Right)) {
+      } else if (isDirRepeat('Right', padConfig.Right)) {
         if (activeEl.selectedIndex < activeEl.options.length - 1) {
           activeEl.selectedIndex++;
           activeEl.dispatchEvent(new Event('change', { bubbles: true }));
           SE.play('cursorMove');
         }
-      } else if (justPressed(padConfig.Up)) {
+      } else if (isDirRepeat('Up', padConfig.Up)) {
         moveMenuFocus(-1);
-      } else if (justPressed(padConfig.Down)) {
+      } else if (isDirRepeat('Down', padConfig.Down)) {
         moveMenuFocus(1);
       }
     } else if (isRange) {
       const step = parseFloat(activeEl.step) || 1;
       const min = parseFloat(activeEl.min) || 0;
       const max = parseFloat(activeEl.max) || 100;
-      let val = parseFloat(activeEl.value);
-      if (justPressed(padConfig.Left)) {
-        val = Math.max(min, val - step);
-        activeEl.value = val;
-        activeEl.dispatchEvent(new Event('input', { bubbles: true }));
-        activeEl.dispatchEvent(new Event('change', { bubbles: true }));
-        SE.play('cursorMove');
-      } else if (justPressed(padConfig.Right)) {
-        val = Math.min(max, val + step);
-        activeEl.value = val;
-        activeEl.dispatchEvent(new Event('input', { bubbles: true }));
-        activeEl.dispatchEvent(new Event('change', { bubbles: true }));
-        SE.play('cursorMove');
-      } else if (justPressed(padConfig.Up)) {
-        moveMenuFocus(-1);
-      } else if (justPressed(padConfig.Down)) {
-        moveMenuFocus(1);
-      }
-    } else {
-      if (justPressed(padConfig.Up) || justPressed(padConfig.Left)) {
-        moveMenuFocus(-1);
-      }
-      if (justPressed(padConfig.Down) || justPressed(padConfig.Right)) {
-        moveMenuFocus(1);
-      }
-    }
 
-    if (justPressed(padConfig.Swap)) {
-      if (activeEl) {
-        if (isCheckbox) {
-          activeEl.checked = !activeEl.checked;
-          activeEl.dispatchEvent(new Event('change', { bubbles: true }));
+      if (rangeEditState.el === activeEl) {
+        const meta = getRangeDisplayMeta(activeEl);
+        if (isDirRepeat('Left', padConfig.Left)) {
+          rangeEditState.digitIndex = Math.max(0, rangeEditState.digitIndex - 1);
+          updateRangeDigitHUD();
           SE.play('cursorMove');
-        } else if (activeEl.click) {
-          activeEl.click();
+        } else if (isDirRepeat('Right', padConfig.Right)) {
+          rangeEditState.digitIndex = Math.min(meta.digits - 1, rangeEditState.digitIndex + 1);
+          updateRangeDigitHUD();
+          SE.play('cursorMove');
+        } else if (isDirRepeat('Up', padConfig.Up)) {
+          adjustRangeDigit(activeEl, rangeEditState.digitIndex, 1);
+        } else if (isDirRepeat('Down', padConfig.Down)) {
+          adjustRangeDigit(activeEl, rangeEditState.digitIndex, -1);
+        }
+        if (justPressed(padConfig.Swap) || justPressed(padConfig.GrabRight)) {
+          closeRangeDigitEdit();
+          SE.play('cursorMove');
+        }
+      } else {
+        let val = parseFloat(activeEl.value);
+        if (isDirRepeat('Left', padConfig.Left)) {
+          setRangeValueWithEvents(activeEl, Math.max(min, val - step));
+          SE.play('cursorMove');
+        } else if (isDirRepeat('Right', padConfig.Right)) {
+          setRangeValueWithEvents(activeEl, Math.min(max, val + step));
+          SE.play('cursorMove');
+        } else if (isDirRepeat('Up', padConfig.Up)) {
+          moveMenuFocus(-1);
+        } else if (isDirRepeat('Down', padConfig.Down)) {
+          moveMenuFocus(1);
+        }
+        if (justPressed(padConfig.Swap)) {
+          rangeEditState.el = activeEl;
+          rangeEditState.digitIndex = 0;
+          updateRangeDigitHUD();
           SE.play('cursorMove');
         }
       }
+    } else {
+      if (isDirRepeat('Up', padConfig.Up) || isDirRepeat('Left', padConfig.Left)) {
+        moveMenuFocus(-1);
+      }
+      if (isDirRepeat('Down', padConfig.Down) || isDirRepeat('Right', padConfig.Right)) {
+        moveMenuFocus(1);
+      }
+      if (justPressed(padConfig.Swap)) {
+        if (activeEl) {
+          if (isCheckbox) {
+            activeEl.checked = !activeEl.checked;
+            activeEl.dispatchEvent(new Event('change', { bubbles: true }));
+            SE.play('cursorMove');
+          } else if (activeEl.click) {
+            activeEl.click();
+            SE.play('cursorMove');
+          }
+        }
+      }
     }
+  } else {
+    globalPadHold = { Up: 0, Down: 0, Left: 0, Right: 0 };
+    if (rangeEditState.el) closeRangeDigitEdit();
   }
   globalPadPrevState = { ...pressed };
 }, 1000 / 30);
@@ -791,6 +1431,7 @@ function moveMenuFocus(dir) {
   const focusables = Array.from(document.querySelectorAll('button, select, input, [tabindex]:not([tabindex="-1"])'))
     .filter(el => {
       if (el.disabled) return false;
+      if (el.closest('#slider-digit-hud')) return false;
       let style = window.getComputedStyle(el);
       if (style.display === 'none' || style.visibility === 'hidden') return false;
       let parent = el.parentElement;

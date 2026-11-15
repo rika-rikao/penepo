@@ -1,6 +1,12 @@
 // --- オンライン対戦 ---
 const PEER_PREFIX = 'pdw-26-';
 let onlineSkillEnabled = false;
+let expectedAppearanceIds = [];
+let receivedAppearanceIds = {};
+let localAppearanceSent = false;
+let localBoardReadyEmitted = false;
+let incomingAssetChunks = {};
+let appearanceTimeoutId = null;
 
 function generateShortRoomCode() {
   const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
@@ -162,10 +168,51 @@ function startPrepareMatchFromHost() {
   prepareMatchLocal(hostConfig);
 }
 
+function showOnlineTransferStatus(msg) {
+  const overlay = document.getElementById('ready-go-overlay');
+  const text = document.getElementById('ready-go-text');
+  const countEl = document.getElementById('ready-countdown-text');
+  if (!overlay || !text) return;
+  overlay.style.display = 'flex';
+  text.style.transition = 'none';
+  text.style.opacity = '1';
+  text.style.transform = 'scale(0.55)';
+  text.style.color = '#00d4ff';
+  text.innerText = msg;
+  if (countEl) {
+    countEl.style.display = 'none';
+    countEl.innerText = '';
+  }
+}
+
+function tryEmitBoardReady() {
+  if (localBoardReadyEmitted) return;
+  if (!localAppearanceSent) return;
+  const allReceived = expectedAppearanceIds.every(id => !!receivedAppearanceIds[id]);
+  if (!allReceived) return;
+
+  localBoardReadyEmitted = true;
+  if (appearanceTimeoutId) {
+    clearTimeout(appearanceTimeoutId);
+    appearanceTimeoutId = null;
+  }
+
+  setTimeout(() => {
+    if (matchState !== 'preparing') return;
+    if (myOnlineId === 'host') {
+      handleBoardReady('host');
+    } else if (onlineConnections[0] && onlineConnections[0].open) {
+      onlineConnections[0].send({ type: 'board_ready', senderId: myOnlineId });
+    }
+  }, 150);
+}
+
 function prepareMatchLocal(config) {
   if (countdownTimer) clearInterval(countdownTimer);
+  if (appearanceTimeoutId) { clearTimeout(appearanceTimeoutId); appearanceTimeoutId = null; }
   document.getElementById('countdown-overlay').style.display = 'none';
   document.getElementById('result-overlay').style.display = 'none';
+  if (typeof hideBattleEndOverlay === 'function') hideBattleEndOverlay();
 
   currentMode = 'online';
   currentMatchId = config.matchId;
@@ -174,6 +221,16 @@ function prepareMatchLocal(config) {
   currentSkillEnabled = !!config.skillEnabled;
   matchState = 'preparing';
   isPracticeMode = false;
+
+  expectedAppearanceIds = config.players
+    .filter(p => p.type === 'player' && p.id !== myOnlineId)
+    .map(p => p.id);
+  receivedAppearanceIds = {};
+  localAppearanceSent = false;
+  localBoardReadyEmitted = false;
+  incomingAssetChunks = {};
+  if (typeof SE !== 'undefined' && SE.clearRemoteSounds) SE.clearRemoteSounds();
+  if (typeof VOICE !== 'undefined' && VOICE.clearRemoteVoices) VOICE.clearRemoteVoices();
 
   document.getElementById('menu-overlay').style.display = 'none';
   document.getElementById('game-area').style.display = 'flex';
@@ -188,20 +245,25 @@ function prepareMatchLocal(config) {
   
   startSyncInterval();
 
-  if (typeof sendMyAppearanceOnline === 'function') {
-    sendMyAppearanceOnline();
+  if (expectedAppearanceIds.length > 0) {
+    showOnlineTransferStatus('DATA SYNC...');
   }
 
-  // 盤面の描画と初期同期を完了させるための待機時間
-  setTimeout(() => {
-    if (myOnlineId === 'host') {
-      handleBoardReady('host');
-    } else {
-      if (onlineConnections[0] && onlineConnections[0].open) {
-        onlineConnections[0].send({ type: 'board_ready', senderId: myOnlineId });
-      }
+  appearanceTimeoutId = setTimeout(() => {
+    appearanceTimeoutId = null;
+    if (!localBoardReadyEmitted && matchState === 'preparing') {
+      localAppearanceSent = true;
+      expectedAppearanceIds.forEach(id => { receivedAppearanceIds[id] = true; });
+      tryEmitBoardReady();
     }
-  }, 800);
+  }, 12000);
+
+  if (typeof sendMyAppearanceOnline === 'function') {
+    sendMyAppearanceOnline();
+  } else {
+    localAppearanceSent = true;
+    tryEmitBoardReady();
+  }
 }
 
 function handleBoardReady(senderId) {
@@ -223,6 +285,7 @@ function handleBoardReady(senderId) {
 }
 
 function executeStartMatch() {
+  if (appearanceTimeoutId) { clearTimeout(appearanceTimeoutId); appearanceTimeoutId = null; }
   matchState = 'ready';
   
   readyBgm();
@@ -261,7 +324,10 @@ function resetGameLogicOnline(config) {
     resolvedCharId === 'custom' ? getPlayerDisplayName() : null
   );
   if (typeof applyBoardFrame === 'function') {
-    applyBoardFrame('my-wrapper', myRenderer.theme.frameSrc);
+    applyBoardFrame('my-wrapper', null);
+  }
+  if (typeof applyGlobalFrameTheme === 'function') {
+    applyGlobalFrameTheme(CustomAssets.frame ? CustomAssets.frame.dataUrl : null);
   }
   document.getElementById('player-label').innerText = myRenderer.theme.name;
 
@@ -465,7 +531,9 @@ function handlePlayerLeftHost(leftId) {
    if (matchState === 'gameover' && rematchReady[myOnlineId]) {
      checkRematchCondition();
    } else if (matchState === 'preparing') {
-     handleBoardReady('host'); 
+     receivedAppearanceIds[leftId] = true;
+     tryEmitBoardReady();
+     handleBoardReady(leftId);
    }
    checkMatchEnd();
 }
@@ -494,14 +562,65 @@ function handleHostDisconnected() {
   }
 }
 
+async function applyReceivedAppearance(senderId, payload) {
+  const targetOpp = opponents.find(o => o.id === senderId);
+  if (targetOpp && targetOpp.renderer) {
+    const customFrameUrl = payload.customFrameUrl || null;
+    targetOpp.renderer.theme = buildThemeForCharacter(
+      payload.charId,
+      payload.customCharaUrl,
+      false,
+      payload.customName,
+      customFrameUrl
+    );
+    if (typeof applyBoardFrame === 'function') {
+      applyBoardFrame(`rival-wrapper-${targetOpp.index}`, customFrameUrl);
+    }
+    const nameEl = targetOpp.renderer.canvas.closest('.board-wrapper')?.querySelector('.board-header span');
+    if (nameEl) {
+      const chName = payload.customName || getCharacterById(payload.charId).name;
+      nameEl.innerHTML = `${chName} (${targetOpp.name}) <span class="target-badge">🎯 TARGET</span>`;
+    }
+  }
+
+  if (payload.customSeDict && typeof SE !== 'undefined' && typeof dataUrlToArrayBuffer === 'function') {
+    const entries = Object.entries(payload.customSeDict);
+    for (const [seKey, dataUrl] of entries) {
+      if (typeof dataUrl === 'string' && dataUrl.startsWith('data:')) {
+        try {
+          const buf = dataUrlToArrayBuffer(dataUrl);
+          await SE.setRemoteSound(senderId, seKey, buf);
+        } catch (e) {}
+      }
+    }
+  }
+
+  if (payload.customVoiceDict && typeof VOICE !== 'undefined' && typeof dataUrlToArrayBuffer === 'function') {
+    const entries = Object.entries(payload.customVoiceDict);
+    for (const [vCat, dataUrl] of entries) {
+      if (typeof dataUrl === 'string' && dataUrl.startsWith('data:')) {
+        try {
+          const buf = dataUrlToArrayBuffer(dataUrl);
+          await VOICE.setRemoteVoice(senderId, vCat, buf);
+        } catch (e) {}
+      }
+    }
+  }
+
+  receivedAppearanceIds[senderId] = true;
+  tryEmitBoardReady();
+}
+
 function bindConnEvents(c, isHostMode) {
   c.on('data', (data) => {
     if (data.type === 'sync') {
       const senderOpp = opponents.find(o => o.id === data.senderId);
       if (senderOpp && senderOpp.engine) {
-        if (data.grid) senderOpp.engine.grid = data.grid;
-        if (data.nextRow) senderOpp.engine.nextRow = data.nextRow;
-        if (data.riseOffset !== undefined) senderOpp.engine.riseOffset = data.riseOffset;
+        if (!senderOpp.engine.endAnim) {
+          if (data.grid) senderOpp.engine.grid = data.grid;
+          if (data.nextRow) senderOpp.engine.nextRow = data.nextRow;
+          if (data.riseOffset !== undefined) senderOpp.engine.riseOffset = data.riseOffset;
+        }
         if (data.score !== undefined) senderOpp.engine.score = data.score;
         if (data.garbageQueue) senderOpp.engine.garbageQueue = data.garbageQueue;
         if (data.skillRemaining !== undefined) {
@@ -513,6 +632,7 @@ function bindConnEvents(c, isHostMode) {
            const wasGameOver = senderOpp.engine.gameOver;
            senderOpp.engine.gameOver = data.gameOver;
            if (!wasGameOver && data.gameOver) {
+              senderOpp.engine.startGameOverFillAnim();
               checkMatchEnd();
            }
         }
@@ -529,6 +649,9 @@ function bindConnEvents(c, isHostMode) {
         senderOpp.engine.cutinMax = 50;
         senderOpp.engine.cutinTimer = 50;
         senderOpp.engine.cutinText = data.text;
+        if (typeof SE !== 'undefined' && SE.playForSender) {
+          SE.playForSender(data.senderId, 'skill');
+        }
       }
       if (isHostMode) {
         onlineConnections.forEach(otherC => {
@@ -540,6 +663,9 @@ function bindConnEvents(c, isHostMode) {
       startCountdown();
     }
     else if (data.type === 'garbage_request' && isHostMode) {
+      if (typeof playAttackVoiceForSender === 'function') {
+        playAttackVoiceForSender(data.senderId);
+      }
       for (const [tId, count] of Object.entries(data.targets)) {
         playGarbageSendAnimation(data.senderId, tId, data.isHard);
         if (tId === 'host') {
@@ -554,6 +680,9 @@ function bindConnEvents(c, isHostMode) {
       });
     }
     else if (data.type === 'add_garbage_multi') {
+      if (data.senderId !== myOnlineId && typeof playAttackVoiceForSender === 'function') {
+        playAttackVoiceForSender(data.senderId);
+      }
       for (const tId of Object.keys(data.targets)) {
          if (data.senderId !== myOnlineId) {
            playGarbageSendAnimation(data.senderId, tId, data.isHard);
@@ -579,24 +708,52 @@ function bindConnEvents(c, isHostMode) {
     else if (data.type === 'player_left') {
       if (!isHostMode) {
         replaceClientWithCom(data.leftId);
+        if (matchState === 'preparing') {
+          receivedAppearanceIds[data.leftId] = true;
+          tryEmitBoardReady();
+        }
         checkMatchEnd();
       }
     }
-    else if (data.type === 'appearance_sync') {
-      const targetOpp = opponents.find(o => o.id === data.senderId);
-      if (targetOpp && targetOpp.renderer) {
-        targetOpp.renderer.theme = buildThemeForCharacter(data.charId, data.customCharaUrl, false, data.customName);
-        const nameEl = targetOpp.renderer.canvas.closest('.board-wrapper')?.querySelector('.board-header span');
-        if (nameEl) {
-          const chName = data.customName || getCharacterById(data.charId).name;
-          nameEl.innerHTML = `${chName} (${targetOpp.name}) <span class="target-badge">🎯 TARGET</span>`;
-        }
-      }
+    else if (data.type === 'appearance_chunk') {
       if (isHostMode) {
         onlineConnections.forEach(otherC => {
           if (otherC !== c && otherC.open) otherC.send(data);
         });
       }
+      if (!incomingAssetChunks[data.transferId]) {
+        incomingAssetChunks[data.transferId] = new Array(data.total);
+      }
+      incomingAssetChunks[data.transferId][data.index] = data.chunk;
+    }
+    else if (data.type === 'appearance_done') {
+      if (isHostMode) {
+        onlineConnections.forEach(otherC => {
+          if (otherC !== c && otherC.open) otherC.send(data);
+        });
+      }
+      const chunks = incomingAssetChunks[data.transferId];
+      delete incomingAssetChunks[data.transferId];
+      if (chunks) {
+        try {
+          const payload = JSON.parse(chunks.join(''));
+          applyReceivedAppearance(data.senderId, payload);
+        } catch (e) {
+          receivedAppearanceIds[data.senderId] = true;
+          tryEmitBoardReady();
+        }
+      } else {
+        receivedAppearanceIds[data.senderId] = true;
+        tryEmitBoardReady();
+      }
+    }
+    else if (data.type === 'appearance_sync') {
+      if (isHostMode) {
+        onlineConnections.forEach(otherC => {
+          if (otherC !== c && otherC.open) otherC.send(data);
+        });
+      }
+      applyReceivedAppearance(data.senderId, data);
     }
     else if (data.type === 'cheat_corrupt_row') {
       if (data.targetId === myOnlineId && myEngine && !myEngine.gameOver && !isPracticeMode) {
@@ -630,16 +787,78 @@ function bindConnEvents(c, isHostMode) {
   });
 }
 
-function sendMyAppearanceOnline() {
+async function sendMyAppearanceOnline() {
   const resolvedCharId = resolvePlayableCharId(selectedCharId);
+
+  const customSeDict = {};
+  if (typeof SE !== 'undefined' && SE.customRawMap) {
+    let totalSeBytes = 0;
+    const MAX_TOTAL_SE_BYTES = 2 * 1024 * 1024;
+    for (const [key, meta] of Object.entries(SE.customRawMap)) {
+      if (meta && meta.dataUrl && (totalSeBytes + meta.dataUrl.length) <= MAX_TOTAL_SE_BYTES) {
+        customSeDict[key] = meta.dataUrl;
+        totalSeBytes += meta.dataUrl.length;
+      }
+    }
+  }
+
+  const customVoiceDict = {};
+  if (typeof VOICE !== 'undefined' && VOICE.customRawMap) {
+    let totalVoiceBytes = 0;
+    const MAX_TOTAL_VOICE_BYTES = 2 * 1024 * 1024;
+    for (const [cat, meta] of Object.entries(VOICE.customRawMap)) {
+      if (meta && meta.dataUrl && (totalVoiceBytes + meta.dataUrl.length) <= MAX_TOTAL_VOICE_BYTES) {
+        customVoiceDict[cat] = meta.dataUrl;
+        totalVoiceBytes += meta.dataUrl.length;
+      }
+    }
+  }
+
   const payload = {
-    type: 'appearance_sync',
-    senderId: myOnlineId,
     charId: resolvedCharId,
     customCharaUrl: (resolvedCharId === 'custom' && CustomAssets.chara) ? CustomAssets.chara.dataUrl : null,
-    customName: resolvedCharId === 'custom' ? getPlayerDisplayName() : null
+    customName: resolvedCharId === 'custom' ? getPlayerDisplayName() : null,
+    customFrameUrl: CustomAssets.frame ? CustomAssets.frame.dataUrl : null,
+    customSeDict,
+    customVoiceDict
   };
-  onlineConnections.forEach(c => {
-    if (c && c.open) c.send(payload);
-  });
+
+  try {
+    const jsonStr = JSON.stringify(payload);
+    const CHUNK_SIZE = 16000;
+    const total = Math.max(1, Math.ceil(jsonStr.length / CHUNK_SIZE));
+    const transferId = `${myOnlineId}_${currentMatchId}_${Math.random().toString(36).slice(2, 7)}`;
+
+    for (let i = 0; i < total; i++) {
+      const chunk = jsonStr.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+      const msg = {
+        type: 'appearance_chunk',
+        senderId: myOnlineId,
+        transferId,
+        index: i,
+        total,
+        chunk
+      };
+      onlineConnections.forEach(c => {
+        if (c && c.open) c.send(msg);
+      });
+      if (total > 1 && i < total - 1) {
+        await new Promise(r => setTimeout(r, 8));
+      }
+    }
+
+    const doneMsg = {
+      type: 'appearance_done',
+      senderId: myOnlineId,
+      transferId
+    };
+    onlineConnections.forEach(c => {
+      if (c && c.open) c.send(doneMsg);
+    });
+  } catch (e) {
+    console.warn('Appearance send error:', e);
+  } finally {
+    localAppearanceSent = true;
+    tryEmitBoardReady();
+  }
 }

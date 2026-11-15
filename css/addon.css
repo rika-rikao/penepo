@@ -1,5 +1,6 @@
+
 /* ==========================================
-   追加UI・ストーリー・カスタムスキン・バストアップ選択・強制横画面用CSS
+   追加UI・ストーリー・カスタムスキン・バストアップ選択・強制横画面/縦画面用CSS
    ========================================== */
 .char-select-bar {
   font-size: 0.85rem;
@@ -11,7 +12,7 @@
   flex-wrap: wrap;
 }
 
-/* カスタムフレーム用レイヤー（盤面の最背面＆外枠装飾） */
+/* カスタムフレーム用レイヤー（相手盤面の外枠装飾用） */
 .board-wrapper > .garbage-preview-box,
 .board-wrapper > .board-header,
 .board-wrapper > .canvas-container,
@@ -32,6 +33,104 @@
   background-position: center;
   border-radius: 14px;
   display: none;
+}
+
+/* 自陣・メニュー全体背景へのカスタムフレーム適用 */
+#my-zone-frame-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  display: none;
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  background-position: center;
+}
+#my-zone-frame-bg::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(8, 10, 22, 0.28);
+  pointer-events: none;
+}
+body.has-custom-frame #my-zone-frame-bg {
+  display: block;
+  background-image: var(--custom-frame-url);
+}
+body.has-custom-frame #menu-overlay::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image: var(--custom-frame-url);
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  background-position: center;
+  opacity: 0.85;
+}
+body.has-custom-frame #menu-overlay::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: rgba(8, 10, 22, 0.36);
+}
+body.has-custom-frame #menu-overlay > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* スライダー操作性向上＆桁編集HUD */
+input[type="range"] {
+  touch-action: pan-y;
+  cursor: pointer;
+}
+#slider-digit-hud {
+  position: fixed;
+  bottom: max(14px, env(safe-area-inset-bottom));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 600;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  background: rgba(10, 15, 32, 0.96);
+  border: 2px solid #ffd700;
+  border-radius: 14px;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.85);
+  color: #fff;
+  pointer-events: auto;
+}
+.slider-digit-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.slider-digit-box {
+  min-width: 30px;
+  padding: 4px 6px;
+  border-radius: 8px;
+  border: 2px solid #3282b8;
+  background: #162447;
+  font-size: 1.15rem;
+  font-weight: 900;
+  text-align: center;
+  color: #fff;
+  cursor: pointer;
+}
+.slider-digit-box.active {
+  border-color: #ffd700;
+  background: #ff007f;
+  box-shadow: 0 0 10px rgba(255, 215, 0, 0.8);
+}
+.slider-digit-hint {
+  font-size: 0.7rem;
+  color: #4ecca3;
+  white-space: nowrap;
 }
 
 /* 各メニュー左上の固定「戻る」ボタン */
@@ -357,6 +456,7 @@
 
 body.local-force-landscape #game-area,
 body.local-force-landscape #ready-go-overlay,
+body.local-force-landscape #battle-end-overlay,
 body.local-force-landscape #result-overlay {
   position: fixed !important;
   inset: auto !important;
@@ -374,7 +474,7 @@ body.local-force-landscape #toast {
   transform: translateY(-50%) rotate(90deg);
 }
 
-/* カスタム画像設定リスト */
+/* カスタム画像＆カスタムボイス設定リスト */
 .custom-asset-row {
   display: flex;
   align-items: center;
@@ -401,6 +501,23 @@ body.local-force-landscape #toast {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.custom-voice-subrow {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: nowrap;
+}
+.custom-voice-label {
+  font-size: 0.74rem;
+  color: #4ecca3;
+  width: 78px;
+  flex-shrink: 0;
+}
+.custom-voice-subrow .small-btn {
+  padding: 4px 8px;
+  font-size: 0.72rem;
+  flex-shrink: 0;
 }
 
 /* ストーリー：ステージ選択メニュー */
@@ -602,4 +719,364 @@ body.local-force-landscape #toast {
   background: #2b2b3d;
   border-color: #666;
   color: #999;
+}
+
+/* ==========================================
+   シェア対戦（2人専用・縦強制・画面半分対向・複数タッチ独立対応）
+   ========================================== */
+body.share-force-portrait #share-prep-overlay,
+body.share-force-portrait #game-area,
+body.share-force-portrait #ready-go-overlay,
+body.share-force-portrait #battle-end-overlay,
+body.share-force-portrait #result-overlay {
+  position: fixed !important;
+  inset: auto !important;
+  top: 50% !important;
+  left: 50% !important;
+  width: 100vh !important;
+  height: 100vw !important;
+  transform: translate(-50%, -50%) rotate(90deg) !important;
+  transform-origin: center center !important;
+}
+body.share-force-portrait #toast {
+  top: 50%;
+  left: auto;
+  right: 16px;
+  transform: translateY(-50%) rotate(90deg);
+}
+
+#share-prep-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 260;
+  background: #0d1321;
+  display: none;
+  flex-direction: column;
+  overflow: hidden;
+  touch-action: manipulation !important;
+}
+.share-prep-half {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  gap: 4px;
+  overflow-y: auto;
+  touch-action: manipulation !important;
+}
+.share-prep-half.share-p2-side {
+  transform: rotate(180deg);
+  background: linear-gradient(180deg, rgba(233, 69, 96, 0.14), rgba(15, 23, 42, 0.92));
+}
+.share-prep-half.share-p1-side {
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.92), rgba(0, 212, 255, 0.14));
+}
+.share-prep-center-bar {
+  height: 36px;
+  flex-shrink: 0;
+  width: 100%;
+  background: rgba(8, 12, 24, 0.98);
+  border-top: 2px solid #e94560;
+  border-bottom: 2px solid #00e676;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 10px;
+  gap: 6px;
+  z-index: 10;
+}
+.share-prep-center-title {
+  font-size: 0.82rem;
+  font-weight: 900;
+  color: #ffd700;
+}
+.share-prep-center-status {
+  font-size: 0.72rem;
+  color: #4ecca3;
+  font-weight: bold;
+}
+.share-prep-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  max-width: 440px;
+  font-size: 0.8rem;
+  font-weight: bold;
+}
+.share-prep-char-grid {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px;
+  width: 100%;
+  max-width: 440px;
+}
+.share-prep-char-btn {
+  width: 52px;
+  padding: 2px;
+  border-radius: 8px;
+  background: #162447;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  touch-action: manipulation;
+}
+.share-prep-char-btn.selected {
+  border-color: #ffd700;
+  box-shadow: 0 0 8px rgba(255, 215, 0, 0.8);
+  background: #1f3363;
+}
+.share-prep-char-btn.empty-custom {
+  opacity: 0.5;
+  border-style: dashed;
+}
+.share-prep-char-thumb {
+  width: 34px;
+  height: 34px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #0f1626;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.share-prep-char-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: 50% 8%;
+}
+.share-prep-char-name {
+  font-size: 0.58rem;
+  font-weight: bold;
+  width: 100%;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.share-prep-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  width: 100%;
+  max-width: 440px;
+}
+.share-prep-lbl {
+  font-size: 0.7rem;
+  color: #94a3b8;
+  font-weight: bold;
+  margin-right: 2px;
+}
+.share-pill-btn {
+  background: #162447;
+  color: #cbd5e1;
+  border: 1px solid #3282b8;
+  border-radius: 10px;
+  padding: 4px 7px;
+  font-size: 0.7rem;
+  font-weight: bold;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.share-pill-btn.active {
+  background: #e94560;
+  border-color: #ffd700;
+  color: #fff;
+}
+.share-pill-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.share-ready-btn {
+  width: 100%;
+  max-width: 240px;
+  padding: 7px 14px;
+  border-radius: 18px;
+  border: 2px solid #4ecca3;
+  background: #0f3460;
+  color: #fff;
+  font-size: 0.88rem;
+  font-weight: 900;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.share-ready-btn.is-ready {
+  background: linear-gradient(135deg, #00c853, #00e676);
+  border-color: #fff;
+  color: #08121f;
+  box-shadow: 0 0 12px rgba(0, 230, 118, 0.8);
+}
+
+/* シェア対戦中のゲーム画面（縦半分対向） */
+#game-area.share-mode {
+  background: #0d1321;
+}
+#game-area.share-mode #game-container {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  gap: 0;
+}
+.share-zone-half {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  overflow: hidden;
+  gap: 8px;
+}
+.share-zone-half.share-p2-zone {
+  transform: rotate(180deg);
+  border-top: 2px solid rgba(255, 255, 255, 0.25);
+  background: radial-gradient(circle at center, rgba(233, 69, 96, 0.12), transparent 72%);
+}
+.share-zone-half.share-p1-zone {
+  border-top: 2px solid rgba(255, 255, 255, 0.25);
+  background: radial-gradient(circle at center, rgba(0, 230, 118, 0.12), transparent 72%);
+}
+#game-area.share-mode .share-p2-zone .board-wrapper .canvas-container {
+  border-color: #ff4081 !important;
+  box-shadow: 0 0 14px rgba(255, 64, 129, 0.75) !important;
+}
+#game-area.share-mode #exit-btn.share-exit-btn {
+  position: absolute;
+  top: 50%;
+  left: 6px;
+  right: auto;
+  transform: translateY(-50%);
+  padding: 5px 10px;
+  font-size: 0.72rem;
+  z-index: 120;
+  border-radius: 14px;
+  opacity: 0.9;
+}
+
+/* 決着時立ち絵演出＆入力待ちオーバーレイ */
+#battle-end-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 420;
+  background: rgba(6, 10, 22, 0.84);
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  touch-action: manipulation !important;
+  animation: fadeInFast 0.2s ease-out;
+}
+@keyframes fadeInFast {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.battle-end-single-view {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 16px;
+  max-width: 92%;
+}
+.battle-end-badge {
+  font-size: 2.3rem;
+  font-weight: 900;
+  font-style: italic;
+  letter-spacing: 2px;
+  text-shadow: 0 0 16px rgba(255, 255, 255, 0.65), 0 3px 6px #000;
+}
+.battle-end-badge.win { color: #ffd700; }
+.battle-end-badge.lose { color: #ff3366; }
+.battle-end-portrait-wrap {
+  width: 220px;
+  height: 280px;
+  max-height: 48vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 16px;
+  border: 3px solid #ffd700;
+  background: radial-gradient(circle, rgba(255,255,255,0.12), rgba(15,23,42,0.92));
+  box-shadow: 0 0 26px rgba(255, 215, 0, 0.45);
+}
+.battle-end-portrait-wrap.lose {
+  border-color: #ff3366;
+  box-shadow: 0 0 26px rgba(255, 51, 102, 0.45);
+}
+.battle-end-portrait-wrap.share-mini {
+  width: 140px;
+  height: 170px;
+  max-height: 24vh;
+}
+.battle-end-portrait-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: 50% 8%;
+}
+.battle-end-portrait-img.square-or-wide {
+  object-fit: contain;
+  object-position: center center;
+}
+.battle-end-name {
+  font-size: 1.15rem;
+  font-weight: 900;
+  color: #fff;
+  text-shadow: 0 2px 4px #000;
+}
+.battle-end-prompt {
+  font-size: 0.86rem;
+  font-weight: bold;
+  color: #4ecca3;
+  animation: pulse 0.8s infinite alternate;
+}
+.battle-end-share-view {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+.battle-end-share-half {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px;
+}
+.battle-end-share-half.share-p2-side {
+  transform: rotate(180deg);
+}
+.battle-end-share-half .battle-end-badge {
+  font-size: 1.65rem;
+}
+.battle-end-share-half .battle-end-name {
+  font-size: 0.95rem;
+}
+.battle-end-share-divider {
+  height: 2px;
+  width: 100%;
+  background: rgba(255, 255, 255, 0.35);
 }

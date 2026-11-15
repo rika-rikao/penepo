@@ -413,29 +413,9 @@ function execSkillEraseRows(engine, senderId, targetRows) {
 }
 
 function execSkillPurifyGarbage(engine) {
-  let converted = 0;
-  const normalColors = COLORS.filter(col => !col.isSpecial);
-  for (let r = 0; r < ROWS; r++) {
-    for (let c = 0; c < COLS; c++) {
-      const b = engine.grid[r][c];
-      if (b && b.type === 'garbage') {
-        b.type = normalColors[Math.floor(Math.random() * normalColors.length)].id;
-        b.state = 'hover';
-        b.timer = 12;
-        b.fallY = 0;
-        b.chainEligible = true;
-        b.particleTimer = 25;
-        delete b.groupId;
-        delete b.isHard;
-        delete b.transformGroupId;
-        converted++;
-      }
-    }
-  }
-  if (converted === 0) return { success: false };
-
-  SE.play('garbageErase');
-  engine.stopTimer = Math.max(engine.stopTimer, 45);
+  if (!engine || typeof engine.startPurifySkill !== 'function') return { success: false };
+  const started = engine.startPurifySkill();
+  if (!started) return { success: false };
   return { success: true, text: 'SKILL: お邪魔浄化!' };
 }
 

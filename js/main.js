@@ -1,5 +1,5 @@
 // ==========================================
-// 対戦・ターゲット・ローカルマルチ・ゲーム管理システム
+// 対戦・ターゲット・ローカルマルチ・シェア対戦・ゲーム管理システム
 // ==========================================
 let myEngine, myRenderer;
 let opponents = [];
@@ -17,6 +17,7 @@ let countdownTimer = null;
 let hostDisconnected = false;
 let isPracticeMode = false;
 let currentSurvivalWins = 0;
+let endSequenceTriggered = false;
 
 // 状態管理用
 let rematchReady = {};
@@ -47,6 +48,273 @@ let localSlotsConfig = [
 ];
 let activeLocalTab = 0;
 
+// シェア対戦（2人専用）用設定
+let sharePrepConfig = {
+  p1: { charId: 'main00', handicap: 3, skillEnabled: false, skillId: 'erase_color', ready: false },
+  p2: { charId: 'sub01',  handicap: 3, skillId: 'erase_rows', ready: false }
+};
+let shareStartTimer = null;
+
+function isSharePortraitForced() {
+  const prepOpen = document.getElementById('share-prep-overlay')?.style.display === 'flex';
+  const gameOpen = document.getElementById('game-area')?.style.display !== 'none' && currentMode === 'share';
+  return (prepOpen || gameOpen) && (window.innerWidth > window.innerHeight);
+}
+
+function updateShareForcePortraitClass() {
+  if (isSharePortraitForced()) {
+    document.body.classList.add('share-force-portrait');
+  } else {
+    document.body.classList.remove('share-force-portrait');
+  }
+}
+
+function getShareCharCandidateIds() {
+  const list = CHARACTERS.map(c => c.id);
+  list.push('custom');
+  list.push('random');
+  return list;
+}
+
+function bindMultiTouchTap(el, handler) {
+  if (!el) return;
+  let lastTrigger = 0;
+  const trigger = (e) => {
+    const now = performance.now();
+    if (now - lastTrigger < 120) return;
+    lastTrigger = now;
+    if (e && e.cancelable) e.preventDefault();
+    handler(e);
+  };
+  el.addEventListener('pointerdown', trigger);
+  el.addEventListener('click', (e) => {
+    if (performance.now() - lastTrigger < 350) {
+      e.preventDefault();
+      return;
+    }
+    trigger(e);
+  });
+}
+
+function openSharePrepMenu() {
+  if (typeof closeRangeDigitEdit === 'function') closeRangeDigitEdit();
+  sharePrepConfig.p1.ready = false;
+  sharePrepConfig.p2.ready = false;
+  if (sharePrepConfig.p1.charId === 'custom' && !CustomAssets.chara) sharePrepConfig.p1.charId = 'main00';
+  if (sharePrepConfig.p2.charId === 'custom' && !CustomAssets.chara) sharePrepConfig.p2.charId = 'sub01';
+  if (shareStartTimer) { clearTimeout(shareStartTimer); shareStartTimer = null; }
+
+  const overlay = document.getElementById('share-prep-overlay');
+  if (overlay) overlay.style.display = 'flex';
+  updateShareForcePortraitClass();
+  renderSharePrepUI();
+}
+
+function closeSharePrepMenu() {
+  if (shareStartTimer) { clearTimeout(shareStartTimer); shareStartTimer = null; }
+  const overlay = document.getElementById('share-prep-overlay');
+  if (overlay) overlay.style.display = 'none';
+  document.body.classList.remove('share-force-portrait');
+}
+
+function renderSharePrepUI() {
+  renderSharePrepSide(1);
+  renderSharePrepSide(2);
+  const statusEl = document.getElementById('share-prep-status-text');
+  if (statusEl) {
+    if (sharePrepConfig.p1.ready && sharePrepConfig.p2.ready) {
+      statusEl.innerText = '開始します！';
+    } else if (sharePrepConfig.p1.ready) {
+      statusEl.innerText = '1P OK / 2P待ち';
+    } else if (sharePrepConfig.p2.ready) {
+      statusEl.innerText = '2P OK / 1P待ち';
+    } else {
+      statusEl.innerText = '両者OKで開始';
+    }
+  }
+}
+
+function checkSharePrepBothReady() {
+  if (shareStartTimer) { clearTimeout(shareStartTimer); shareStartTimer = null; }
+  if (sharePrepConfig.p1.ready && sharePrepConfig.p2.ready) {
+    shareStartTimer = setTimeout(() => {
+      shareStartTimer = null;
+      if (sharePrepConfig.p1.ready && sharePrepConfig.p2.ready) {
+        startShareGame();
+      }
+    }, 180);
+  }
+}
+
+function renderSharePrepSide(playerNum) {
+  const isP1 = (playerNum === 1);
+  const container = document.getElementById(isP1 ? 'share-prep-p1' : 'share-prep-p2');
+  if (!container) return;
+  const cfg = isP1 ? sharePrepConfig.p1 : sharePrepConfig.p2;
+  const skillEnabled = sharePrepConfig.p1.skillEnabled;
+
+  container.innerHTML = '';
+
+  const buildHeader = () => {
+    const hdr = document.createElement('div');
+    hdr.className = 'share-prep-header';
+    const curCh = getCharacterById(cfg.charId);
+    hdr.innerHTML = `<span style="color:${isP1 ? '#00e676' : '#ff4081'};">${isP1 ? '1P (下側)' : '2P (上側)'}</span><span>キャラ: ${curCh.name}</span>`;
+    return hdr;
+  };
+
+  const buildCharGrid = () => {
+    const grid = document.createElement('div');
+    grid.className = 'share-prep-char-grid';
+    getShareCharCandidateIds().forEach(cid => {
+      const ch = getCharacterById(cid);
+      const isCustomEmpty = (cid === 'custom' && !CustomAssets.chara);
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'share-prep-char-btn'
+        + (cfg.charId === cid ? ' selected' : '')
+        + (isCustomEmpty ? ' empty-custom' : '');
+
+      const thumb = document.createElement('div');
+      thumb.className = 'share-prep-char-thumb';
+      if (cid === 'random') {
+        thumb.innerHTML = `<span class="char-icon-random" style="font-size:1.1rem;">？</span>`;
+      } else {
+        const img = document.createElement('img');
+        img.src = (cid === 'custom' && CustomAssets.chara) ? CustomAssets.chara.dataUrl : ch.file;
+        img.alt = ch.name;
+        thumb.appendChild(img);
+      }
+      const nm = document.createElement('div');
+      nm.className = 'share-prep-char-name';
+      nm.innerText = isCustomEmpty ? 'マイ(無)' : ch.name;
+      btn.append(thumb, nm);
+
+      bindMultiTouchTap(btn, () => {
+        if (isCustomEmpty) {
+          showToast('設定からマイ立ち絵を登録すると選べます');
+          return;
+        }
+        cfg.charId = cid;
+        cfg.ready = false;
+        if (typeof SE !== 'undefined') SE.play('cursorMove');
+        renderSharePrepUI();
+      });
+      grid.appendChild(btn);
+    });
+    return grid;
+  };
+
+  const buildDifficultyRow = () => {
+    const row = document.createElement('div');
+    row.className = 'share-prep-row';
+    const lbl = document.createElement('span');
+    lbl.className = 'share-prep-lbl';
+    lbl.innerText = '難易度:';
+    row.appendChild(lbl);
+    const hdLabels = [
+      { v: 1, t: '1:激ムズ' },
+      { v: 2, t: '2:難' },
+      { v: 3, t: '3:普通' },
+      { v: 4, t: '4:甘' },
+      { v: 5, t: '5:易' }
+    ];
+    hdLabels.forEach(item => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'share-pill-btn' + (cfg.handicap === item.v ? ' active' : '');
+      b.innerText = item.t;
+      bindMultiTouchTap(b, () => {
+        cfg.handicap = item.v;
+        cfg.ready = false;
+        if (typeof SE !== 'undefined') SE.play('cursorMove');
+        renderSharePrepUI();
+      });
+      row.appendChild(b);
+    });
+    return row;
+  };
+
+  const buildSkillRow = () => {
+    const row = document.createElement('div');
+    row.className = 'share-prep-row';
+
+    if (isP1) {
+      const toggleBtn = document.createElement('button');
+      toggleBtn.type = 'button';
+      toggleBtn.className = 'share-pill-btn' + (skillEnabled ? ' active' : '');
+      toggleBtn.innerText = `スキル:${skillEnabled ? 'ON' : 'OFF'}`;
+      bindMultiTouchTap(toggleBtn, () => {
+        sharePrepConfig.p1.skillEnabled = !sharePrepConfig.p1.skillEnabled;
+        sharePrepConfig.p1.ready = false;
+        sharePrepConfig.p2.ready = false;
+        if (typeof SE !== 'undefined') SE.play('cursorMove');
+        renderSharePrepUI();
+      });
+      row.appendChild(toggleBtn);
+    } else {
+      const ruleBadge = document.createElement('span');
+      ruleBadge.className = 'share-prep-lbl';
+      ruleBadge.style.color = skillEnabled ? '#ffd700' : '#94a3b8';
+      ruleBadge.innerText = `スキル:${skillEnabled ? 'ON(1P決定)' : 'OFF(1P決定)'}`;
+      row.appendChild(ruleBadge);
+    }
+
+    const skillShort = {
+      erase_color: '色全消',
+      erase_rows: '1・5・9段',
+      purify_garbage: '浄化',
+      corrupt_enemy_row: '侵食'
+    };
+    ['erase_color', 'erase_rows', 'purify_garbage', 'corrupt_enemy_row'].forEach(skId => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'share-pill-btn' + (cfg.skillId === skId ? ' active' : '');
+      b.disabled = !skillEnabled;
+      b.innerText = skillShort[skId];
+      bindMultiTouchTap(b, () => {
+        if (!sharePrepConfig.p1.skillEnabled) return;
+        cfg.skillId = skId;
+        cfg.ready = false;
+        if (typeof SE !== 'undefined') SE.play('cursorMove');
+        renderSharePrepUI();
+      });
+      row.appendChild(b);
+    });
+
+    return row;
+  };
+
+  const buildReadyBtn = () => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'share-ready-btn' + (cfg.ready ? ' is-ready' : '');
+    btn.innerText = cfg.ready ? 'READY! (取消は再タップ)' : '決定 / READY';
+    bindMultiTouchTap(btn, () => {
+      cfg.ready = !cfg.ready;
+      if (typeof SE !== 'undefined') SE.play('cursorMove');
+      renderSharePrepUI();
+      checkSharePrepBothReady();
+    });
+    return btn;
+  };
+
+  // 両側とも180度対称配置（内側にヘッダ・キャラ、外側に難易度・スキル・READY）
+  container.append(
+    buildHeader(),
+    buildCharGrid(),
+    buildDifficultyRow(),
+    buildSkillRow(),
+    buildReadyBtn()
+  );
+}
+
+function startShareGame() {
+  const overlay = document.getElementById('share-prep-overlay');
+  if (overlay) overlay.style.display = 'none';
+  startGame('share', 3, 2, sharePrepConfig.p1.skillEnabled);
+}
+
 function showToast(msg) { 
   const t = document.getElementById('toast'); 
   t.innerText = msg; t.style.display = 'block'; 
@@ -58,12 +326,14 @@ function showSingleMenu() {
   syncPlayerSkillSelects();
   renderCharPicker('single-char-picker', { storyOnly: false });
   updateSingleMenu();
+  if (typeof enhanceAllRangeSliders === 'function') enhanceAllRangeSliders();
 }
 function showComMenu() {
   document.getElementById('main-menu-actions').style.display = 'none';
   document.getElementById('com-menu').style.display = 'flex';
   syncPlayerSkillSelects();
   renderCharPicker('com-char-picker', { storyOnly: false });
+  if (typeof enhanceAllRangeSliders === 'function') enhanceAllRangeSliders();
 }
 function showLocalMenu() {
   document.getElementById('main-menu-actions').style.display = 'none';
@@ -75,6 +345,7 @@ function showOnlineMenu() {
   document.getElementById('online-menu').style.display = 'flex';
   syncPlayerSkillSelects();
   renderCharPicker('online-char-picker', { storyOnly: false });
+  if (typeof enhanceAllRangeSliders === 'function') enhanceAllRangeSliders();
 }
 function showRankingMenu() {
   document.getElementById('main-menu-actions').style.display = 'none';
@@ -154,7 +425,7 @@ function renderLocalMenuUI() {
       lvWrap.style.gap = '6px';
       lvWrap.innerHTML = `<span>強さ Lv.<b id="local-com-lv-disp">${slot.comLevel}</b></span>`;
       const rng = document.createElement('input');
-      rng.type = 'range'; rng.min = '1'; rng.max = '99'; rng.value = String(slot.comLevel);
+      rng.type = 'range'; rng.min = '1'; rng.max = '99'; rng.step = '1'; rng.value = String(slot.comLevel);
       rng.style.width = '90px';
       rng.oninput = () => {
         slot.comLevel = parseInt(rng.value, 10) || 3;
@@ -162,6 +433,7 @@ function renderLocalMenuUI() {
       };
       lvWrap.appendChild(rng);
       cfgEl.appendChild(lvWrap);
+      if (typeof enhanceRangeSlider === 'function') enhanceRangeSlider(rng);
     }
   }
 
@@ -262,6 +534,8 @@ function startSingleMode() {
   startGame('single_' + mode, initLevel, mode === 'survival' ? 2 : 1, skillEnabled);
 }
 function backToMainMenu() { 
+  if (typeof closeRangeDigitEdit === 'function') closeRangeDigitEdit();
+  closeSharePrepMenu();
   document.getElementById('com-menu').style.display = 'none'; 
   document.getElementById('single-menu').style.display = 'none'; 
   document.getElementById('local-menu').style.display = 'none';
@@ -322,6 +596,20 @@ function updateTargetUI() {
       }
     }
   });
+}
+
+function playAttackVoiceForSender(senderId) {
+  if (typeof VOICE === 'undefined') return;
+  if (senderId === 'player' || senderId === myOnlineId || (senderId === 'host' && myOnlineId === 'host')) {
+    if (myRenderer && myRenderer.theme) {
+      VOICE.play('attack', myRenderer.theme);
+    }
+    return;
+  }
+  const opp = opponents.find(o => o.id === senderId);
+  if (opp && opp.renderer && opp.renderer.theme) {
+    VOICE.play('attack', opp.renderer.theme, currentMode === 'online' ? senderId : null);
+  }
 }
 
 function playGarbageSendAnimation(fromOppId, toOppId, isHard) {
@@ -408,6 +696,7 @@ function distributeGarbage(senderId, totalBlocks, isHard) {
   }
 
   const hasTarget = targetOppId !== null && candidateOpponents.some(o => o.id === targetOppId);
+  let sentAny = false;
 
   if (hasTarget && candidateOpponents.length > 1) {
     const targetBlocks = Math.floor(totalBlocks * 0.5);
@@ -418,6 +707,7 @@ function distributeGarbage(senderId, totalBlocks, isHard) {
     candidateOpponents.forEach(opp => {
       const count = (opp.id === targetOppId) ? targetBlocks : otherEachBlocks;
       if (count > 0) {
+        sentAny = true;
         playGarbageSendAnimation(senderId, opp.id, isHard);
         sendBlocksToOpponent(opp, count, isHard);
       }
@@ -425,11 +715,16 @@ function distributeGarbage(senderId, totalBlocks, isHard) {
   } else {
     const eachBlocks = Math.floor(totalBlocks / candidateOpponents.length);
     if (eachBlocks > 0) {
+      sentAny = true;
       candidateOpponents.forEach(opp => {
         playGarbageSendAnimation(senderId, opp.id, isHard);
         sendBlocksToOpponent(opp, eachBlocks, isHard);
       });
     }
+  }
+
+  if (sentAny) {
+    playAttackVoiceForSender(senderId);
   }
 }
 
@@ -469,6 +764,8 @@ function distributeGarbageOnline(senderId, totalBlocks, isHard) {
 
   if (Object.keys(targetsDict).length === 0) return;
 
+  playAttackVoiceForSender(senderId);
+
   if (myOnlineId === 'host') {
     for (const [tId, count] of Object.entries(targetsDict)) {
       playGarbageSendAnimation(senderId, tId, isHard);
@@ -502,8 +799,113 @@ function sendBlocksToOpponent(opp, count, isHard) {
   else if (remainder > 0 && fullRows === 0) opp.engine.addGarbage(remainder, 1, isHard);
 }
 
+// ==========================================
+// 決着時立ち絵オーバーレイ & 入力待ち遷移
+// ==========================================
+let battleEndState = {
+  active: false,
+  canDismissAt: 0,
+  onContinue: null,
+  prevAnyPadPressed: false
+};
+
+function buildBattleEndPortraitDom(wrapEl, theme, isWin) {
+  if (!wrapEl) return;
+  wrapEl.innerHTML = '';
+  wrapEl.classList.toggle('lose', !isWin);
+  if (theme && theme.charSrc) {
+    const img = document.createElement('img');
+    img.className = 'battle-end-portrait-img';
+    img.src = theme.charSrc;
+    img.alt = theme.name || '';
+    img.onload = () => {
+      if (img.naturalHeight <= img.naturalWidth * 1.05) {
+        img.classList.add('square-or-wide');
+      }
+    };
+    img.onerror = () => {
+      wrapEl.innerHTML = `<div class="story-fallback-card" style="background:${theme.color || '#334155'};">${theme.name || ''}</div>`;
+    };
+    wrapEl.appendChild(img);
+  } else {
+    wrapEl.innerHTML = `<div class="story-fallback-card" style="background:${theme?.color || '#334155'};">${theme?.name || ''}</div>`;
+  }
+}
+
+function showBattleEndOverlay(options) {
+  const overlay = document.getElementById('battle-end-overlay');
+  const singleView = document.getElementById('battle-end-single-view');
+  const shareView = document.getElementById('battle-end-share-view');
+  if (!overlay || !singleView || !shareView) {
+    if (options.onContinue) options.onContinue();
+    return;
+  }
+
+  battleEndState.active = true;
+  battleEndState.canDismissAt = performance.now() + 300;
+  battleEndState.onContinue = options.onContinue || null;
+  battleEndState.prevAnyPadPressed = true;
+
+  if (options.mode === 'share') {
+    singleView.style.display = 'none';
+    shareView.style.display = 'flex';
+    const p1Win = options.winnerId === 'player';
+    const p2Win = options.winnerId !== 'player';
+
+    const p1Badge = document.getElementById('battle-end-share-p1-badge');
+    const p2Badge = document.getElementById('battle-end-share-p2-badge');
+    p1Badge.innerText = p1Win ? 'WIN!!' : 'LOSE...';
+    p1Badge.className = 'battle-end-badge ' + (p1Win ? 'win' : 'lose');
+    p2Badge.innerText = p2Win ? 'WIN!!' : 'LOSE...';
+    p2Badge.className = 'battle-end-badge ' + (p2Win ? 'win' : 'lose');
+
+    buildBattleEndPortraitDom(document.getElementById('battle-end-share-p1-wrap'), options.p1Theme, p1Win);
+    buildBattleEndPortraitDom(document.getElementById('battle-end-share-p2-wrap'), options.p2Theme, p2Win);
+    document.getElementById('battle-end-share-p1-name').innerText = options.p1Theme ? options.p1Theme.name : '1P';
+    document.getElementById('battle-end-share-p2-name').innerText = options.p2Theme ? options.p2Theme.name : '2P';
+
+    if (typeof VOICE !== 'undefined') {
+      const winTheme = p1Win ? options.p1Theme : options.p2Theme;
+      VOICE.play('win', winTheme);
+    }
+  } else {
+    shareView.style.display = 'none';
+    singleView.style.display = 'flex';
+    const badge = document.getElementById('battle-end-badge');
+    badge.innerText = options.titleOverride || (options.isWin ? 'WIN!!' : 'LOSE...');
+    badge.className = 'battle-end-badge ' + (options.isWin ? 'win' : 'lose');
+
+    buildBattleEndPortraitDom(document.getElementById('battle-end-portrait-wrap'), options.theme, !!options.isWin);
+    document.getElementById('battle-end-name').innerText = options.theme ? options.theme.name : '';
+
+    if (typeof VOICE !== 'undefined') {
+      VOICE.play(options.isWin ? 'win' : 'lose', options.theme, options.senderId || null);
+    }
+  }
+
+  overlay.style.display = 'flex';
+}
+
+function hideBattleEndOverlay() {
+  battleEndState.active = false;
+  battleEndState.onContinue = null;
+  const overlay = document.getElementById('battle-end-overlay');
+  if (overlay) overlay.style.display = 'none';
+}
+
+function tryDismissBattleEndOverlay() {
+  if (!battleEndState.active) return false;
+  if (performance.now() < battleEndState.canDismissAt) return true;
+  const cb = battleEndState.onContinue;
+  hideBattleEndOverlay();
+  if (typeof SE !== 'undefined') SE.play('cursorMove');
+  if (cb) cb();
+  return true;
+}
+
 function showResultModal(titleMsg) {
   stopBgm();
+  hideBattleEndOverlay();
   document.getElementById('result-title').innerText = titleMsg;
   document.getElementById('result-status').innerText = '';
   const btn = document.getElementById('result-rematch-btn');
@@ -525,7 +927,7 @@ function requestRematch() {
     startGame('story', currentComLevel, 2, currentSkillEnabled);
   } else if (currentMode === 'single_survival') {
     startSingleMode();
-  } else if (currentMode === 'single' || currentMode.startsWith('single_') || currentMode === 'com' || currentMode === 'local') {
+  } else if (currentMode === 'single' || currentMode.startsWith('single_') || currentMode === 'com' || currentMode === 'local' || currentMode === 'share') {
     startGame(currentMode, currentComLevel, currentTotalPlayers, currentSkillEnabled);
   } else if (currentMode === 'online') {
     rematchReady[myOnlineId] = true;
@@ -589,54 +991,123 @@ function checkMatchEnd() {
     if (o.engine && !o.engine.gameOver) aliveCount++;
   });
 
-  // ローカル対戦：最後の1人が残るまで試合続行
-  if (currentMode === 'local') {
-    if (aliveCount <= 1) {
+  // ローカル対戦・シェア対戦：最後の1人が残るまで試合続行
+  if (currentMode === 'local' || currentMode === 'share') {
+    if (aliveCount <= 1 && !endSequenceTriggered) {
+      endSequenceTriggered = true;
       isMatchOver = true;
       matchState = 'gameover';
       stopAllEngines();
+      stopBgm();
+
       let winnerText = 'DRAW!';
+      let winnerEngine = null;
+      let winnerTheme = null;
+      let winnerId = null;
+
       if (myEngine && !myEngine.gameOver && !isDeadInMatch) {
-        winnerText = `🏆 1P (${myRenderer.theme.name}) WIN!!`;
+        winnerId = 'player';
+        winnerEngine = myEngine;
+        winnerTheme = myRenderer.theme;
+        winnerText = `🏆 1P (${winnerTheme.name}) WIN!!`;
       } else {
         const survivor = opponents.find(o => o.engine && !o.engine.gameOver);
         if (survivor) {
-          winnerText = `🏆 ${survivor.index + 2}P (${survivor.renderer.theme.name}) WIN!!`;
+          winnerId = survivor.id;
+          winnerEngine = survivor.engine;
+          winnerTheme = survivor.renderer.theme;
+          winnerText = `🏆 ${survivor.index + 2}P (${winnerTheme.name}) WIN!!`;
         }
       }
-      showResultModal(winnerText);
+
+      // 敗者は硬いお邪魔化演出、勝者は全段消滅演出
+      if (myEngine && myEngine !== winnerEngine) myEngine.startGameOverFillAnim();
+      opponents.forEach(o => {
+        if (o.engine && o.engine !== winnerEngine) o.engine.startGameOverFillAnim();
+      });
+
+      const showEndScreen = () => {
+        if (currentMode === 'share') {
+          showBattleEndOverlay({
+            mode: 'share',
+            winnerId: winnerId || 'player',
+            p1Theme: myRenderer.theme,
+            p2Theme: opponents[0] ? opponents[0].renderer.theme : null,
+            onContinue: () => showResultModal(winnerText)
+          });
+        } else if (winnerTheme) {
+          showBattleEndOverlay({
+            mode: 'single',
+            isWin: true,
+            theme: winnerTheme,
+            titleOverride: winnerText,
+            onContinue: () => showResultModal(winnerText)
+          });
+        } else {
+          showResultModal(winnerText);
+        }
+      };
+
+      if (winnerEngine) {
+        winnerEngine.startVictoryClearAnim(showEndScreen);
+      } else if (myEngine) {
+        myEngine.startGameOverFillAnim(showEndScreen);
+      } else {
+        showEndScreen();
+      }
     }
     return;
   }
 
-   // 自分が負けた瞬間
+  // 自分が負けた瞬間
   if (myEngine && myEngine.gameOver && !isMatchOver && !isPracticeMode) {
     isMatchOver = true;
     isDeadInMatch = true;
+    endSequenceTriggered = true;
 
     if (currentMode === 'online') {
       const syncData = { type: 'sync', senderId: myOnlineId, gameOver: true };
       onlineConnections.forEach(c => { if (c && c.open) c.send(syncData); });
     }
 
-    if (currentMode === 'story') {
+    stopBgm();
+    if (currentMode === 'story' || currentMode === 'com' || currentMode.startsWith('single')) {
       matchState = 'gameover';
       stopAllEngines();
-      StoryManager.onBattleEnd(false);
-      return;
     }
 
     let scoreVal = currentMode === 'single_survival' ? currentSurvivalWins : myEngine.score;
-    let isRankIn = saveRankingData(currentMode, { score: scoreVal, handicap: myEngine.handicap, level: currentComLevel, date: Date.now() });
-
-    if (currentMode.startsWith('single')) {
-       matchState = 'gameover';
-       stopAllEngines();
-       showResultModal(isRankIn ? "NEW RECORD!" : "GAME OVER");
-    } else {
-       if (currentMode === 'com') stopAllEngines(); 
-       showResultModal(isRankIn ? "NEW RECORD! (LOSE)" : "LOSE...");
+    let isRankIn = false;
+    if (currentMode !== 'story' && currentMode !== 'online') {
+      isRankIn = saveRankingData(currentMode, { score: scoreVal, handicap: myEngine.handicap, level: currentComLevel, date: Date.now() });
     }
+
+    myEngine.startGameOverFillAnim(() => {
+      if (currentMode === 'story') {
+        showBattleEndOverlay({
+          mode: 'single',
+          isWin: false,
+          theme: myRenderer.theme,
+          onContinue: () => StoryManager.onBattleEnd(false)
+        });
+      } else if (currentMode.startsWith('single')) {
+        showBattleEndOverlay({
+          mode: 'single',
+          isWin: false,
+          theme: myRenderer.theme,
+          titleOverride: isRankIn ? 'NEW RECORD!' : 'GAME OVER',
+          onContinue: () => showResultModal(isRankIn ? 'NEW RECORD!' : 'GAME OVER')
+        });
+      } else {
+        showBattleEndOverlay({
+          mode: 'single',
+          isWin: false,
+          theme: myRenderer.theme,
+          titleOverride: isRankIn ? 'NEW RECORD! (LOSE)' : 'LOSE...',
+          onContinue: () => showResultModal(isRankIn ? 'NEW RECORD! (LOSE)' : 'LOSE...')
+        });
+      }
+    });
   }
 
   // 自分以外の全員が負けた瞬間（自分が生き残って勝利）
@@ -645,6 +1116,7 @@ function checkMatchEnd() {
         const comOpp = opponents[0];
         if (comOpp.engine && comOpp.engine.gameOver && !comOpp.coolTimeStarted) {
            comOpp.coolTimeStarted = true;
+           comOpp.engine.startGameOverFillAnim();
            currentSurvivalWins++;
            comOpp.coolTime = 180;
            SE.play('fanfareMid');
@@ -653,21 +1125,43 @@ function checkMatchEnd() {
            }
         }
         return;
-     } else if (currentMode === 'story') {
+     }
+
+     if (!endSequenceTriggered) {
+       endSequenceTriggered = true;
        isMatchOver = true;
        matchState = 'gameover';
        stopAllEngines();
-       StoryManager.onBattleEnd(true);
-       return;
-     } else {
-       isMatchOver = true;
-       matchState = 'gameover';
-       stopAllEngines();
+       stopBgm();
+
+       opponents.forEach(o => {
+         if (o.engine) o.engine.startGameOverFillAnim();
+       });
+
        let isRankIn = false;
        if (currentMode === 'com') {
          isRankIn = saveRankingData('com', { score: myEngine.score, handicap: myEngine.handicap, level: currentComLevel, date: Date.now() });
        }
-       showResultModal(isRankIn ? "WIN!! (NEW RECORD)" : "WIN!!");
+
+       myEngine.startVictoryClearAnim(() => {
+         if (currentMode === 'story') {
+           showBattleEndOverlay({
+             mode: 'single',
+             isWin: true,
+             theme: myRenderer.theme,
+             onContinue: () => StoryManager.onBattleEnd(true)
+           });
+         } else {
+           const winTitle = isRankIn ? 'WIN!! (NEW RECORD)' : 'WIN!!';
+           showBattleEndOverlay({
+             mode: 'single',
+             isWin: true,
+             theme: myRenderer.theme,
+             titleOverride: winTitle,
+             onContinue: () => showResultModal(winTitle)
+           });
+         }
+       });
      }
   }
 
@@ -753,7 +1247,6 @@ function showReadyGo() {
     });
   });
 
-  // 3 -> 2 -> 1 カウントダウン（READY はそのまま表示維持）
   animateReadySubCountdown(countEl, 3);
   if (typeof SE.playCountdown === 'function') SE.playCountdown(3);
 
@@ -828,7 +1321,7 @@ function checkPanic() {
   };
 
   let panic = checkEnginePanic(myEngine);
-  if (!panic && currentMode === 'local') {
+  if (!panic && (currentMode === 'local' || currentMode === 'share')) {
     panic = opponents.some(o => o.type === 'local_human' && checkEnginePanic(o.engine));
   }
   
@@ -944,35 +1437,16 @@ function renderLocalSkillBarElement(barId, skillState, curScore, skillId) {
   }
 }
 
-function updateSkillButtonUI() {
-  const btn = document.getElementById('skill-btn');
-  const label = document.getElementById('skill-btn-label');
-  const prog = document.getElementById('skill-btn-progress');
-
-  if (currentMode === 'local') {
-    if (btn) btn.style.display = 'none';
-    renderLocalSkillBarElement('my-local-skill-bar', playerSkillState, myEngine ? myEngine.score : 0, localSlotsConfig[0].skillId);
-    opponents.forEach((opp, i) => {
-      if (opp.type === 'local_human' && opp.skillState) {
-        renderLocalSkillBarElement(`rival-local-skill-bar-${i}`, opp.skillState, opp.engine ? opp.engine.score : 0, opp.skillId);
-      }
-    });
-    return;
-  } else {
-    const myBar = document.getElementById('my-local-skill-bar');
-    if (myBar) myBar.style.display = 'none';
-  }
-
+function updateSkillButtonVisual(btn, label, prog, skillState, curScore, skillId) {
   if (!btn || !label || !prog) return;
-  if (!playerSkillState.enabled || isPracticeMode) {
+  if (!skillState || !skillState.enabled || isPracticeMode) {
     btn.style.display = 'none';
     return;
   }
   btn.style.display = 'flex';
+  const skName = (typeof SKILL_LABELS !== 'undefined' && SKILL_LABELS[skillId]) ? SKILL_LABELS[skillId] : 'スキル';
 
-  const curScore = myEngine ? myEngine.score : 0;
-  const skName = (typeof SKILL_LABELS !== 'undefined' && SKILL_LABELS[selectedPlayerSkill]) ? SKILL_LABELS[selectedPlayerSkill] : 'スキル';
-  if (playerSkillState.usesLeft <= 0) {
+  if (skillState.usesLeft <= 0) {
     btn.disabled = true;
     btn.classList.remove('ready');
     prog.style.width = '0%';
@@ -980,27 +1454,64 @@ function updateSkillButtonUI() {
     return;
   }
 
-  const remain = Math.max(0, playerSkillState.nextRequiredScore - curScore);
+  const remain = Math.max(0, skillState.nextRequiredScore - curScore);
   if (remain === 0) {
     btn.disabled = false;
     btn.classList.add('ready');
     prog.style.width = '100%';
-    label.innerText = `${skName}\n発動 (${playerSkillState.usesLeft}/${PLAYER_SKILL_MAX})`;
+    label.innerText = `${skName}\n発動 (${skillState.usesLeft}/${PLAYER_SKILL_MAX})`;
   } else {
     btn.disabled = true;
     btn.classList.remove('ready');
     const gained = Math.max(0, PLAYER_SKILL_SCORE_STEP - remain);
     const pct = Math.min(100, Math.floor((gained / PLAYER_SKILL_SCORE_STEP) * 100));
     prog.style.width = `${pct}%`;
-    label.innerText = `${skName}(${playerSkillState.usesLeft}/${PLAYER_SKILL_MAX})\nあと${remain}点`;
+    label.innerText = `${skName}(${skillState.usesLeft}/${PLAYER_SKILL_MAX})\nあと${remain}点`;
   }
+}
+
+function updateSkillButtonUI() {
+  const btn = document.getElementById('skill-btn');
+  const label = document.getElementById('skill-btn-label');
+  const prog = document.getElementById('skill-btn-progress');
+  const p2Btn = document.getElementById('p2-skill-btn');
+  const p2Label = document.getElementById('p2-skill-btn-label');
+  const p2Prog = document.getElementById('p2-skill-btn-progress');
+
+  if (currentMode === 'local') {
+    if (btn) btn.style.display = 'none';
+    if (p2Btn) p2Btn.style.display = 'none';
+    renderLocalSkillBarElement('my-local-skill-bar', playerSkillState, myEngine ? myEngine.score : 0, localSlotsConfig[0].skillId);
+    opponents.forEach((opp, i) => {
+      if (opp.type === 'local_human' && opp.skillState) {
+        renderLocalSkillBarElement(`rival-local-skill-bar-${i}`, opp.skillState, opp.engine ? opp.engine.score : 0, opp.skillId);
+      }
+    });
+    return;
+  }
+
+  const myBar = document.getElementById('my-local-skill-bar');
+  if (myBar) myBar.style.display = 'none';
+
+  if (currentMode === 'share') {
+    updateSkillButtonVisual(btn, label, prog, playerSkillState, myEngine ? myEngine.score : 0, sharePrepConfig.p1.skillId);
+    const p2Opp = opponents[0];
+    if (p2Opp && p2Opp.skillState) {
+      updateSkillButtonVisual(p2Btn, p2Label, p2Prog, p2Opp.skillState, p2Opp.engine ? p2Opp.engine.score : 0, p2Opp.skillId);
+    } else if (p2Btn) {
+      p2Btn.style.display = 'none';
+    }
+    return;
+  }
+
+  if (p2Btn) p2Btn.style.display = 'none';
+  updateSkillButtonVisual(btn, label, prog, playerSkillState, myEngine ? myEngine.score : 0, selectedPlayerSkill);
 }
 
 function updateRivalSkillBadge(opp, index) {
   const badge = document.getElementById(`rival-skill-badge-${index}`);
   if (!badge || !opp) return;
 
-  // ローカル対戦の人間プレイヤーは下部のスキルバーで表示するため二重表示しない
   if (opp.type === 'local_human') {
     badge.style.display = 'none';
     return;
@@ -1034,14 +1545,20 @@ function activatePlayerSkill() {
   if (myEngine.score < playerSkillState.nextRequiredScore) return;
   if (typeof executePlayerCheatSkill !== 'function') return;
 
-  const chosenSkill = currentMode === 'local' ? (localSlotsConfig[0].skillId || 'erase_color') : selectedPlayerSkill;
+  let chosenSkill = selectedPlayerSkill;
+  if (currentMode === 'local') chosenSkill = localSlotsConfig[0].skillId || 'erase_color';
+  else if (currentMode === 'share') chosenSkill = sharePrepConfig.p1.skillId || 'erase_color';
+
   const senderId = currentMode === 'online' ? myOnlineId : 'player';
   const res = executePlayerCheatSkill(myEngine, senderId, myTargetIndex, chosenSkill);
   if (!res || !res.success) {
-    if (currentMode !== 'local') showToast('今はそのスキルを発動できる対象がありません');
+    if (currentMode !== 'local' && currentMode !== 'share') showToast('今はそのスキルを発動できる対象がありません');
     return;
   }
 
+  if (typeof SE !== 'undefined' && SE.customBuffers && SE.customBuffers.skill) {
+    SE.play('skill');
+  }
   playerSkillState.usesLeft--;
   playerSkillState.nextRequiredScore = myEngine.score + PLAYER_SKILL_SCORE_STEP;
   updateSkillButtonUI();
@@ -1068,17 +1585,31 @@ function activateLocalOpponentSkill(opp) {
   const res = executePlayerCheatSkill(opp.engine, opp.id, opp.targetId || -1, opp.skillId || 'erase_color');
   if (!res || !res.success) return;
 
+  if (typeof SE !== 'undefined' && SE.customBuffers && SE.customBuffers.skill) {
+    SE.play('skill');
+  }
   opp.skillState.usesLeft--;
   opp.skillState.nextRequiredScore = opp.engine.score + PLAYER_SKILL_SCORE_STEP;
   updateSkillButtonUI();
 
-  opp.engine.cutinMax = 50;
-  opp.engine.cutinTimer = 50;
-  opp.engine.cutinText = res.text;
+  if (currentMode === 'share') {
+    showHeaderCutinById(`rival-header-cutin-${opp.index}`, opp.renderer.theme, res.text, '#ff007f');
+  } else {
+    opp.engine.cutinMax = 50;
+    opp.engine.cutinTimer = 50;
+    opp.engine.cutinText = res.text;
+  }
+}
+
+function activateShareP2Skill() {
+  if (currentMode !== 'share' || !opponents[0]) return;
+  activateLocalOpponentSkill(opponents[0]);
 }
 
 function startGame(mode, level = 1, totalPlayers = 2, skillEnabled = false) {
+  if (typeof closeRangeDigitEdit === 'function') closeRangeDigitEdit();
   document.getElementById('result-overlay').style.display = 'none'; 
+  hideBattleEndOverlay();
   currentMode = mode;
   currentComLevel = level;
   currentTotalPlayers = totalPlayers;
@@ -1090,7 +1621,12 @@ function startGame(mode, level = 1, totalPlayers = 2, skillEnabled = false) {
   document.getElementById('game-area').style.display = 'flex';
 
   if (currentMode === 'local') {
+    document.body.classList.remove('share-force-portrait');
     try { screen.orientation?.lock?.('landscape')?.catch(() => {}); } catch (e) {}
+  } else if (currentMode === 'share') {
+    document.body.classList.remove('local-force-landscape');
+    try { screen.orientation?.lock?.('portrait')?.catch(() => {}); } catch (e) {}
+    updateShareForcePortraitClass();
   }
   
   setupInput();
@@ -1109,13 +1645,16 @@ function resetGameLogic() {
   isMatchOver = false;
   isDeadInMatch = false;
   isPracticeMode = false;
+  endSequenceTriggered = false;
   myTargetIndex = -1;
   currentMatchId = Date.now(); 
   currentSurvivalWins = 0;
   hidePlayerHeaderCutin();
   resetAllLocalInputStates();
   
-  const handicap = currentMode === 'local' ? 3 : (parseInt(document.getElementById('handicap-val').value) || 3);
+  const handicap = currentMode === 'share'
+    ? (sharePrepConfig.p1.handicap || 3)
+    : (currentMode === 'local' ? 3 : (parseInt(document.getElementById('handicap-val').value) || 3));
   const sharedSeed = Math.floor(Math.random() * 0xFFFFFFFF);
   
   myRenderer = new BoardRenderer('my-canvas'); 
@@ -1142,6 +1681,7 @@ function resetGameLogic() {
   let rawCharId;
   if (currentMode === 'story') rawCharId = StoryManager.getSelectedCharId();
   else if (currentMode === 'local') rawCharId = localSlotsConfig[0].charId;
+  else if (currentMode === 'share') rawCharId = sharePrepConfig.p1.charId;
   else rawCharId = selectedCharId;
 
   const resolvedCharId = resolvePlayableCharId(rawCharId);
@@ -1152,9 +1692,12 @@ function resetGameLogic() {
     resolvedCharId === 'custom' ? getPlayerDisplayName() : null
   );
   if (typeof applyBoardFrame === 'function') {
-    applyBoardFrame('my-wrapper', myRenderer.theme.frameSrc);
+    applyBoardFrame('my-wrapper', (currentMode === 'local' || currentMode === 'share') ? myRenderer.theme.frameSrc : null);
   }
-  document.getElementById('player-label').innerText = currentMode === 'local'
+  if (typeof applyGlobalFrameTheme === 'function') {
+    applyGlobalFrameTheme(CustomAssets.frame ? CustomAssets.frame.dataUrl : null);
+  }
+  document.getElementById('player-label').innerText = (currentMode === 'local' || currentMode === 'share')
     ? `1P: ${myRenderer.theme.name}`
     : myRenderer.theme.name;
 
@@ -1178,20 +1721,24 @@ function resetGameLogic() {
 
   for (let i = 0; i < opponentCount; i++) {
     const slotCfg = currentMode === 'local' ? localSlotsConfig[i + 1] : null;
-    const isLocalHuman = currentMode === 'local' && slotCfg && !slotCfg.isCom;
-    const isComMode = currentMode === 'com' || currentMode === 'single_survival' || currentMode === 'story' || (currentMode === 'local' && slotCfg && slotCfg.isCom);
+    const isShareMode = (currentMode === 'share');
+    const isLocalHuman = isShareMode || (currentMode === 'local' && slotCfg && !slotCfg.isCom);
+    const isComMode = !isShareMode && (currentMode === 'com' || currentMode === 'single_survival' || currentMode === 'story' || (currentMode === 'local' && slotCfg && slotCfg.isCom));
 
     const wrapper = document.createElement('div');
     wrapper.className = 'board-wrapper rival-board';
     if (isComMode) wrapper.classList.add('com-board');
     wrapper.id = `rival-wrapper-${i}`;
-    if (currentMode !== 'local') {
+    if (currentMode !== 'local' && !isShareMode) {
       wrapper.onclick = () => selectTarget(i);
     }
 
     let oppChar;
     if (currentMode === 'story' && StoryManager.activeStage) {
       oppChar = getCharacterById(StoryManager.activeStage.enemyId);
+    } else if (isShareMode) {
+      const resId = resolvePlayableCharId(sharePrepConfig.p2.charId);
+      oppChar = getCharacterById(resId);
     } else if (currentMode === 'local' && slotCfg) {
       const resId = resolvePlayableCharId(slotCfg.charId);
       oppChar = getCharacterById(resId);
@@ -1203,11 +1750,12 @@ function resetGameLogic() {
     let oppName = oppChar ? oppChar.name : `COM ${i+1}`;
     if (currentMode === 'single_survival') oppName = `${oppChar.name} Lv.${currentComLevel}`;
     else if (currentMode === 'com') oppName = `${oppChar.name} (COM)`;
+    else if (isShareMode) oppName = `2P: ${oppChar.name}`;
     else if (currentMode === 'local') {
       oppName = isLocalHuman ? `${i + 2}P: ${oppChar.name}` : `${i + 2}P(COM): ${oppChar.name}`;
     }
 
-    if (currentMode === 'local') {
+    if (currentMode === 'local' || isShareMode) {
       wrapper.innerHTML = `
         <div class="garbage-preview-box">
           <span class="preview-label">予告</span>
@@ -1242,7 +1790,7 @@ function resetGameLogic() {
     }
     rivalsArea.appendChild(wrapper);
 
-    const oppId = currentMode === 'local' ? `local_${i + 1}` : `com_${i}`;
+    const oppId = isShareMode ? 'share_p2' : (currentMode === 'local' ? `local_${i + 1}` : `com_${i}`);
     const rRenderer = new BoardRenderer(`rival-canvas-${i}`);
     rRenderer.theme = buildThemeForCharacter(
       oppChar.id,
@@ -1251,25 +1799,27 @@ function resetGameLogic() {
       oppChar.id === 'custom' ? getPlayerDisplayName() : null
     );
 
+    const oppHandicap = isShareMode ? (sharePrepConfig.p2.handicap || 3) : 3;
     const rEngine = new PonEngine(
       (state) => { if (state === 'gameover') checkMatchEnd(); },
       (totalBlocks, isHard) => { distributeGarbage(oppId, totalBlocks, isHard); },
-      3,
-      currentMode === 'local' ? true : false,
+      oppHandicap,
+      (currentMode === 'local' || isShareMode) ? true : false,
       sharedSeed
     );
     rEngine.garbageQueue = [];
-    rEngine.allowBoardCutin = true;
+    rEngine.allowBoardCutin = (currentMode === 'local');
 
     const oppInputState = isLocalHuman ? createPlayerInputState() : null;
     if (isLocalHuman) {
       rEngine.onRowPushed = () => {
         if (oppInputState.padGrabState.active && oppInputState.padGrabState.row > 0) oppInputState.padGrabState.row--;
         if (oppInputState.keyGrabState.active && oppInputState.keyGrabState.row > 0) oppInputState.keyGrabState.row--;
+        if (isShareMode && shareP2RowFollowCallback) shareP2RowFollowCallback();
       };
     }
 
-    if (currentMode === 'local') {
+    if (currentMode === 'local' || isShareMode) {
       rEngine.onChainEnd = (chain) => {
         showHeaderCutinById(`rival-header-cutin-${i}`, rRenderer.theme, `${chain} CHAIN!!`, '#ffd700');
       };
@@ -1310,12 +1860,16 @@ function resetGameLogic() {
       }
     }
 
+    const oppSkillId = isShareMode
+      ? (sharePrepConfig.p2.skillId || 'erase_color')
+      : ((isLocalHuman && slotCfg) ? (slotCfg.skillId || 'erase_color') : 'erase_color');
+
     const oppObj = {
       id: oppId,
       name: oppName,
       type: isLocalHuman ? 'local_human' : 'com',
       playerSlotIndex: i + 1,
-      skillId: (isLocalHuman && slotCfg) ? (slotCfg.skillId || 'erase_color') : 'erase_color',
+      skillId: oppSkillId,
       engine: rEngine,
       renderer: rRenderer,
       ai: rAI,
@@ -1330,6 +1884,10 @@ function resetGameLogic() {
     };
     opponents.push(oppObj);
     updateRivalSkillBadge(oppObj, i);
+  }
+
+  if (currentMode === 'share') {
+    setupShareP2Input();
   }
   
   updateGarbagePreview(myEngine, 'my-garbage-preview');
@@ -1356,6 +1914,31 @@ function startComGameFromSlider() {
   startGame('com', level, count, skillEnabled); 
 }
 
+function cleanupShareDomZones() {
+  const gameArea = document.getElementById('game-area');
+  const gameContainer = document.getElementById('game-container');
+  const exitBtn = document.getElementById('exit-btn');
+  const controls = document.getElementById('controls-container');
+  const p2Controls = document.getElementById('p2-controls-container');
+  const myWrapper = document.getElementById('my-wrapper');
+  const rivalsArea = document.getElementById('rivals-area');
+
+  if (gameArea) gameArea.classList.remove('share-mode');
+  if (exitBtn) exitBtn.classList.remove('share-exit-btn');
+  if (p2Controls) p2Controls.style.display = 'none';
+
+  const p1Zone = document.getElementById('share-p1-zone');
+  const p2Zone = document.getElementById('share-p2-zone');
+  if (gameContainer) {
+    if (controls && controls.parentNode !== gameContainer) gameContainer.appendChild(controls);
+    if (p2Controls && p2Controls.parentNode !== gameContainer) gameContainer.appendChild(p2Controls);
+    if (myWrapper && myWrapper.parentNode !== gameContainer) gameContainer.appendChild(myWrapper);
+    if (rivalsArea && rivalsArea.parentNode !== gameContainer) gameContainer.appendChild(rivalsArea);
+  }
+  if (p1Zone && p1Zone.parentNode) p1Zone.parentNode.removeChild(p1Zone);
+  if (p2Zone && p2Zone.parentNode) p2Zone.parentNode.removeChild(p2Zone);
+}
+
 function exitGame() {
   if (myEngine && !currentMode.startsWith('single')) {
     if (!isMatchOver && !isPracticeMode && !myEngine.gameOver) {
@@ -1369,12 +1952,19 @@ function exitGame() {
   matchState = 'gameover';
   isPracticeMode = false;
   hostDisconnected = false;
+  endSequenceTriggered = false;
   clearReadyGoTimers();
+  hideBattleEndOverlay();
   stopAllEngines();
   stopBgm();
   hidePlayerHeaderCutin();
+  if (typeof closeRangeDigitEdit === 'function') closeRangeDigitEdit();
+  if (typeof SE !== 'undefined' && SE.clearRemoteSounds) SE.clearRemoteSounds();
+  if (typeof VOICE !== 'undefined' && VOICE.clearRemoteVoices) VOICE.clearRemoteVoices();
 
+  cleanupShareDomZones();
   document.body.classList.remove('local-force-landscape');
+  document.body.classList.remove('share-force-portrait');
   try { screen.orientation?.unlock?.(); } catch (e) {}
   
   myEngine = null; opponents = [];
@@ -1401,6 +1991,7 @@ function exitGame() {
   document.getElementById('ranking-menu').style.display = 'none';
   document.getElementById('story-menu').style.display = 'none';
   document.getElementById('story-overlay').style.display = 'none';
+  document.getElementById('share-prep-overlay').style.display = 'none';
   document.getElementById('main-menu-actions').style.display = 'flex';
 }
 
@@ -1429,6 +2020,7 @@ let padHoldFrames = p1InputState.padHoldFrames;
 let padGrabState = p1InputState.padGrabState;
 let keyGrabState = p1InputState.keyGrabState;
 let touchRowFollowCallback = null;
+let shareP2RowFollowCallback = null;
 const PAD_DAS_FRAMES = 15;
 const PAD_ARR_FRAMES = 4;
 
@@ -1439,6 +2031,7 @@ function resetAllLocalInputStates() {
   padHoldFrames = p1InputState.padHoldFrames;
   padGrabState = p1InputState.padGrabState;
   keyGrabState = p1InputState.keyGrabState;
+  shareP2RowFollowCallback = null;
 }
 
 function handleMyRowPushed() {
@@ -1477,7 +2070,9 @@ function pollSingleGamepad(engine, cfgPad, stateObj, padObj, isMainPlayer, oppRe
   const isPressed = (btnIdx) => btnIdx !== null && btnIdx !== undefined && !!stateObj.padState[btnIdx];
 
   if (isMainPlayer && justPressed(cfgPad.Pause)) {
-    if (document.getElementById('game-area').style.display === 'flex' && document.getElementById('result-overlay').style.display !== 'flex') {
+    if (document.getElementById('game-area').style.display === 'flex'
+      && document.getElementById('result-overlay').style.display !== 'flex'
+      && !battleEndState.active) {
       stateObj.padHoldFrames = { Up: 0, Down: 0, Left: 0, Right: 0 };
       stateObj.padGrabState.active = false;
       stateObj.padGrabState.consumed = false;
@@ -1623,11 +2218,21 @@ function executeGrabMoveForEngine(engine, grabState, dx) {
 
 function pollGamepadInput() {
   const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()) : [];
+
+  if (battleEndState.active) {
+    const anyPressed = pads.some(p => p && p.connected && p.buttons.some(b => b.pressed));
+    if (anyPressed && !battleEndState.prevAnyPadPressed) {
+      tryDismissBattleEndOverlay();
+    }
+    battleEndState.prevAnyPadPressed = anyPressed;
+    return;
+  }
+
   const slot0 = playerConfigs[0].padSlot;
-  const pad0 = (slot0 >= 0 && pads[slot0]) ? pads[slot0] : (currentMode === 'local' ? null : pads.find(p => p && p.connected));
+  const pad0 = (slot0 >= 0 && pads[slot0]) ? pads[slot0] : ((currentMode === 'local' || currentMode === 'share') ? null : pads.find(p => p && p.connected));
   pollSingleGamepad(myEngine, playerConfigs[0].pad, p1InputState, pad0, true, null);
 
-  if (currentMode === 'local') {
+  if (currentMode === 'local' || currentMode === 'share') {
     opponents.forEach(opp => {
       if (opp.type === 'local_human' && opp.inputState) {
         const slot = playerConfigs[opp.playerSlotIndex].padSlot;
@@ -1642,7 +2247,6 @@ function updateGarbagePreview(engine, containerId) {
   const container = document.getElementById(containerId);
   if (!container || !engine) return;
 
-  // 連続していなくても同じ種類(w, h, isHard)のお邪魔はすべて1つのアイコン＋×Nバッジに圧縮
   const compressed = [];
   const keyMap = new Map();
   engine.garbageQueue.forEach(g => {
@@ -1702,40 +2306,47 @@ function gameLoop(time) {
   accumulator += deltaTime;
   
   while (accumulator >= FIXED_TIME_STEP) {
-    if (!isMatchOver || isPracticeMode) {
-      pollGamepadInput();
-      if (myEngine) myEngine.update(FIXED_TIME_STEP);
+    pollGamepadInput();
+    if (myEngine && (!isMatchOver || isPracticeMode || (myEngine.endAnim && !myEngine.endAnim.done))) {
+      myEngine.update(FIXED_TIME_STEP);
     }
+    opponents.forEach(opp => {
+      const oppHasEndAnim = opp.engine && opp.engine.endAnim && !opp.engine.endAnim.done;
+      if (isMatchOver && !isPracticeMode && !oppHasEndAnim) return;
+
+      if (currentMode === 'single_survival' && opp.coolTimeStarted) {
+         if (oppHasEndAnim) {
+           opp.engine.update(FIXED_TIME_STEP);
+         }
+         opp.coolTime--;
+         if (opp.coolTime <= 0) {
+           opp.coolTimeStarted = false;
+           opp.engine.endAnim = null;
+           opp.engine.gameOver = false;
+           opp.engine.grid = Array.from({ length: opp.engine.rows }, () => Array(opp.engine.cols).fill(null));
+           opp.engine.initGrid(5);
+           if (document.getElementById('survival-cancel-sent').checked) {
+             opp.engine.garbageQueue = [];
+           }
+           let n = currentSurvivalWins + 1;
+           let nextLv = getSurvivalLevel(survivalBaseLevel, n);
+           opp.level = nextLv;
+           opp.ai = (currentSkillEnabled && typeof cheat === 'function')
+             ? new cheat(opp.engine, nextLv, opp.id, { maxSkillUses: 3 })
+             : new ComAI(opp.engine, nextLv, opp.id);
+           document.getElementById(`rival-name-label-0`).innerHTML = `${opp.renderer.theme.name} Lv.${nextLv} <span class="target-badge">🎯 TARGET</span>`;
+         }
+      } else if (opp.type === 'local_human') {
+         if (opp.engine && (!opp.engine.gameOver || oppHasEndAnim)) opp.engine.update(FIXED_TIME_STEP);
+      } else {
+         const isLocalControlledCom = (opp.type === 'com') && (currentMode === 'com' || currentMode === 'single_survival' || currentMode === 'story' || currentMode === 'local' || myOnlineId === 'host');
+         if (isLocalControlledCom || oppHasEndAnim) {
+           if (isLocalControlledCom && opp.ai && !opp.engine.gameOver) opp.ai.update();
+           if (opp.engine && (!opp.engine.gameOver || oppHasEndAnim)) opp.engine.update(FIXED_TIME_STEP);
+         }
+      }
+    });
     if (!isMatchOver || isPracticeMode) {
-      opponents.forEach(opp => {
-        if (currentMode === 'single_survival' && opp.coolTimeStarted) {
-           opp.coolTime--;
-           if (opp.coolTime <= 0) {
-             opp.coolTimeStarted = false;
-             opp.engine.gameOver = false;
-             opp.engine.grid = Array.from({ length: opp.engine.rows }, () => Array(opp.engine.cols).fill(null));
-             opp.engine.initGrid(5);
-             if (document.getElementById('survival-cancel-sent').checked) {
-               opp.engine.garbageQueue = [];
-             }
-             let n = currentSurvivalWins + 1;
-             let nextLv = getSurvivalLevel(survivalBaseLevel, n);
-             opp.level = nextLv;
-             opp.ai = (currentSkillEnabled && typeof cheat === 'function')
-               ? new cheat(opp.engine, nextLv, opp.id, { maxSkillUses: 3 })
-               : new ComAI(opp.engine, nextLv, opp.id);
-             document.getElementById(`rival-name-label-0`).innerHTML = `${opp.renderer.theme.name} Lv.${nextLv} <span class="target-badge">🎯 TARGET</span>`;
-           }
-        } else if (opp.type === 'local_human') {
-           if (opp.engine && !opp.engine.gameOver) opp.engine.update(FIXED_TIME_STEP);
-        } else {
-           const isLocalControlledCom = (opp.type === 'com') && (currentMode === 'com' || currentMode === 'single_survival' || currentMode === 'story' || currentMode === 'local' || myOnlineId === 'host');
-           if (isLocalControlledCom) {
-             if (opp.ai) opp.ai.update();
-             if (opp.engine && !opp.engine.gameOver) opp.engine.update(FIXED_TIME_STEP);
-           }
-        }
-      });
       checkPanic(); 
     }
     accumulator -= FIXED_TIME_STEP;
@@ -1848,18 +2459,122 @@ function handleKeyboardActionForPlayer(engine, cfgKey, stateObj, code, isRepeat,
   return handled;
 }
 
-function getCanvasCoordsFromPointer(cvs, e) {
+function getCanvasCoordsFromPointer(cvs, e, isSelf180Rotated = false) {
   const rect = cvs.getBoundingClientRect();
-  if (document.body.classList.contains('local-force-landscape')) {
+  const isParent90Rotated = document.body.classList.contains('local-force-landscape')
+    || document.body.classList.contains('share-force-portrait');
+
+  if (isParent90Rotated) {
+    if (isSelf180Rotated) {
+      return {
+        x: ((rect.bottom - e.clientY) / rect.height) * cvs.width,
+        y: ((e.clientX - rect.left) / rect.width) * cvs.height
+      };
+    }
     return {
       x: ((e.clientY - rect.top) / rect.height) * cvs.width,
       y: ((rect.right - e.clientX) / rect.width) * cvs.height
     };
   }
+
+  if (isSelf180Rotated) {
+    return {
+      x: ((rect.right - e.clientX) / rect.width) * cvs.width,
+      y: ((rect.bottom - e.clientY) / rect.height) * cvs.height
+    };
+  }
+
   return {
     x: (e.clientX - rect.left) * (cvs.width / rect.width),
     y: (e.clientY - rect.top) * (cvs.height / rect.height)
   };
+}
+
+function bindBoardTouchInput(cvs, getEngine, getContinuousChecked, isSelf180Rotated, setRowFollowCb) {
+  let activePointerId = null;
+  let grabbedCol = -1, grabbedRow = -1, initialCanvasX = 0, initialCanvasY = 0;
+
+  if (setRowFollowCb) {
+    setRowFollowCb(() => {
+      if (activePointerId !== null && grabbedRow > 0) grabbedRow--;
+    });
+  }
+
+  cvs.addEventListener('pointerdown', (e) => {
+    const engine = getEngine();
+    if (!engine || (isMatchOver && !isPracticeMode)) return;
+    if (activePointerId !== null) return;
+    activePointerId = e.pointerId;
+    try { cvs.setPointerCapture(e.pointerId); } catch (_) {}
+
+    const pt = getCanvasCoordsFromPointer(cvs, e, isSelf180Rotated);
+    initialCanvasX = pt.x;
+    initialCanvasY = pt.y;
+    grabbedCol = Math.max(0, Math.min(COLS - 1, Math.floor(initialCanvasX / CELL_PX)));
+    grabbedRow = Math.max(0, Math.min(ROWS - 1, Math.floor((initialCanvasY + engine.riseOffset * CELL_PX) / CELL_PX)));
+  });
+
+  cvs.addEventListener('pointermove', (e) => {
+    if (e.pointerId !== activePointerId) return;
+    const engine = getEngine();
+    if (!engine || (isMatchOver && !isPracticeMode)) return;
+    const pt = getCanvasCoordsFromPointer(cvs, e, isSelf180Rotated);
+    let targetCol = Math.max(0, Math.min(COLS - 1, Math.floor(pt.x / CELL_PX)));
+    const continuous = getContinuousChecked();
+
+    while (targetCol > grabbedCol) {
+      engine.cursor.x = grabbedCol; engine.cursor.y = grabbedRow;
+      if (engine.swap(grabbedCol, grabbedRow)) {
+        SE.play('cursorMove');
+        grabbedCol++;
+        if (!continuous) { activePointerId = null; break; }
+      } else break;
+    }
+    while (targetCol < grabbedCol) {
+      engine.cursor.x = grabbedCol - 1; engine.cursor.y = grabbedRow;
+      if (engine.swap(grabbedCol - 1, grabbedRow)) {
+        SE.play('cursorMove');
+        grabbedCol--;
+        if (!continuous) { activePointerId = null; break; }
+      } else break;
+    }
+  });
+
+  const endPointer = (e, isTapCandidate) => {
+    if (e.pointerId !== activePointerId) return;
+    activePointerId = null;
+    try { cvs.releasePointerCapture(e.pointerId); } catch (_) {}
+    const engine = getEngine();
+    if (!isTapCandidate || !engine || (isMatchOver && !isPracticeMode)) return;
+
+    const pt = getCanvasCoordsFromPointer(cvs, e, isSelf180Rotated);
+    if (Math.abs(pt.x - initialCanvasX) < CELL_PX * 0.3 && Math.abs(pt.y - initialCanvasY) < CELL_PX * 0.3) {
+      let c = Math.floor(pt.x / CELL_PX);
+      if (c >= COLS - 1) c = COLS - 2;
+      if (engine.cursor.x !== c || engine.cursor.y !== grabbedRow) {
+        SE.play('cursorMove');
+      }
+      engine.cursor.x = c;
+      engine.cursor.y = grabbedRow;
+    }
+  };
+
+  cvs.addEventListener('pointerup', (e) => endPointer(e, true));
+  cvs.addEventListener('pointercancel', (e) => endPointer(e, false));
+}
+
+function setupShareP2Input() {
+  const p2Cvs = document.getElementById('rival-canvas-0');
+  if (!p2Cvs || p2Cvs.dataset.shareBound === '1') return;
+  p2Cvs.dataset.shareBound = '1';
+
+  bindBoardTouchInput(
+    p2Cvs,
+    () => (currentMode === 'share' && opponents[0]) ? opponents[0].engine : null,
+    () => !!document.getElementById('p2-continuous-swipe')?.checked,
+    true,
+    (cb) => { shareP2RowFollowCallback = cb; }
+  );
 }
 
 let inputSetupDone = false;
@@ -1868,73 +2583,73 @@ function setupInput() {
   inputSetupDone = true;
 
   const cvs = document.getElementById('my-canvas');
-  let isDown = false, grabbedCol = -1, grabbedRow = -1, initialCanvasX = 0, initialCanvasY = 0;
-  touchRowFollowCallback = () => {
-    if (isDown && grabbedRow > 0) grabbedRow--;
-  };
+  bindBoardTouchInput(
+    cvs,
+    () => myEngine,
+    () => !!document.getElementById('continuous-swipe')?.checked,
+    false,
+    (cb) => { touchRowFollowCallback = cb; }
+  );
 
-  cvs.addEventListener('pointerdown', (e) => {
-    if (isMatchOver && !isPracticeMode) return;
-    isDown = true; cvs.setPointerCapture(e.pointerId);
-    const pt = getCanvasCoordsFromPointer(cvs, e);
-    initialCanvasX = pt.x;
-    initialCanvasY = pt.y;
-    grabbedCol = Math.max(0, Math.min(COLS - 1, Math.floor(initialCanvasX / CELL_PX)));
-    grabbedRow = Math.max(0, Math.min(ROWS - 1, Math.floor((initialCanvasY + myEngine.riseOffset * CELL_PX) / CELL_PX)));
-  });
-
-  cvs.addEventListener('pointermove', (e) => {
-    if (!isDown || !myEngine || (isMatchOver && !isPracticeMode)) return;
-    const pt = getCanvasCoordsFromPointer(cvs, e);
-    let targetCol = Math.max(0, Math.min(COLS - 1, Math.floor(pt.x / CELL_PX)));
-    const continuous = document.getElementById('continuous-swipe').checked;
-
-    while (targetCol > grabbedCol) {
-       myEngine.cursor.x = grabbedCol; myEngine.cursor.y = grabbedRow;
-       if (myEngine.swap(grabbedCol, grabbedRow)) {
-          SE.play('cursorMove');
-          grabbedCol++;
-          if (!continuous) { isDown = false; break; }
-       } else break; 
-    }
-    while (targetCol < grabbedCol) {
-       myEngine.cursor.x = grabbedCol - 1; myEngine.cursor.y = grabbedRow;
-       if (myEngine.swap(grabbedCol - 1, grabbedRow)) {
-          SE.play('cursorMove');
-          grabbedCol--;
-          if (!continuous) { isDown = false; break; }
-       } else break;
-    }
-  });
-
-  cvs.addEventListener('pointerup', (e) => {
-    if (!isDown) return;
-    isDown = false; cvs.releasePointerCapture(e.pointerId);
-    if (isMatchOver && !isPracticeMode) return;
-    const pt = getCanvasCoordsFromPointer(cvs, e);
-    
-    if (Math.abs(pt.x - initialCanvasX) < CELL_PX * 0.3 && Math.abs(pt.y - initialCanvasY) < CELL_PX * 0.3) {
-      let c = Math.floor(pt.x / CELL_PX);
-      if (c >= COLS - 1) c = COLS - 2;
-      if (myEngine) {
-        if (myEngine.cursor.x !== c || myEngine.cursor.y !== grabbedRow) {
-          SE.play('cursorMove');
-        }
-        myEngine.cursor.x = c; 
-        myEngine.cursor.y = grabbedRow; 
-      }
-    }
-  });
-  cvs.addEventListener('pointercancel', () => { isDown = false; });
-
+  // 1P せり上げボタン（マルチタッチID対応）
   const riseBtn = document.getElementById('rise-btn');
-  riseBtn.addEventListener('pointerdown', (e) => { 
-    e.preventDefault(); 
-    if(myEngine && !(isMatchOver && !isPracticeMode)) myEngine.isRisingManualBtn = true; 
+  let p1RisePointerId = null;
+  riseBtn.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    if (myEngine && !(isMatchOver && !isPracticeMode)) {
+      p1RisePointerId = e.pointerId;
+      try { riseBtn.setPointerCapture(e.pointerId); } catch (_) {}
+      myEngine.isRisingManualBtn = true;
+    }
   });
-  ['pointerup', 'pointercancel', 'pointerleave'].forEach(ev => {
-    riseBtn.addEventListener(ev, () => { if(myEngine) myEngine.isRisingManualBtn = false; });
-  });
+  const endP1Rise = (e) => {
+    if (p1RisePointerId !== null && e.pointerId !== p1RisePointerId) return;
+    p1RisePointerId = null;
+    if (myEngine) myEngine.isRisingManualBtn = false;
+  };
+  ['pointerup', 'pointercancel'].forEach(ev => riseBtn.addEventListener(ev, endP1Rise));
+
+  // 2P シェア対戦用 せり上げボタン & スキルボタン（マルチタッチID独立）
+  const p2RiseBtn = document.getElementById('p2-rise-btn');
+  if (p2RiseBtn) {
+    let p2RisePointerId = null;
+    p2RiseBtn.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      const opp0 = opponents[0];
+      if (currentMode === 'share' && opp0 && opp0.engine && !(isMatchOver && !isPracticeMode)) {
+        p2RisePointerId = e.pointerId;
+        try { p2RiseBtn.setPointerCapture(e.pointerId); } catch (_) {}
+        opp0.engine.isRisingManualBtn = true;
+      }
+    });
+    const endP2Rise = (e) => {
+      if (p2RisePointerId !== null && e.pointerId !== p2RisePointerId) return;
+      p2RisePointerId = null;
+      const opp0 = opponents[0];
+      if (opp0 && opp0.engine) opp0.engine.isRisingManualBtn = false;
+    };
+    ['pointerup', 'pointercancel'].forEach(ev => p2RiseBtn.addEventListener(ev, endP2Rise));
+  }
+
+  const skillBtn = document.getElementById('skill-btn');
+  if (skillBtn) {
+    bindMultiTouchTap(skillBtn, () => activatePlayerSkill());
+  }
+  const p2SkillBtn = document.getElementById('p2-skill-btn');
+  if (p2SkillBtn) {
+    bindMultiTouchTap(p2SkillBtn, () => activateShareP2Skill());
+  }
+
+  // 決着時立ち絵オーバーレイの入力待ち
+  const battleEndOverlay = document.getElementById('battle-end-overlay');
+  if (battleEndOverlay) {
+    battleEndOverlay.addEventListener('pointerdown', (e) => {
+      if (battleEndState.active) {
+        e.preventDefault();
+        tryDismissBattleEndOverlay();
+      }
+    });
+  }
 
   window.addEventListener('blur', () => {
     p1InputState.keyGrabState.active = false;
@@ -1950,6 +2665,12 @@ function setupInput() {
   });
 
   window.addEventListener('keydown', (e) => {
+    if (battleEndState.active) {
+      e.preventDefault();
+      tryDismissBattleEndOverlay();
+      return;
+    }
+
     if (assigningAction && assignType === 'key') {
       e.preventDefault();
       playerConfigs[settingsPlayerIdx].key[assigningAction] = (e.code === 'Delete' || e.code === 'Backspace') ? '' : e.code;
@@ -1971,7 +2692,7 @@ function setupInput() {
     if (!myEngine || (isMatchOver && !isPracticeMode)) return;
 
     handleKeyboardActionForPlayer(myEngine, playerConfigs[0].key, p1InputState, code, e.repeat, true, null, e);
-    if (currentMode === 'local') {
+    if (currentMode === 'local' || currentMode === 'share') {
       opponents.forEach(opp => {
         if (opp.type === 'local_human' && opp.inputState) {
           handleKeyboardActionForPlayer(opp.engine, playerConfigs[opp.playerSlotIndex].key, opp.inputState, code, e.repeat, false, opp, e);
@@ -1995,7 +2716,7 @@ function setupInput() {
       }
     };
     releaseFor(myEngine, playerConfigs[0].key, p1InputState);
-    if (currentMode === 'local') {
+    if (currentMode === 'local' || currentMode === 'share') {
       opponents.forEach(opp => {
         if (opp.type === 'local_human' && opp.inputState) {
           releaseFor(opp.engine, playerConfigs[opp.playerSlotIndex].key, opp.inputState);
@@ -2025,6 +2746,8 @@ function updateLayoutToggleBtnText() {
 }
 
 function adjustLayout() {
+  updateShareForcePortraitClass();
+
   const isPortrait = window.innerHeight > window.innerWidth;
   const W = window.innerWidth;
   const H = window.innerHeight;
@@ -2032,7 +2755,7 @@ function adjustLayout() {
 
   const layoutBtn = document.getElementById('layout-toggle-btn');
   if (layoutBtn) {
-    layoutBtn.style.display = (!isPortrait && currentMode !== 'local') ? 'block' : 'none';
+    layoutBtn.style.display = (!isPortrait && currentMode !== 'local' && currentMode !== 'share') ? 'block' : 'none';
     updateLayoutToggleBtnText();
   }
 
@@ -2043,15 +2766,130 @@ function adjustLayout() {
   const rivalsArea = document.getElementById('rivals-area');
   const rivalsTopArea = document.getElementById('rivals-top-area');
   const controls = document.getElementById('controls-container');
+  const p2Controls = document.getElementById('p2-controls-container');
   const exitBtn = document.getElementById('exit-btn');
   const gameArea = document.getElementById('game-area');
   const gameContainer = document.getElementById('game-container');
   const handednessWrapper = document.getElementById('handedness-wrapper');
+  const zoneBgEl = document.getElementById('my-zone-frame-bg');
 
   if (!myWrapper || !controls || !exitBtn || !gameArea || !gameContainer) return;
 
+  // シェア対戦専用：長辺を縦とする縦UIを上下半分に分割して対面対称配置
+  if (currentMode === 'share') {
+    if (zoneBgEl) zoneBgEl.style.opacity = '0';
+    document.body.classList.remove('local-force-landscape');
+    gameArea.classList.add('share-mode');
+    rivalsTopArea.style.display = 'none';
+    rivalsArea.style.display = 'none';
+
+    const effW = Math.min(W, H);
+    const effH = Math.max(W, H);
+    const halfH = effH / 2;
+
+    let p2Zone = document.getElementById('share-p2-zone');
+    let p1Zone = document.getElementById('share-p1-zone');
+    if (!p2Zone) {
+      p2Zone = document.createElement('div');
+      p2Zone.id = 'share-p2-zone';
+      p2Zone.className = 'share-zone-half share-p2-zone';
+      gameContainer.appendChild(p2Zone);
+    }
+    if (!p1Zone) {
+      p1Zone = document.createElement('div');
+      p1Zone.id = 'share-p1-zone';
+      p1Zone.className = 'share-zone-half share-p1-zone';
+      gameContainer.appendChild(p1Zone);
+    }
+
+    const rivalWrapper = document.getElementById('rival-wrapper-0');
+    if (rivalWrapper && rivalWrapper.parentNode !== p2Zone) p2Zone.appendChild(rivalWrapper);
+    if (p2Controls && p2Controls.parentNode !== p2Zone) p2Zone.appendChild(p2Controls);
+    if (myWrapper.parentNode !== p1Zone) p1Zone.appendChild(myWrapper);
+    if (controls.parentNode !== p1Zone) p1Zone.appendChild(controls);
+
+    if (exitBtn.parentNode !== gameArea) gameArea.appendChild(exitBtn);
+    exitBtn.className = 'action-btn retire-btn share-exit-btn';
+    exitBtn.style.position = 'absolute';
+    exitBtn.style.top = '50%';
+    exitBtn.style.left = '6px';
+    exitBtn.style.right = 'auto';
+    exitBtn.style.width = 'auto';
+    exitBtn.style.margin = '0';
+
+    if (handednessWrapper) handednessWrapper.style.display = 'none';
+    controls.style.display = 'flex';
+    controls.style.order = '2';
+    controls.style.height = 'auto';
+    controls.style.width = '110px';
+    controls.style.justifyContent = 'center';
+    controls.style.position = 'relative';
+
+    if (p2Controls) {
+      p2Controls.style.display = 'flex';
+      p2Controls.style.order = '2';
+      p2Controls.style.height = 'auto';
+      p2Controls.style.width = '110px';
+      p2Controls.style.justifyContent = 'center';
+      p2Controls.style.position = 'relative';
+    }
+
+    myWrapper.style.order = '1';
+    if (rivalWrapper) {
+      rivalWrapper.style.order = '1';
+      rivalWrapper.style.position = 'relative';
+      rivalWrapper.style.width = '';
+      rivalWrapper.style.flexShrink = '';
+    }
+
+    gameContainer.style.position = 'relative';
+    gameContainer.style.top = '';
+    gameContainer.style.left = '';
+    gameContainer.style.transform = '';
+    gameContainer.style.width = '100%';
+    gameContainer.style.height = '100%';
+    gameContainer.style.maxWidth = '';
+    gameContainer.style.flexDirection = 'column';
+    gameContainer.style.flexWrap = 'nowrap';
+    gameContainer.style.padding = '0';
+    gameContainer.style.gap = '0';
+
+    const baseBoardH = 515;
+    const baseTotalW = 224 + 110 + 8;
+    const scale = Math.max(0.32, Math.min(1.0, (halfH - 12) / baseBoardH, (effW - 14) / baseTotalW));
+
+    const boardMx = (224 - 224 * scale) / -2;
+    const boardMy = (baseBoardH - baseBoardH * scale) / -2;
+    const ctrlMx = (110 - 110 * scale) / -2;
+
+    myWrapper.style.transformOrigin = 'center';
+    myWrapper.style.transform = `scale(${scale})`;
+    myWrapper.style.margin = `${boardMy}px ${boardMx}px`;
+
+    controls.style.transformOrigin = 'center';
+    controls.style.transform = `scale(${scale})`;
+    controls.style.margin = `0 ${ctrlMx}px`;
+
+    if (rivalWrapper) {
+      rivalWrapper.style.transformOrigin = 'center';
+      rivalWrapper.style.transform = `scale(${scale})`;
+      rivalWrapper.style.margin = `${boardMy}px ${boardMx}px`;
+    }
+    if (p2Controls) {
+      p2Controls.style.transformOrigin = 'center';
+      p2Controls.style.transform = `scale(${scale})`;
+      p2Controls.style.margin = `0 ${ctrlMx}px`;
+    }
+    return;
+  }
+
+  // シェア対戦以外ではシェア用DOMラッパーと強制縦UIを解除
+  cleanupShareDomZones();
+  if (handednessWrapper) handednessWrapper.style.display = 'flex';
+
   // ローカル対戦専用：強制的に横画面UI（常に1列横並び・縦向き画面時は90°回転）
   if (currentMode === 'local') {
+    if (zoneBgEl) zoneBgEl.style.opacity = '0';
     const isGameVisible = gameArea.style.display !== 'none';
     if (isPortrait && isGameVisible) {
       document.body.classList.add('local-force-landscape');
@@ -2069,6 +2907,7 @@ function adjustLayout() {
     if (exitBtn.parentNode !== gameArea) gameArea.appendChild(exitBtn);
     exitBtn.className = 'action-btn retire-btn absolute-top';
     exitBtn.style.position = '';
+    exitBtn.style.top = '';
     exitBtn.style.width = '';
     exitBtn.style.margin = '';
     exitBtn.style.left = '12px';
@@ -2123,6 +2962,7 @@ function adjustLayout() {
   }
 
   // 通常モード用にローカル用強制横画面クラスとスタイルをリセット
+  if (zoneBgEl) zoneBgEl.style.opacity = '1';
   document.body.classList.remove('local-force-landscape');
   controls.style.display = 'flex';
   controls.style.alignItems = 'center';
@@ -2138,6 +2978,7 @@ function adjustLayout() {
     if (exitBtn.parentNode !== gameArea) gameArea.appendChild(exitBtn);
     exitBtn.className = 'action-btn retire-btn absolute-top';
     exitBtn.style.position = '';
+    exitBtn.style.top = '';
     exitBtn.style.width = '';
     exitBtn.style.margin = '';
     if (isLeft) { exitBtn.style.right = '15px'; exitBtn.style.left = 'auto'; }
@@ -2207,6 +3048,26 @@ function adjustLayout() {
 
     controls.style.transform = `scale(${scale})`;
 
+    if (typeof updateMyZoneFrameLayout === 'function') {
+      if (oppCount === 0) {
+        updateMyZoneFrameLayout(null);
+      } else {
+        requestAnimationFrame(() => {
+          const areaRect = gameArea.getBoundingClientRect();
+          const myRect = myWrapper.getBoundingClientRect();
+          const ctrlRect = controls.getBoundingClientRect();
+          if (myRect.width === 0) return;
+          if (isLeft) {
+            const rightEdge = Math.min(W, Math.max(myRect.right, ctrlRect.right) - areaRect.left + 16);
+            updateMyZoneFrameLayout({ top: 0, left: 0, width: rightEdge, height: H, radius: '0 16px 16px 0' });
+          } else {
+            const leftEdge = Math.max(0, Math.min(myRect.left, ctrlRect.left) - areaRect.left - 16);
+            updateMyZoneFrameLayout({ top: 0, left: leftEdge, width: W - leftEdge, height: H, radius: '16px 0 0 16px' });
+          }
+        });
+      }
+    }
+
   } else if (oppCount <= 1) {
     rivalsTopArea.style.display = 'none';
     rivalsArea.style.display = 'none';
@@ -2214,6 +3075,7 @@ function adjustLayout() {
     if (exitBtn.parentNode !== gameArea) gameArea.appendChild(exitBtn);
     exitBtn.className = 'action-btn retire-btn absolute-top';
     exitBtn.style.position = '';
+    exitBtn.style.top = '';
     exitBtn.style.width = '';
     exitBtn.style.margin = '';
     if (isLeft) { exitBtn.style.right = '12px'; exitBtn.style.left = 'auto'; }
@@ -2289,6 +3151,10 @@ function adjustLayout() {
     controls.style.left = 'auto';
     controls.style.right = 'auto';
     controls.style.width = '110px';
+
+    if (typeof updateMyZoneFrameLayout === 'function') {
+      updateMyZoneFrameLayout(null);
+    }
 
   } else {
     rivalsArea.style.display = 'none';
@@ -2369,6 +3235,11 @@ function adjustLayout() {
     const ctrlMx = (110 - 110 * myScale) / -2;
     myWrapper.style.margin = `0 ${boardMx}px`;
     controls.style.margin = `0 ${ctrlMx}px`;
+
+    if (typeof updateMyZoneFrameLayout === 'function') {
+      const topStart = maxTopH + 4;
+      updateMyZoneFrameLayout({ top: topStart, left: 0, width: W, height: H - topStart, radius: '16px 16px 0 0' });
+    }
   }
 }
 
@@ -2399,10 +3270,9 @@ window.addEventListener('DOMContentLoaded', () => {
   }
   toggleHandedness();
 
-  // ゲーム画面中の不意なスクロールやズームを防止
   const gameAreaEl = document.getElementById('game-area');
   gameAreaEl.addEventListener('touchstart', (e) => {
-    if (e.touches.length > 1) {
+    if (e.touches.length > 1 && currentMode !== 'share') {
       e.preventDefault(); 
     }
   }, { passive: false });
@@ -2420,6 +3290,7 @@ window.addEventListener('DOMContentLoaded', () => {
   
   let lastTouchEnd = 0;
   gameAreaEl.addEventListener('touchend', (e) => {
+    if (currentMode === 'share') return;
     const now = (new Date()).getTime();
     if (now - lastTouchEnd <= 300) {
       e.preventDefault();
@@ -2428,6 +3299,7 @@ window.addEventListener('DOMContentLoaded', () => {
   }, { passive: false });
 
   if (typeof syncPlayerSkillSelects === 'function') syncPlayerSkillSelects();
+  if (typeof enhanceAllRangeSliders === 'function') enhanceAllRangeSliders();
   if (typeof initAssetsSystem === 'function') initAssetsSystem();
   if (typeof initStorySystem === 'function') initStorySystem();
 });

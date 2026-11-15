@@ -34,8 +34,10 @@ class PonEngine {
     this.dangerTimer = 180; 
     this.score = 0; this.chain = 0;
     this.gameOver = false;
+    this.endAnim = null;
     this.cursor = { x: 2, y: 6 };
     this.garbageQueue = [];
+    this.purifyState = null;
     this.onStateChange = onStateChange;
     this.onSendGarbage = onSendGarbage;
     this.onRowPushed = null;
@@ -49,6 +51,107 @@ class PonEngine {
 
   allocGroupId() {
     return this.nextGroupId++;
+  }
+
+  startGameOverFillAnim(onComplete = null) {
+    if (this.endAnim && this.endAnim.type === 'gameover_fill') {
+      if (onComplete) {
+        if (this.endAnim.done) onComplete();
+        else this.endAnim.onComplete = onComplete;
+      }
+      return;
+    }
+    this.isRisingManualBtn = false;
+    this.isRisingManualKey = false;
+    this.isRisingManualPad = false;
+    this.purifyState = null;
+    this.endAnim = {
+      type: 'gameover_fill',
+      row: 0,
+      timer: 0,
+      interval: 3,
+      done: false,
+      onComplete
+    };
+  }
+
+  startVictoryClearAnim(onComplete = null) {
+    if (this.endAnim && this.endAnim.type === 'victory_clear') {
+      if (onComplete) {
+        if (this.endAnim.done) onComplete();
+        else this.endAnim.onComplete = onComplete;
+      }
+      return;
+    }
+    this.isRisingManualBtn = false;
+    this.isRisingManualKey = false;
+    this.isRisingManualPad = false;
+    this.purifyState = null;
+    this.endAnim = {
+      type: 'victory_clear',
+      row: 0,
+      timer: 0,
+      interval: 3,
+      done: false,
+      onComplete
+    };
+  }
+
+  updateEndAnim() {
+    const anim = this.endAnim;
+    if (!anim || anim.done) return;
+
+    if (anim.timer > 0) {
+      anim.timer--;
+      return;
+    }
+
+    if (anim.type === 'gameover_fill') {
+      if (anim.row < this.rows) {
+        const r = anim.row;
+        const gid = this.allocGroupId();
+        for (let c = 0; c < this.cols; c++) {
+          this.grid[r][c] = {
+            type: 'garbage',
+            state: 'normal',
+            fallY: 0,
+            timer: 0,
+            groupId: gid,
+            isHard: true,
+            particleTimer: 18
+          };
+        }
+        SE.play('falledBlock');
+        this.shakeTimer = 6;
+        anim.row++;
+        anim.timer = anim.interval;
+      } else {
+        anim.done = true;
+        const cb = anim.onComplete;
+        anim.onComplete = null;
+        if (cb) cb();
+      }
+    } else if (anim.type === 'victory_clear') {
+      if (anim.row < this.rows) {
+        const r = anim.row;
+        let hadBlock = false;
+        for (let c = 0; c < this.cols; c++) {
+          if (this.grid[r][c] !== null) hadBlock = true;
+          this.grid[r][c] = null;
+        }
+        if (hadBlock && anim.row % 2 === 0) {
+          SE.play('normalErase');
+        }
+        anim.row++;
+        anim.timer = anim.interval;
+      } else {
+        this.nextRow = [];
+        anim.done = true;
+        const cb = anim.onComplete;
+        anim.onComplete = null;
+        if (cb) cb();
+      }
+    }
   }
 
   initGrid(initRows) {
@@ -98,8 +201,10 @@ class PonEngine {
   }
 
   swap(c, r) {
+    if (this.endAnim) return false;
     if (this.gameOver && !this.isPractice) return false;
     if (matchState !== 'playing' && !this.isPractice) return false;
+    if (this.purifyState && this.purifyState.active) return false;
     if (c < 0 || c >= this.cols - 1 || r < 0 || r >= this.rows) return false;
     const b1 = this.grid[r][c], b2 = this.grid[r][c + 1];
     
@@ -130,8 +235,10 @@ class PonEngine {
   }
 
   manualRiseStep() {
+    if (this.endAnim) return;
     if (this.gameOver && !this.isPractice) return;
     if (matchState !== 'playing' && !this.isPractice) return;
+    if (this.purifyState && this.purifyState.active) return;
     this.stopTimer = 0; 
     this.riseOffset += 0.035; 
     if (this.riseOffset >= 1.0) this.pushNewRow();
@@ -145,6 +252,148 @@ class PonEngine {
     if (this.cursor.y > 0) this.cursor.y--;
     if (this.onRowPushed) this.onRowPushed();
     this.checkMatches(); 
+  }
+
+  pushRowForPurifySkill() {
+    this.riseOffset = 0;
+    const topRow = this.grid[0];
+    if (topRow && topRow.some(cell => cell !== null)) {
+      this.purifyState.overflowRows.push(topRow);
+    }
+    for (let r = 0; r < this.rows - 1; r++) this.grid[r] = this.grid[r + 1];
+    this.grid[this.rows - 1] = this.nextRow;
+    this.nextRow = this.createNextRow();
+    if (this.cursor.y > 0) this.cursor.y--;
+    if (this.onRowPushed) this.onRowPushed();
+  }
+
+  startPurifySkill() {
+    if (this.purifyState && this.purifyState.active) return false;
+    let garbageCount = 0;
+    for (let r = 0; r < this.rows; r++) {
+      for (let c = 0; c < this.cols; c++) {
+        const b = this.grid[r][c];
+        if (b && b.type === 'garbage' && b.state !== 'match') {
+          b.state = 'purify_anim';
+          b.purifyTimer = 46;
+          b.purifyMax = 46;
+          delete b.groupId;
+          delete b.isHard;
+          delete b.transformGroupId;
+          delete b.transformDelay;
+          delete b.isTarget;
+          delete b.transformToNormal;
+          garbageCount++;
+        }
+      }
+    }
+    if (garbageCount === 0) return false;
+
+    this.purifyState = {
+      active: true,
+      step: 'rise1',
+      stepTimer: 0,
+      animTimer: 46,
+      overflowRows: []
+    };
+    SE.play('garbageErase');
+    return true;
+  }
+
+  updatePurifySkill() {
+    const ps = this.purifyState;
+    if (!ps || !ps.active) return;
+
+    if (ps.animTimer > 0) ps.animTimer--;
+    for (let r = 0; r < this.rows; r++) {
+      for (let c = 0; c < this.cols; c++) {
+        const b = this.grid[r][c];
+        if (b && b.state === 'purify_anim' && b.purifyTimer > 0) {
+          b.purifyTimer--;
+        }
+      }
+    }
+    ps.overflowRows.forEach(row => {
+      row.forEach(b => {
+        if (b && b.state === 'purify_anim' && b.purifyTimer > 0) {
+          b.purifyTimer--;
+        }
+      });
+    });
+
+    if (ps.step === 'rise1') {
+      this.riseOffset += 0.09;
+      if (this.riseOffset >= 1.0) {
+        this.pushRowForPurifySkill();
+        ps.step = 'pause_between';
+        ps.stepTimer = 8;
+      }
+    } else if (ps.step === 'pause_between') {
+      ps.stepTimer--;
+      if (ps.stepTimer <= 0) {
+        ps.step = 'rise2';
+      }
+    } else if (ps.step === 'rise2') {
+      this.riseOffset += 0.09;
+      if (this.riseOffset >= 1.0) {
+        this.pushRowForPurifySkill();
+        ps.step = 'wait_anim';
+      }
+    } else if (ps.step === 'wait_anim') {
+      if (ps.animTimer <= 0) {
+        this.finishPurifySkill();
+      }
+    }
+  }
+
+  finishPurifySkill() {
+    const ps = this.purifyState;
+    if (!ps) return;
+
+    const normalColors = COLORS.filter(col => !col.isSpecial);
+    const convertToNormalFalling = (b) => {
+      b.type = normalColors[Math.floor(Math.random() * normalColors.length)].id;
+      b.state = 'fall';
+      b.fallY = 0;
+      b.timer = 0;
+      b.chainEligible = true;
+      b.particleTimer = 24;
+      delete b.purifyTimer;
+      delete b.purifyMax;
+      delete b.groupId;
+      delete b.isHard;
+      delete b.transformGroupId;
+    };
+
+    if (ps.overflowRows.length > 0) {
+      for (let i = ps.overflowRows.length - 1; i >= 0; i--) {
+        const row = ps.overflowRows[i];
+        for (let c = 0; c < this.cols; c++) {
+          const b = row[c];
+          if (!b) continue;
+          if (b.state === 'purify_anim') convertToNormalFalling(b);
+          for (let r = 0; r < this.rows; r++) {
+            if (this.grid[r][c] === null) {
+              this.grid[r][c] = b;
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    for (let r = 0; r < this.rows; r++) {
+      for (let c = 0; c < this.cols; c++) {
+        const b = this.grid[r][c];
+        if (b && b.state === 'purify_anim') {
+          convertToNormalFalling(b);
+        }
+      }
+    }
+
+    this.purifyState = null;
+    SE.play('garbageErase');
+    this.checkMatches();
   }
 
   addGarbage(w, h, isHard = false) { 
@@ -161,16 +410,18 @@ class PonEngine {
   spawnGarbage(g) {
     const groupId = this.allocGroupId();
     const startCol = g.startCol;
-    for (let r = 0; r < g.h; r++) {
+    const maxH = Math.min(this.rows, g.h);
+    for (let r = 0; r < maxH; r++) {
       for (let c = 0; c < g.w; c++) {
         const actualCol = startCol + c;
-        this.grid[r][actualCol] = { type: 'garbage', state: 'fall', fallY: 0, timer: 0, groupId: groupId, isHard: g.isHard, particleTimer: 0 };
+        if (actualCol >= 0 && actualCol < this.cols) {
+          this.grid[r][actualCol] = { type: 'garbage', state: 'fall', fallY: 0, timer: 0, groupId: groupId, isHard: g.isHard, particleTimer: 0 };
+        }
       }
     }
   }
 
   transformGarbageNear(r, c) {
-    // すでに変換中・落下中のグループを誤って再取得しないよう、全セルが 'normal' のグループだけを収集
     const invalidGroupIds = new Set();
     for (let rr = 0; rr < this.rows; rr++) {
       for (let cc = 0; cc < this.cols; cc++) {
@@ -262,8 +513,24 @@ class PonEngine {
   }
 
   update(deltaTime = 1000/60) {
+    if (this.endAnim) {
+      for (let r = 0; r < this.rows; r++) {
+        for (let c = 0; c < this.cols; c++) {
+          const b = this.grid[r][c];
+          if (b && b.particleTimer > 0) b.particleTimer--;
+        }
+      }
+      this.updateEndAnim();
+      return;
+    }
+
     if (this.gameOver && !this.isPractice) return;
     if (matchState !== 'playing' && !this.isPractice) return;
+
+    if (this.purifyState && this.purifyState.active) {
+      this.updatePurifySkill();
+      return;
+    }
     
     this.timeElapsed += deltaTime;
     if (this.timeElapsed > 30000 && !this.keepSpeed) {
@@ -290,7 +557,6 @@ class PonEngine {
       }
     }
 
-    // transforming の進行を先に実行し、その後で transformGroupId ごとの完了判定を行う
     for (let r = 0; r < this.rows; r++) {
       for (let c = 0; c < this.cols; c++) {
         const b = this.grid[r][c];
@@ -343,7 +609,7 @@ class PonEngine {
         blocks.forEach(b => {
           if (b.state === 'transformed_wait' || b.state === 'transforming_wait') {
             b.state = 'hover';
-            b.timer = 15; // 通常ブロック化セルと上のお邪魔を同一タイマーで同期落下させる
+            b.timer = 15;
             b.fallY = 0;
             if (typeof b.type === 'number') {
               delete b.groupId;
@@ -371,35 +637,48 @@ class PonEngine {
       }
       if (!isMoving && this.garbageQueue[0].delay <= 0) {
         const g = this.garbageQueue[0];
-        const checkCanSpawnAt = (startC) => {
-          for (let r = 0; r < g.h; r++) {
-            for (let c = 0; c < g.w; c++) {
-              if (this.grid[r][startC + c] !== null) return false;
+        const getAvailHeightAt = (startC) => {
+          let minAvail = this.rows;
+          for (let c = 0; c < g.w; c++) {
+            let colAvail = 0;
+            for (let r = 0; r < this.rows; r++) {
+              if (this.grid[r][startC + c] === null) colAvail++;
+              else break;
             }
+            if (colAvail < minAvail) minAvail = colAvail;
           }
-          return true;
+          return minAvail;
         };
 
         if (g.startCol === undefined) g.startCol = Math.floor(Math.random() * (this.cols - g.w + 1));
-        let canSpawn = checkCanSpawnAt(g.startCol);
+        let availH = getAvailHeightAt(g.startCol);
 
-        if (!canSpawn && g.w < this.cols) {
-          const altCols = [];
+        if (availH < g.h && g.w < this.cols) {
+          let bestCol = g.startCol;
+          let bestAvail = availH;
           for (let c = 0; c <= this.cols - g.w; c++) {
-            if (c !== g.startCol && checkCanSpawnAt(c)) altCols.push(c);
+            const ah = getAvailHeightAt(c);
+            if (ah > bestAvail) {
+              bestAvail = ah;
+              bestCol = c;
+            }
           }
-          if (altCols.length > 0) {
-            g.startCol = altCols[Math.floor(Math.random() * altCols.length)];
-            canSpawn = true;
+          if (bestAvail > availH) {
+            g.startCol = bestCol;
+            availH = bestAvail;
           }
         }
 
-        if (canSpawn) {
+        if (availH >= g.h) {
           this.spawnGarbage(g);
           this.garbageQueue.shift();
           if (this.garbageQueue.length > 0 && this.garbageQueue[0].delay < 20) {
             this.garbageQueue[0].delay = 20;
           }
+        } else if (availH >= 1) {
+          this.spawnGarbage({ w: g.w, h: availH, startCol: g.startCol, isHard: g.isHard });
+          g.h -= availH;
+          g.delay = 20;
         } else {
           garbageBlocked = true;
         }
@@ -411,6 +690,9 @@ class PonEngine {
         this.dangerTimer--;
         if (this.dangerTimer <= 0) {
           this.gameOver = true;
+          if (!this.isPractice) {
+            this.startGameOverFillAnim();
+          }
           if (this.onStateChange) this.onStateChange('gameover');
           return;
         }
@@ -506,7 +788,6 @@ class PonEngine {
 
         if (!canFall) {
           if (blockedByMoving) {
-            // 下のブロックが落下・ホバー中なら確定せずそのまま待機して連動落下させる
             leader.fallY = 0;
             cells.forEach(item => { item.block.fallY = 0; });
           } else {
@@ -660,7 +941,7 @@ class PonEngine {
     if (needsMatchCheck) this.checkMatches();
   }
 
- checkMatches() {
+  checkMatches() {
     let matchedPositions = new Set();
     for (let r = 0; r < this.rows; r++) {
       for (let c = 0; c < this.cols - 2; c++) {
@@ -786,7 +1067,6 @@ class PonEngine {
         }
       }
       if (!isMoving) {
-        // 連鎖が止まったタイミングでファンファーレSEを再生
         if (this.chain === 4) {
            SE.play('fanfareMin');
         } else if (this.chain === 5) {
@@ -842,7 +1122,7 @@ class BoardRenderer {
       }
     }
     let highestCols = new Set();
-    let isEnginePanic = (highestR - engine.riseOffset) <= (engine.rows * 0.3);
+    let isEnginePanic = !engine.endAnim && (highestR - engine.riseOffset) <= (engine.rows * 0.3);
 
     if (isEnginePanic) {
        for (let c = 0; c < engine.cols; c++) {
@@ -867,47 +1147,63 @@ class BoardRenderer {
           const y = r * CELL_PX - offsetY + (b.fallY * CELL_PX);
 
           if (b.type === 'garbage') {
-            const isFlashing = (b.state === 'match' && Math.floor(b.timer / 4) % 2 === 0);
-            ctx.fillStyle = isFlashing ? '#ffffff' : (b.isHard ? '#a8b2bd' : '#5c636a'); 
-            ctx.fillRect(x, y, CELL_PX, CELL_PX);
-            ctx.strokeStyle = '#dee2e6'; ctx.lineWidth = 2;
-            
-            const sameTop = b.groupId && r > 0 && engine.grid[r-1][c] && engine.grid[r-1][c].groupId === b.groupId;
-            const sameBottom = b.groupId && r < engine.rows-1 && engine.grid[r+1][c] && engine.grid[r+1][c].groupId === b.groupId;
-            const sameLeft = b.groupId && c > 0 && engine.grid[r][c-1] && engine.grid[r][c-1].groupId === b.groupId;
-            const sameRight = b.groupId && c < engine.cols-1 && engine.grid[r][c+1] && engine.grid[r][c+1].groupId === b.groupId;
-
-            ctx.beginPath();
-            if (!sameTop) { ctx.moveTo(x, y+1); ctx.lineTo(x+CELL_PX, y+1); }
-            if (!sameBottom) { ctx.moveTo(x, y+CELL_PX-1); ctx.lineTo(x+CELL_PX, y+CELL_PX-1); }
-            if (!sameLeft) { ctx.moveTo(x+1, y); ctx.lineTo(x+1, y+CELL_PX); }
-            if (!sameRight) { ctx.moveTo(x+CELL_PX-1, y); ctx.lineTo(x+CELL_PX-1, y+CELL_PX); }
-            ctx.stroke();
-
-            if (b.isHard) {
-              ctx.strokeStyle = 'rgba(255,255,255,0.35)';
-              ctx.lineWidth = 4;
-              ctx.beginPath();
-              ctx.moveTo(x + CELL_PX * 0.25, y + CELL_PX * 0.25);
-              ctx.lineTo(x + CELL_PX * 0.75, y + CELL_PX * 0.75);
-              ctx.moveTo(x + CELL_PX * 0.75, y + CELL_PX * 0.25);
-              ctx.lineTo(x + CELL_PX * 0.25, y + CELL_PX * 0.75);
-              ctx.stroke();
+            if (b.state === 'purify_anim') {
+              const pMax = b.purifyMax || 46;
+              const remRatio = Math.max(0, (b.purifyTimer || 0) / pMax);
+              const progress = 1 - remRatio;
+              const isFlash = Math.floor((b.purifyTimer || 0) / 3) % 2 === 0;
+              const shrink = progress * (CELL_PX * 0.24);
+              ctx.save();
+              ctx.globalAlpha = Math.max(0.12, remRatio);
+              ctx.fillStyle = isFlash ? '#ffffff' : '#4ecca3';
+              ctx.fillRect(x + shrink, y + shrink, CELL_PX - shrink * 2, CELL_PX - shrink * 2);
+              ctx.strokeStyle = '#ffd700';
+              ctx.lineWidth = 2;
+              ctx.strokeRect(x + shrink + 1, y + shrink + 1, CELL_PX - shrink * 2 - 2, CELL_PX - shrink * 2 - 2);
+              ctx.restore();
             } else {
-              ctx.fillStyle = 'rgba(255,255,255,0.08)';
-              ctx.beginPath(); ctx.arc(x+CELL_PX/2, y+CELL_PX/2, CELL_PX/4, 0, Math.PI*2); ctx.fill();
-            }
+              const isFlashing = (b.state === 'match' && Math.floor(b.timer / 4) % 2 === 0);
+              ctx.fillStyle = isFlashing ? '#ffffff' : (b.isHard ? '#a8b2bd' : '#5c636a'); 
+              ctx.fillRect(x, y, CELL_PX, CELL_PX);
+              ctx.strokeStyle = '#dee2e6'; ctx.lineWidth = 2;
+              
+              const sameTop = b.groupId && r > 0 && engine.grid[r-1][c] && engine.grid[r-1][c].groupId === b.groupId;
+              const sameBottom = b.groupId && r < engine.rows-1 && engine.grid[r+1][c] && engine.grid[r+1][c].groupId === b.groupId;
+              const sameLeft = b.groupId && c > 0 && engine.grid[r][c-1] && engine.grid[r][c-1].groupId === b.groupId;
+              const sameRight = b.groupId && c < engine.cols-1 && engine.grid[r][c+1] && engine.grid[r][c+1].groupId === b.groupId;
 
-            if (b.state === 'transforming') {
-              if (b.transformDelay < 13) {
-                ctx.fillStyle = `rgba(255, 255, 255, ${(13 - b.transformDelay) / 13})`;
+              ctx.beginPath();
+              if (!sameTop) { ctx.moveTo(x, y+1); ctx.lineTo(x+CELL_PX, y+1); }
+              if (!sameBottom) { ctx.moveTo(x, y+CELL_PX-1); ctx.lineTo(x+CELL_PX, y+CELL_PX-1); }
+              if (!sameLeft) { ctx.moveTo(x+1, y); ctx.lineTo(x+1, y+CELL_PX); }
+              if (!sameRight) { ctx.moveTo(x+CELL_PX-1, y); ctx.lineTo(x+CELL_PX-1, y+CELL_PX); }
+              ctx.stroke();
+
+              if (b.isHard) {
+                ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+                ctx.lineWidth = 4;
+                ctx.beginPath();
+                ctx.moveTo(x + CELL_PX * 0.25, y + CELL_PX * 0.25);
+                ctx.lineTo(x + CELL_PX * 0.75, y + CELL_PX * 0.75);
+                ctx.moveTo(x + CELL_PX * 0.75, y + CELL_PX * 0.25);
+                ctx.lineTo(x + CELL_PX * 0.25, y + CELL_PX * 0.75);
+                ctx.stroke();
+              } else {
+                ctx.fillStyle = 'rgba(255,255,255,0.08)';
+                ctx.beginPath(); ctx.arc(x+CELL_PX/2, y+CELL_PX/2, CELL_PX/4, 0, Math.PI*2); ctx.fill();
+              }
+
+              if (b.state === 'transforming') {
+                if (b.transformDelay < 13) {
+                  ctx.fillStyle = `rgba(255, 255, 255, ${(13 - b.transformDelay) / 13})`;
+                  ctx.fillRect(x, y, CELL_PX, CELL_PX);
+                }
+              }
+              
+              if (b.particleTimer > 0) {
+                ctx.fillStyle = `rgba(255, 255, 255, ${b.particleTimer / 35})`;
                 ctx.fillRect(x, y, CELL_PX, CELL_PX);
               }
-            }
-            
-            if (b.particleTimer > 0) {
-              ctx.fillStyle = `rgba(255, 255, 255, ${b.particleTimer / 35})`;
-              ctx.fillRect(x, y, CELL_PX, CELL_PX);
             }
           } else {
             const conf = COLORS.find(item => item.id === b.type);
@@ -952,8 +1248,10 @@ class BoardRenderer {
       }
     }
 
-    ctx.strokeStyle = '#fff'; ctx.lineWidth = 3;
-    ctx.strokeRect(engine.cursor.x * CELL_PX - 2, engine.cursor.y * CELL_PX - offsetY - 2, CELL_PX * 2 + 4, CELL_PX + 4);
+    if (!engine.endAnim) {
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 3;
+      ctx.strokeRect(engine.cursor.x * CELL_PX - 2, engine.cursor.y * CELL_PX - offsetY - 2, CELL_PX * 2 + 4, CELL_PX + 4);
+    }
 
     if (engine.popups) {
       for (let i = engine.popups.length - 1; i >= 0; i--) {
@@ -986,7 +1284,9 @@ class BoardRenderer {
 
     if (typeof drawBoardFgAddon === 'function') drawBoardFgAddon(ctx, this.canvas, engine, this);
 
-    if (engine.gameOver && !engine.isPractice) {
+    const isEndAnimRunning = engine.endAnim && !engine.endAnim.done;
+    const isVictoryAnim = engine.endAnim && engine.endAnim.type === 'victory_clear';
+    if (engine.gameOver && !engine.isPractice && !isEndAnimRunning && !isVictoryAnim) {
       ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
       ctx.fillStyle = '#ff3366'; ctx.font = 'bold 22px sans-serif'; ctx.textAlign = 'center'; ctx.fillText('GAME OVER', this.canvas.width/2, this.canvas.height/2);
     }

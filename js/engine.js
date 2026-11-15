@@ -283,7 +283,6 @@ class PonEngine {
               isErasing = true;
            }
            if (b.swapAnim) {
-              isMoving = true;
               b.swapAnim.timer--;
               if (b.swapAnim.timer <= 0) delete b.swapAnim;
            }
@@ -364,22 +363,43 @@ class PonEngine {
     }
 
     let garbageBlocked = false;
-    if (!isMoving && this.garbageQueue.length > 0) {
-      if (this.garbageQueue[0].delay > 0) {
-        this.garbageQueue[0].delay--;
-      } else {
-        const g = this.garbageQueue[0];
-        if (g.startCol === undefined) g.startCol = Math.floor(Math.random() * (this.cols - g.w + 1));
-        let canSpawn = true;
-        for (let r = 0; r < g.h; r++) {
-          for (let c = 0; c < g.w; c++) {
-            if (this.grid[r][g.startCol + c] !== null) { canSpawn = false; break; }
-          }
-          if (!canSpawn) break;
+    if (this.garbageQueue.length > 0) {
+      if (!isErasing) {
+        for (let i = 0; i < this.garbageQueue.length; i++) {
+          if (this.garbageQueue[i].delay > 0) this.garbageQueue[i].delay--;
         }
+      }
+      if (!isMoving && this.garbageQueue[0].delay <= 0) {
+        const g = this.garbageQueue[0];
+        const checkCanSpawnAt = (startC) => {
+          for (let r = 0; r < g.h; r++) {
+            for (let c = 0; c < g.w; c++) {
+              if (this.grid[r][startC + c] !== null) return false;
+            }
+          }
+          return true;
+        };
+
+        if (g.startCol === undefined) g.startCol = Math.floor(Math.random() * (this.cols - g.w + 1));
+        let canSpawn = checkCanSpawnAt(g.startCol);
+
+        if (!canSpawn && g.w < this.cols) {
+          const altCols = [];
+          for (let c = 0; c <= this.cols - g.w; c++) {
+            if (c !== g.startCol && checkCanSpawnAt(c)) altCols.push(c);
+          }
+          if (altCols.length > 0) {
+            g.startCol = altCols[Math.floor(Math.random() * altCols.length)];
+            canSpawn = true;
+          }
+        }
+
         if (canSpawn) {
           this.spawnGarbage(g);
           this.garbageQueue.shift();
+          if (this.garbageQueue.length > 0 && this.garbageQueue[0].delay < 20) {
+            this.garbageQueue[0].delay = 20;
+          }
         } else {
           garbageBlocked = true;
         }

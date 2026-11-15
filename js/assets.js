@@ -439,6 +439,27 @@ function buildThemeForCharacter(charId, customCharaDataUrl = null, includeMyGlob
   };
 }
 
+// 盤面外枠のフレームレイヤーを最背面に配置・更新
+function applyBoardFrame(wrapperId, frameSrc) {
+  const wrapper = document.getElementById(wrapperId);
+  if (!wrapper) return;
+  let frameLayer = wrapper.querySelector('.board-frame-layer');
+  if (!frameLayer) {
+    frameLayer = document.createElement('div');
+    frameLayer.className = 'board-frame-layer';
+    wrapper.insertBefore(frameLayer, wrapper.firstChild);
+  }
+  if (frameSrc) {
+    frameLayer.style.backgroundImage = `url("${frameSrc}")`;
+    frameLayer.style.display = 'block';
+    wrapper.classList.add('has-custom-frame');
+  } else {
+    frameLayer.style.backgroundImage = 'none';
+    frameLayer.style.display = 'none';
+    wrapper.classList.remove('has-custom-frame');
+  }
+}
+
 // --- Canvas 描画補助（縦横アス比対応） ---
 function drawImageCover(ctx, img, x, y, w, h) {
   const iw = img.naturalWidth || img.width;
@@ -483,8 +504,7 @@ function drawBoardBgAddon(ctx, canvas, engine, renderer) {
   }
 }
 
-// ② 対戦相手の盤面上にのみ立ち絵付きカットインを描画（プレイヤー自身はヘッダーバナーに出す）
-// ローカル対戦のスキル時（allowBoardCutin）または対戦相手の盤面上に立ち絵付きカットインを描画
+// ② ローカル対戦のスキル時（allowBoardCutin）または対戦相手の盤面上に立ち絵付きカットインを描画
 function drawBoardFgAddon(ctx, canvas, engine, renderer) {
   const theme = renderer.theme;
   const W = canvas.width;
@@ -533,14 +553,6 @@ function drawBoardFgAddon(ctx, canvas, engine, renderer) {
     ctx.strokeText(label, W - 10 + slideX, bandY + bandH / 2);
     ctx.fillText(label, W - 10 + slideX, bandY + bandH / 2);
     ctx.restore();
-  }
-
-  // カスタムフレーム画像（最前面枠）
-  if (theme && theme.frameSrc) {
-    const frameImg = getCachedImage(theme.frameSrc);
-    if (frameImg) {
-      ctx.drawImage(frameImg, 0, 0, W, H);
-    }
   }
 }
 

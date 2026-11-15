@@ -260,6 +260,9 @@ function resetGameLogicOnline(config) {
     true,
     resolvedCharId === 'custom' ? getPlayerDisplayName() : null
   );
+  if (typeof applyBoardFrame === 'function') {
+    applyBoardFrame('my-wrapper', myRenderer.theme.frameSrc);
+  }
   document.getElementById('player-label').innerText = myRenderer.theme.name;
 
   myEngine = new PonEngine(

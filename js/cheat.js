@@ -58,7 +58,6 @@ class cheat extends ComAI {
 
       if (readyByTurn) {
         if (this.shouldHesitate(analysis)) {
-          // 渋って今回は見送る（毎フレーム判定し続けないよう小休止）
           this.skillCooldown = 150;
         } else if (this.tryActivateCheatSkill(analysis)) {
           this.skillUsesLeft--;
@@ -124,14 +123,12 @@ class cheat extends ComAI {
       || analysis.rowClearCount >= 8;
 
     if (this.maxSkillUses <= 3) {
-      // 上限3回時は最後の1回だけ状況を見る
       if (usesLeft === 1 && !highValueSituation) {
         return Math.random() < 0.7;
       }
       return false;
     }
 
-    // 残り数が少なくなると使うのを渋る（上限10回時）
     if (usesLeft <= 3) {
       if (!highValueSituation) return Math.random() < 0.85;
       return Math.random() < (0.15 + (3 - usesLeft) * 0.12);
@@ -159,7 +156,6 @@ class cheat extends ComAI {
       return cd;
     }
 
-    // 残り回数が少なくなるほど再使用間隔も長くなる
     if (this.skillUsesLeft <= 3) cd += 480;
     else if (this.skillUsesLeft <= 6) cd += 240;
     return cd;
@@ -267,6 +263,9 @@ class cheat extends ComAI {
     this.engine.cutinMax = 50;
     this.engine.cutinTimer = 50;
     this.engine.cutinText = text;
+    if (typeof playAttackVoiceForSender === 'function') {
+      playAttackVoiceForSender(this.id);
+    }
     if (this.engine.onSkillActivated) {
       this.engine.onSkillActivated(text);
     }
@@ -283,7 +282,6 @@ function hasGarbageInEngine(engine) {
   return false;
 }
 
-// お邪魔の一部行が消滅して上下等に分断された場合、連結成分ごとに groupId を再割り当てする
 function rebalanceGarbageGroupIds(engine) {
   if (!engine) return;
   const visited = Array.from({ length: ROWS }, () => Array(COLS).fill(false));
@@ -315,7 +313,6 @@ function rebalanceGarbageGroupIds(engine) {
   }
 }
 
-// プレイヤー用スキル発動（選択された1つのスキルを実行）
 function executePlayerCheatSkill(engine, senderId, preferredTarget = -1, chosenSkill = 'erase_color') {
   if (!engine) return { success: false };
   const skill = SKILL_IDS.includes(chosenSkill) ? chosenSkill : 'erase_color';
@@ -335,26 +332,32 @@ function executePlayerCheatSkill(engine, senderId, preferredTarget = -1, chosenS
   return { success: false };
 }
 
+// ランダムで2色全消し
 function execSkillEraseColor(engine, senderId) {
-  const counts = {};
+  const presentTypes = new Set();
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
       const b = engine.grid[r][c];
       if (b && b.state === 'normal' && b.type !== 'garbage') {
-        counts[b.type] = (counts[b.type] || 0) + 1;
+        presentTypes.add(b.type);
       }
     }
   }
-  const entries = Object.entries(counts);
-  if (entries.length === 0) return { success: false };
-  entries.sort((a, b) => b[1] - a[1]);
-  const targetType = Number(entries[0][0]);
+  const typeList = Array.from(presentTypes);
+  if (typeList.length === 0) return { success: false };
+
+  for (let i = typeList.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [typeList[i], typeList[j]] = [typeList[j], typeList[i]];
+  }
+  const pickedTypes = typeList.slice(0, 2);
+  const pickedSet = new Set(pickedTypes);
 
   let erased = 0;
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
       const b = engine.grid[r][c];
-      if (b && b.state === 'normal' && b.type === targetType) {
+      if (b && b.state === 'normal' && pickedSet.has(b.type)) {
         b.state = 'match';
         b.timer = 46;
         erased++;
@@ -369,8 +372,11 @@ function execSkillEraseColor(engine, senderId) {
   if (erased >= 4 && engine.onSendGarbage) {
     engine.onSendGarbage(Math.min(12, Math.floor(erased / 2) + 2), false);
   }
-  const conf = COLORS.find(col => col.id === targetType);
-  return { success: true, text: `SKILL: ${conf ? conf.symbol : ''}全消し!` };
+  const symbols = pickedTypes.map(t => {
+    const conf = COLORS.find(col => col.id === t);
+    return conf ? conf.symbol : '';
+  }).join('');
+  return { success: true, text: `SKILL: ${symbols}全消し!` };
 }
 
 function execSkillEraseRows(engine, senderId, targetRows) {
@@ -419,6 +425,7 @@ function execSkillPurifyGarbage(engine) {
   return { success: true, text: 'SKILL: お邪魔浄化!' };
 }
 
+// すでに1つでもブロックがある段をランダムで1段お邪魔に変換 & 上からお邪魔ブロック3個セット1段落下
 function execSkillCorruptEnemyRow(senderId, preferredTarget = -1) {
   const targets = [];
   const selfId = currentMode === 'online' ? myOnlineId : 'player';
@@ -445,30 +452,41 @@ function execSkillCorruptEnemyRow(senderId, preferredTarget = -1) {
   }
 
   const candidateRows = [];
-  for (let r = 3; r < ROWS; r++) {
-    let hasNormal = false;
+  const fallbackRows = [];
+  for (let r = 0; r < ROWS; r++) {
+    let hasAnyBlock = false;
+    let hasNonGarbage = false;
     for (let c = 0; c < COLS; c++) {
       const b = target.engine.grid[r][c];
-      if (b && b.type !== 'garbage' && b.state === 'normal') {
-        hasNormal = true;
-        break;
+      if (b !== null) {
+        hasAnyBlock = true;
+        if (b.type !== 'garbage' && b.state === 'normal') {
+          hasNonGarbage = true;
+        }
       }
     }
-    if (hasNormal) candidateRows.push(r);
+    if (hasNonGarbage) candidateRows.push(r);
+    else if (hasAnyBlock) fallbackRows.push(r);
   }
-  if (candidateRows.length === 0) return { success: false };
 
-  const chosenRow = candidateRows[Math.floor(Math.random() * candidateRows.length)];
+  const rowPool = candidateRows.length > 0 ? candidateRows : fallbackRows;
+  if (rowPool.length === 0) return { success: false };
+
+  const chosenRow = rowPool[Math.floor(Math.random() * rowPool.length)];
   if (target.isRemote && currentMode === 'online') {
     onlineConnections.forEach(c => {
       if (c && c.open) c.send({ type: 'cheat_corrupt_row', senderId, targetId: target.id, row: chosenRow });
     });
   } else {
     applyCorruptRowToEngine(target.engine, chosenRow);
+    target.engine.addGarbage(3, 1, false);
+    if (target.engine.garbageQueue.length > 0) {
+      target.engine.garbageQueue[target.engine.garbageQueue.length - 1].delay = 45;
+    }
   }
 
   if (typeof playGarbageSendAnimation === 'function') {
-    playGarbageSendAnimation(senderId, target.id, true);
+    playGarbageSendAnimation(senderId, target.id, false);
   }
   return { success: true, text: 'SKILL: お邪魔侵食!' };
 }

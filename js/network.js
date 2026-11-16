@@ -303,6 +303,7 @@ function resetGameLogicOnline(config) {
   isMatchOver = false;
   isDeadInMatch = false;
   isPracticeMode = false;
+  if (typeof endSequenceTriggered !== 'undefined') endSequenceTriggered = false;
   myTargetIndex = -1;
   hidePlayerHeaderCutin();
   resetAllLocalInputStates();
@@ -652,6 +653,9 @@ function bindConnEvents(c, isHostMode) {
         if (typeof SE !== 'undefined' && SE.playForSender) {
           SE.playForSender(data.senderId, 'skill');
         }
+        if (typeof playAttackVoiceForSender === 'function') {
+          playAttackVoiceForSender(data.senderId);
+        }
       }
       if (isHostMode) {
         onlineConnections.forEach(otherC => {
@@ -758,6 +762,10 @@ function bindConnEvents(c, isHostMode) {
     else if (data.type === 'cheat_corrupt_row') {
       if (data.targetId === myOnlineId && myEngine && !myEngine.gameOver && !isPracticeMode) {
         if (typeof applyCorruptRowToEngine === 'function') applyCorruptRowToEngine(myEngine, data.row);
+        myEngine.addGarbage(3, 1, false);
+        if (myEngine.garbageQueue.length > 0) {
+          myEngine.garbageQueue[myEngine.garbageQueue.length - 1].delay = 45;
+        }
       }
     }
     else if (data.type === 'leave') {

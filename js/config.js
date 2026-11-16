@@ -144,13 +144,15 @@ const SE = {
     if (senderId) delete this.remoteBuffers[senderId];
     else this.remoteBuffers = {};
   },
-  playBuffer(buffer, gainMultiplier = 1.0) {
+  playBuffer(buffer, gainMultiplier = 1.0, baseVolume = null) {
     if (!buffer) return false;
+    const vol = baseVolume !== null ? baseVolume : this.volume;
+    if (vol <= 0) return false;
     ensureAudioCtxResumed();
     const source = audioCtx.createBufferSource();
     source.buffer = buffer;
     const gainNode = audioCtx.createGain();
-    gainNode.gain.value = Math.min(2.0, this.volume * gainMultiplier);
+    gainNode.gain.value = Math.min(2.0, vol * gainMultiplier);
     source.connect(gainNode);
     gainNode.connect(audioCtx.destination);
     source.start(0);
@@ -241,6 +243,7 @@ const VOICE = {
     win: 'win',
     lose: 'lose'
   },
+  volume: 0.7,
   resolvedCache: {},   // { key: { type: 'buffer'|'url'|'none', data } }
   resolvingMap: {},    // { key: Promise }
   customBuffers: {},   // { attack?: AudioBuffer, win?: AudioBuffer, lose?: AudioBuffer }
@@ -363,16 +366,16 @@ const VOICE = {
   },
 
   playFallbackUrl(url) {
-    if (!url || SE.volume <= 0) return;
+    if (!url || this.volume <= 0) return;
     try {
       const a = new Audio(url);
-      a.volume = Math.max(0, Math.min(1, SE.volume));
+      a.volume = Math.max(0, Math.min(1, this.volume));
       a.play().catch(() => {});
     } catch (_) {}
   },
 
   async play(category, themeOrName, senderId = null) {
-    if (SE.volume <= 0 || !this.suffixMap[category]) return;
+    if (this.volume <= 0 || !this.suffixMap[category]) return;
 
     const charId = (themeOrName && typeof themeOrName === 'object') ? themeOrName.charId : null;
     const charName = (themeOrName && typeof themeOrName === 'object')
@@ -386,26 +389,23 @@ const VOICE = {
     }
     this.lastPlayedMap[dedupKey] = now;
 
-    // 1. オンライン相手のリモートカスタムボイス
     if (senderId && this.remoteBuffers[senderId] && this.remoteBuffers[senderId][category]) {
-      SE.playBuffer(this.remoteBuffers[senderId][category], 1.15);
+      SE.playBuffer(this.remoteBuffers[senderId][category], 1.15, this.volume);
       return;
     }
 
-    // 2. ローカルプレイヤーのカスタムキャラ時はカスタムボイスのみ参照（無ければスキップ）
     if (charId === 'custom') {
       if (this.customBuffers[category]) {
-        SE.playBuffer(this.customBuffers[category], 1.15);
+        SE.playBuffer(this.customBuffers[category], 1.15, this.volume);
       }
       return;
     }
 
-    // 3. 標準キャラクターのボイス（拡張子無視、未準備ならスキップ）
     if (!charName) return;
     const resolved = await this.resolveCharacterVoice(category, charName);
     if (!resolved || resolved.type === 'none') return;
     if (resolved.type === 'buffer') {
-      SE.playBuffer(resolved.data, 1.15);
+      SE.playBuffer(resolved.data, 1.15, this.volume);
     } else if (resolved.type === 'url') {
       this.playFallbackUrl(resolved.data);
     }
@@ -701,6 +701,8 @@ let isPanic = false;
 
 const savedSeVol = localStorage.getItem('pdw_se_vol');
 if (savedSeVol !== null) SE.volume = parseFloat(savedSeVol);
+const savedVoiceVol = localStorage.getItem('pdw_voice_vol');
+if (savedVoiceVol !== null) VOICE.volume = parseFloat(savedVoiceVol);
 const savedBgmVol = localStorage.getItem('pdw_bgm_vol');
 let initBgmVol = savedBgmVol !== null ? parseFloat(savedBgmVol) : 0.5;
 
@@ -711,6 +713,17 @@ panicBgmAudio.muted = true;
 
 document.getElementById('se-volume').value = SE.volume;
 document.getElementById('se-volume-val').innerText = Math.round(SE.volume * 100);
+const voiceVolEl = document.getElementById('voice-volume');
+const voiceVolValEl = document.getElementById('voice-volume-val');
+if (voiceVolEl && voiceVolValEl) {
+  voiceVolEl.value = VOICE.volume;
+  voiceVolValEl.innerText = Math.round(VOICE.volume * 100);
+  voiceVolEl.addEventListener('input', (e) => {
+    VOICE.volume = parseFloat(e.target.value);
+    voiceVolValEl.innerText = Math.round(VOICE.volume * 100);
+    localStorage.setItem('pdw_voice_vol', VOICE.volume);
+  });
+}
 document.getElementById('bgm-volume').value = initBgmVol;
 document.getElementById('bgm-volume-val').innerText = Math.round(initBgmVol * 100);
 
@@ -1050,12 +1063,13 @@ function updateRangeDigitHUD() {
 
 // --- コンフィグ・ゲームパッド管理（1P〜4P対応） ---
 const ACTION_LABELS = {
-  Up: '上', Down: '下', Left: '左', Right: '右', Swap: '入替',
+  Up: '上', Down: '下', Left: '左', Right: '右',
+  Swap: '入れ替え / 決定',
   GrabLeft: 'カーソル左つかみ', GrabRight: 'カーソル右つかみ',
   ToggleContinuous: '連続移動オンオフ',
   Rise1: 'せり上げ1', Rise2: 'せり上げ2',
   TargetRight: '標的(右)', TargetLeft: '標的(左)',
-  Skill: 'スキル発動',
+  Skill: 'スキル発動 / キャンセル',
   Pause: 'ポーズ/退出'
 };
 
@@ -1167,7 +1181,26 @@ try {
 } catch (e) {}
 
 let settingsPlayerIdx = 0;
+let currentSettingsTab = 'audio';
 let assigningAction = null, assignType = null;
+
+function selectSettingsTab(tabKey) {
+  currentSettingsTab = tabKey || 'audio';
+  assigningAction = null;
+  const tabKeys = ['audio', 'visual', 'zip', 'control'];
+  const btns = document.querySelectorAll('#settings-category-tabs button');
+  btns.forEach((btn, idx) => {
+    btn.classList.toggle('active', tabKeys[idx] === currentSettingsTab);
+  });
+  tabKeys.forEach(k => {
+    const panel = document.getElementById(`settings-panel-${k}`);
+    if (panel) panel.style.display = (k === currentSettingsTab) ? 'block' : 'none';
+  });
+  if (currentSettingsTab === 'control') {
+    selectSettingsPlayer(settingsPlayerIdx);
+  }
+  enhanceAllRangeSliders();
+}
 
 function selectSettingsPlayer(idx) {
   settingsPlayerIdx = idx;
@@ -1186,7 +1219,7 @@ function onSettingsPadSlotChange(val) {
 
 function openSettings() { 
   document.getElementById('settings-overlay').style.display = 'block'; 
-  selectSettingsPlayer(settingsPlayerIdx);
+  selectSettingsTab(currentSettingsTab || 'audio');
   enhanceAllRangeSliders();
 }
 
@@ -1327,8 +1360,9 @@ setInterval(() => {
 
   const isBattleEndShown = document.getElementById('battle-end-overlay')?.style.display === 'flex';
   const isSharePrepShown = document.getElementById('share-prep-overlay')?.style.display === 'flex';
+  const isGameAreaShown = document.getElementById('game-area')?.style.display === 'flex';
   
-  if (typeof matchState !== 'undefined' && matchState !== 'playing' && !isBattleEndShown && !isSharePrepShown) {
+  if (!isGameAreaShown && !isBattleEndShown && !isSharePrepShown && typeof matchState !== 'undefined' && matchState !== 'playing') {
     const activeEl = document.activeElement;
     const isSelect = activeEl && activeEl.tagName === 'SELECT';
     const isRange = activeEl && activeEl.tagName === 'INPUT' && activeEl.type === 'range';
@@ -1338,7 +1372,14 @@ setInterval(() => {
       closeRangeDigitEdit();
     }
 
-    if (isSelect) {
+    if (justPressed(padConfig.Skill)) {
+      if (rangeEditState.el) {
+        closeRangeDigitEdit();
+        SE.play('cursorMove');
+      } else if (typeof handleMenuCancelAction === 'function') {
+        handleMenuCancelAction();
+      }
+    } else if (isSelect) {
       if (isDirRepeat('Left', padConfig.Left)) {
         if (activeEl.selectedIndex > 0) {
           activeEl.selectedIndex--;

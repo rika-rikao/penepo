@@ -1,5 +1,5 @@
 // ==========================================
-// ストーリーモード（全7話：難易度4種 & 最後の敵2人は適切スキル固定）
+// ストーリーモード（全7話：難易度ボタン & ステージカルーセル & 最後の敵2人は適切スキル固定）
 // ==========================================
 const STORY_DIFFICULTIES = {
   easy:   { label: 'やさしい',   levels: [1, 2, 4, 6, 8, 12, 16],     allUseCheat: false },
@@ -52,22 +52,22 @@ const STORY_STAGES = [
   },
   {
     id: 3,
-    title: '第3話：お調子者の用心棒',
+    title: '第3話：陰気なひとりぼっち',
     enemyId: 'sub03',
     enemyLevel: 12,
     useCheat: false,
     skillType: 'single',
     intro: [
-      { side: 'right', charId: 'sub03',  text: 'おっと、そこから先は通行料……じゃなくて実力テストだぜ！' },
-      { side: 'left',  charId: 'main00', text: 'ブープルまでどうしたの？みんなを助けに行くところなんだよ。' },
-      { side: 'right', charId: 'sub03',  text: '知ってるさ！どうせ行くなら最強の用心棒であるオレも連れてけってこと！勝負だ！' }
+      { side: 'right', charId: 'sub03',  text: 'あっ……その、ここを通るなら……わ、わたしと勝負、してもらえませんか……？' },
+      { side: 'left',  charId: 'main00', text: 'ブープル？どうしたの、そんな隅っこで震えて……わたしたちは魔王を止めに行くんだよ。' },
+      { side: 'right', charId: 'sub03',  text: 'ひゃっ！ご、ごめんなさい、邪魔するつもりはなくて……ただ、ひとりだと怖くて……強い人と一緒なら、安全かなって……うぅ、まずはわたしが足手まといじゃないか試してください……！' }
     ],
     win: [
-      { side: 'right', charId: 'sub03',  text: 'ぐはっ！さすがフレアだ、文句なしにオレの親分だぜ！' },
-      { side: 'left',  charId: 'main00', text: 'よし、これでしずく・シルル・ブープル、頼もしい仲間が揃った！いざ敵地へ！' }
+      { side: 'right', charId: 'sub03',  text: 'うぅっ、負けちゃいました……やっぱりわたしなんかじゃ……でも、ほんとうに連れて行ってくれるんですか……？' },
+      { side: 'left',  charId: 'main00', text: 'もちろん！ブープルのパズルすごく丁寧で上手だったよ。しずく、シルル、ブープル、みんなで一緒に行こう！' }
     ],
     lose: [
-      { side: 'right', charId: 'sub03',  text: 'オレを倒せないようじゃ先が思いやられるぜ？ほら、もう一戦だ！' }
+      { side: 'right', charId: 'sub03',  text: 'えっ……わ、わたしが勝っちゃったんですか……？ ご、ごめんなさい、調子に乗りました……もう一回お願いします……！' }
     ]
   },
   {
@@ -99,8 +99,8 @@ const STORY_STAGES = [
     skillType: 'single',
     intro: [
       { side: 'right', charId: 'enemy02',text: 'ゴゴゴ……魔王城ノ門ハ、コノ「コーレム」ガ通サヌ……！' },
-      { side: 'left',  charId: 'sub03',  text: 'でっか！こいつの硬いガードをぶち抜くには大連鎖が必要だぜ！' },
-      { side: 'left',  charId: 'main00', text: '任せて！どんな壁も燃え上がる連鎖で砕いてみせる！' }
+      { side: 'left',  charId: 'sub03',  text: 'ひぃっ……お、おっきい岩のおばけ……！ わ、わたし見てるだけで足がすくんじゃうよぉ……' },
+      { side: 'left',  charId: 'main00', text: '大丈夫だよブープル！どんな硬い壁も、燃え上がる連鎖で砕いてみせる！' }
     ],
     win: [
       { side: 'right', charId: 'enemy02',text: 'ミゴトナ……パズルダ……道ヲ……アケヨウ……！' },
@@ -116,7 +116,7 @@ const STORY_STAGES = [
     enemyId: 'enemy03',
     enemyLevel: 28,
     useCheat: true,
-    skillType: 'smart_all', // 最後の敵2人は固定で適切に全スキルから選ぶタイプ
+    skillType: 'smart_all',
     intro: [
       { side: 'right', charId: 'enemy03',text: 'ケケケッ！よくここまで来たね。でもオレ様「デビビ」は正攻法じゃ戦わないよ？' },
       { side: 'left',  charId: 'main00', text: 'どういうこと！？卑怯な手を使うつもり？' },
@@ -136,7 +136,7 @@ const STORY_STAGES = [
     enemyId: 'enemy04',
     enemyLevel: 36,
     useCheat: true,
-    skillType: 'smart_all', // 最後の敵2人は固定で適切に全スキルから選ぶタイプ
+    skillType: 'smart_all',
     intro: [
       { side: 'right', charId: 'enemy04',text: 'よくぞ辿り着いた、フレア。我が名は魔王「マーオ」。世界のパズルを混沌に染め上げる者だ！' },
       { side: 'left',  charId: 'main00', text: 'しずく、シルル、ブープル……みんなの想いと一緒に、あんたの野望はここで止める！' },
@@ -145,7 +145,7 @@ const STORY_STAGES = [
     win: [
       { side: 'right', charId: 'enemy04',text: '見事だ……！これほど美しく力強い連鎖を見せられては、負けを認めざるを得ないな。' },
       { side: 'left',  charId: 'sub01',  text: 'やりました！空の不穏な渦が晴れていきます！' },
-      { side: 'left',  charId: 'sub03',  text: 'さすが親分！大勝利だぜーっ！！' },
+      { side: 'left',  charId: 'sub03',  text: 'あ、あの……ほんとうに勝てちゃったんですね……！ みなさんと一緒で……よかったです……えへへ……' },
       { side: 'left',  charId: 'main00', text: 'みんな、ありがとう！これからもパズルワールドの平和を守っていこう！' }
     ],
     lose: [
@@ -157,6 +157,7 @@ const STORY_STAGES = [
 const StoryManager = {
   clearedStage: parseInt(localStorage.getItem('pdw_story_cleared') || '0', 10),
   difficulty: localStorage.getItem('pdw_story_diff') || 'normal',
+  selectedStageIdx: 0,
   activeStage: null,
   activeStageConfig: null,
   currentLines: [],
@@ -174,7 +175,15 @@ const StoryManager = {
   onDifficultyChange(val) {
     this.difficulty = STORY_DIFFICULTIES[val] ? val : 'normal';
     localStorage.setItem('pdw_story_diff', this.difficulty);
+    this.syncDifficultyButtons();
     this.renderStageList();
+  },
+
+  syncDifficultyButtons() {
+    const diffKey = this.getDifficultyKey();
+    document.querySelectorAll('#story-difficulty-buttons button').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.val === diffKey);
+    });
   },
 
   getStageConfig(stage) {
@@ -213,56 +222,114 @@ const StoryManager = {
 
   openMenu() {
     document.getElementById('main-menu-actions').style.display = 'none';
+    const soloHub = document.getElementById('solo-hub-menu');
+    if (soloHub) soloHub.style.display = 'none';
     const menu = document.getElementById('story-menu');
     menu.style.display = 'flex';
-    const diffSel = document.getElementById('story-difficulty');
-    if (diffSel) diffSel.value = this.getDifficultyKey();
-    if (typeof syncPlayerSkillSelects === 'function') syncPlayerSkillSelects();
+    this.syncDifficultyButtons();
+
+    const latestIdx = Math.min(STORY_STAGES.length - 1, this.clearedStage);
+    this.selectedStageIdx = Math.max(0, latestIdx);
+
+    if (typeof onSkillToggleUiChange === 'function') {
+      onSkillToggleUiChange('story');
+    }
     if (typeof renderCharPicker === 'function') {
       renderCharPicker('story-char-picker', { storyOnly: true });
     }
     this.renderStageList();
   },
 
+  moveStageCarousel(delta) {
+    this.selectedStageIdx = (this.selectedStageIdx + delta + STORY_STAGES.length) % STORY_STAGES.length;
+    if (typeof SE !== 'undefined') SE.play('cursorMove');
+    this.renderStageList();
+  },
+
   renderStageList() {
-    const list = document.getElementById('story-stage-list');
-    if (!list) return;
-    list.innerHTML = '';
+    const container = document.getElementById('story-stage-carousel');
+    if (!container) return;
+    container.innerHTML = '';
+
     const diffKey = this.getDifficultyKey();
     const diffCleared = this.getClearedForDifficulty(diffKey);
+    if (this.selectedStageIdx < 0 || this.selectedStageIdx >= STORY_STAGES.length) {
+      this.selectedStageIdx = 0;
+    }
 
-    STORY_STAGES.forEach(st => {
-      const unlocked = st.id <= this.clearedStage + 1;
-      const isClearedThisDiff = st.id <= diffCleared;
-      const isClearedAny = st.id <= this.clearedStage;
-      const enemy = getCharacterById(st.enemyId);
-      const cfg = this.getStageConfig(st);
+    const st = STORY_STAGES[this.selectedStageIdx];
+    const unlocked = st.id <= this.clearedStage + 1;
+    const isClearedThisDiff = st.id <= diffCleared;
+    const isClearedAny = st.id <= this.clearedStage;
+    const enemy = getCharacterById(st.enemyId);
+    const cfg = this.getStageConfig(st);
 
-      const btn = document.createElement('button');
-      btn.className = 'story-stage-btn' + (isClearedThisDiff ? ' cleared' : '') + (!unlocked ? ' locked' : '');
-      btn.disabled = !unlocked;
-      btn.onclick = () => this.startStage(st.id);
+    let badge = 'LOCKED';
+    if (unlocked) {
+      if (isClearedThisDiff) badge = 'CLEAR!';
+      else if (isClearedAny) badge = cfg.useCheat ? 'SKILL' : 'OPEN';
+      else badge = cfg.useCheat ? 'NEW / SKILL' : 'NEW!';
+    }
+    const skillNote = cfg.useCheat
+      ? (cfg.skillType === 'smart_all' ? ' / Skill(全)' : ' / Skill(1種)')
+      : '';
 
-      let badge = 'LOCKED';
-      if (unlocked) {
-        if (isClearedThisDiff) badge = 'CLEAR!';
-        else if (isClearedAny) badge = cfg.useCheat ? 'SKILL' : 'OPEN';
-        else badge = cfg.useCheat ? 'NEW / SKILL' : 'NEW!';
-      }
+    const row = document.createElement('div');
+    row.className = 'carousel-row';
 
-      const skillNote = cfg.useCheat
-        ? (cfg.skillType === 'smart_all' ? ' / Skill(全)' : ' / Skill(1種)')
-        : '';
+    const prevBtn = document.createElement('button');
+    prevBtn.type = 'button';
+    prevBtn.className = 'carousel-arrow-btn';
+    prevBtn.innerText = '◀';
+    prevBtn.onclick = () => this.moveStageCarousel(-1);
 
-      btn.innerHTML = `
-        <div style="flex:1;">
-          <div style="font-weight:bold; color:${enemy.color};">${st.title}</div>
-          <div style="font-size:0.75rem; color:#aaa;">VS ${enemy.name} (Lv.${cfg.level}${skillNote})</div>
-        </div>
-        <span class="story-badge">${badge}</span>
-      `;
-      list.appendChild(btn);
+    const body = document.createElement('div');
+    body.className = 'carousel-body clickable';
+    if (!unlocked) body.style.opacity = '0.5';
+
+    const title = document.createElement('div');
+    title.className = 'carousel-title';
+    title.style.color = enemy.color;
+    title.innerText = st.title;
+
+    const sub = document.createElement('div');
+    sub.className = 'carousel-sub';
+    sub.innerHTML = `VS ${enemy.name} (Lv.${cfg.level}${skillNote}) <span class="story-badge">${badge}</span>`;
+
+    body.append(title, sub);
+    if (unlocked) {
+      body.onclick = () => this.startStage(st.id);
+    }
+
+    const nextBtn = document.createElement('button');
+    nextBtn.type = 'button';
+    nextBtn.className = 'carousel-arrow-btn';
+    nextBtn.innerText = '▶';
+    nextBtn.onclick = () => this.moveStageCarousel(1);
+
+    row.append(prevBtn, body, nextBtn);
+
+    const dots = document.createElement('div');
+    dots.className = 'carousel-dots';
+    STORY_STAGES.forEach((item, i) => {
+      const d = document.createElement('span');
+      d.className = 'carousel-dot' + (i === this.selectedStageIdx ? ' active' : '');
+      dots.appendChild(d);
     });
+
+    const startBtn = document.createElement('button');
+    startBtn.type = 'button';
+    startBtn.className = 'btn';
+    startBtn.style.minWidth = '180px';
+    startBtn.style.padding = '8px 18px';
+    startBtn.style.fontSize = '0.95rem';
+    startBtn.disabled = !unlocked;
+    startBtn.innerText = unlocked ? 'このステージを開始' : '前のステージをクリアで解放';
+    if (unlocked) {
+      startBtn.onclick = () => this.startStage(st.id);
+    }
+
+    container.append(row, dots, startBtn);
   },
 
   startStage(stageId) {

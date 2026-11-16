@@ -125,6 +125,24 @@ class PonEngine {
         this.shakeTimer = 6;
         anim.row++;
         anim.timer = anim.interval;
+      } else if (anim.row === this.rows) {
+        const gid = this.allocGroupId();
+        this.nextRow = [];
+        for (let c = 0; c < this.cols; c++) {
+          this.nextRow.push({
+            type: 'garbage',
+            state: 'normal',
+            fallY: 0,
+            timer: 0,
+            groupId: gid,
+            isHard: true,
+            particleTimer: 18
+          });
+        }
+        SE.play('falledBlock');
+        this.shakeTimer = 6;
+        anim.row++;
+        anim.timer = anim.interval;
       } else {
         anim.done = true;
         const cb = anim.onComplete;
@@ -519,6 +537,10 @@ class PonEngine {
           const b = this.grid[r][c];
           if (b && b.particleTimer > 0) b.particleTimer--;
         }
+      }
+      for (let c = 0; c < this.cols; c++) {
+        const nb = this.nextRow[c];
+        if (nb && nb.particleTimer > 0) nb.particleTimer--;
       }
       this.updateEndAnim();
       return;
@@ -1233,17 +1255,45 @@ class BoardRenderer {
       if (b) {
         const x = c * CELL_PX;
         const y = engine.rows * CELL_PX - offsetY;
-        const conf = COLORS.find(item => item.id === b.type);
-        if (conf) {
-          ctx.globalAlpha = 0.35; 
-          ctx.fillStyle = conf.bg;
-          ctx.beginPath(); ctx.roundRect(x+2, y+2, CELL_PX-4, CELL_PX-4, 8); ctx.fill();
-          ctx.fillStyle = conf.textColor || '#fff'; 
-          ctx.font = 'bold 16px sans-serif'; 
-          ctx.textAlign = 'center'; 
-          ctx.textBaseline = 'middle'; 
-          ctx.fillText(conf.symbol, x+CELL_PX/2, y+CELL_PX/2);
-          ctx.globalAlpha = 1.0;  
+        if (b.type === 'garbage') {
+          ctx.fillStyle = b.isHard ? '#a8b2bd' : '#5c636a';
+          ctx.fillRect(x, y, CELL_PX, CELL_PX);
+          ctx.strokeStyle = '#dee2e6'; ctx.lineWidth = 2;
+          const sameLeft = b.groupId && c > 0 && engine.nextRow[c-1] && engine.nextRow[c-1].groupId === b.groupId;
+          const sameRight = b.groupId && c < engine.cols-1 && engine.nextRow[c+1] && engine.nextRow[c+1].groupId === b.groupId;
+          ctx.beginPath();
+          ctx.moveTo(x, y+1); ctx.lineTo(x+CELL_PX, y+1);
+          ctx.moveTo(x, y+CELL_PX-1); ctx.lineTo(x+CELL_PX, y+CELL_PX-1);
+          if (!sameLeft) { ctx.moveTo(x+1, y); ctx.lineTo(x+1, y+CELL_PX); }
+          if (!sameRight) { ctx.moveTo(x+CELL_PX-1, y); ctx.lineTo(x+CELL_PX-1, y+CELL_PX); }
+          ctx.stroke();
+          if (b.isHard) {
+            ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+            ctx.moveTo(x + CELL_PX * 0.25, y + CELL_PX * 0.25);
+            ctx.lineTo(x + CELL_PX * 0.75, y + CELL_PX * 0.75);
+            ctx.moveTo(x + CELL_PX * 0.75, y + CELL_PX * 0.25);
+            ctx.lineTo(x + CELL_PX * 0.25, y + CELL_PX * 0.75);
+            ctx.stroke();
+          }
+          if (b.particleTimer > 0) {
+            ctx.fillStyle = `rgba(255, 255, 255, ${b.particleTimer / 35})`;
+            ctx.fillRect(x, y, CELL_PX, CELL_PX);
+          }
+        } else {
+          const conf = COLORS.find(item => item.id === b.type);
+          if (conf) {
+            ctx.globalAlpha = 0.35; 
+            ctx.fillStyle = conf.bg;
+            ctx.beginPath(); ctx.roundRect(x+2, y+2, CELL_PX-4, CELL_PX-4, 8); ctx.fill();
+            ctx.fillStyle = conf.textColor || '#fff'; 
+            ctx.font = 'bold 16px sans-serif'; 
+            ctx.textAlign = 'center'; 
+            ctx.textBaseline = 'middle'; 
+            ctx.fillText(conf.symbol, x+CELL_PX/2, y+CELL_PX/2);
+            ctx.globalAlpha = 1.0;  
+          }
         }
       }
     }

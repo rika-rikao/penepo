@@ -367,20 +367,35 @@ const StoryManager = {
     }
 
     const useCustom = (charId === 'main00' && this.isCustomSelected());
-    const ch = getCharacterById(useCustom ? 'custom' : charId);
+    const targetCharId = useCustom ? 'custom' : charId;
+    const ch = getCharacterById(targetCharId);
     slot.innerHTML = '';
     const img = document.createElement('img');
     img.className = 'story-portrait-img';
-    img.src = ch.file;
     img.alt = ch.name;
-    img.onload = () => {
-      if (img.naturalHeight <= img.naturalWidth * 1.05) {
-        img.classList.add('square-or-wide');
-      }
-    };
-    img.onerror = () => {
-      slot.innerHTML = `<div class="story-fallback-card" style="background:${ch.color};">${ch.name}</div>`;
-    };
+
+    if (typeof applyCharacterImageToElement === 'function') {
+      applyCharacterImageToElement(img, targetCharId, 'normal', {
+        onLoad: (el) => {
+          if (el.naturalHeight <= el.naturalWidth * 1.05) {
+            el.classList.add('square-or-wide');
+          }
+        },
+        onError: () => {
+          slot.innerHTML = `<div class="story-fallback-card" style="background:${ch.color};">${ch.name}</div>`;
+        }
+      });
+    } else {
+      img.src = ch.file;
+      img.onload = () => {
+        if (img.naturalHeight <= img.naturalWidth * 1.05) {
+          img.classList.add('square-or-wide');
+        }
+      };
+      img.onerror = () => {
+        slot.innerHTML = `<div class="story-fallback-card" style="background:${ch.color};">${ch.name}</div>`;
+      };
+    }
     slot.appendChild(img);
   },
 

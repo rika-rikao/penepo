@@ -199,8 +199,14 @@ function renderSharePrepSide(playerNum) {
       thumb.innerHTML = `<span class="char-icon-random" style="font-size:1.1rem;">？</span>`;
     } else {
       const img = document.createElement('img');
-      img.src = (cid === 'custom' && CustomAssets.chara) ? CustomAssets.chara.dataUrl : ch.file;
       img.alt = ch.name;
+      if (cid === 'custom' && CustomAssets.chara) {
+        img.src = CustomAssets.chara.dataUrl;
+      } else if (typeof applyCharacterImageToElement === 'function') {
+        applyCharacterImageToElement(img, cid === 'custom' ? 'main00' : cid, 'normal');
+      } else {
+        img.src = ch.file;
+      }
       thumb.appendChild(img);
     }
     const nm = document.createElement('div');
@@ -789,16 +795,53 @@ function buildBattleEndPortraitDom(wrapEl, theme, isWin) {
   if (!wrapEl) return;
   wrapEl.innerHTML = '';
   wrapEl.classList.toggle('lose', !isWin);
-  if (theme && theme.charSrc) {
-    const img = document.createElement('img');
-    img.className = 'battle-end-portrait-img';
+
+  const showFallbackCard = () => {
+    wrapEl.innerHTML = `<div class="story-fallback-card" style="background:${theme?.color || '#334155'};">${theme?.name || ''}</div>`;
+  };
+
+  if (!theme) {
+    showFallbackCard();
+    return;
+  }
+
+  const img = document.createElement('img');
+  img.className = 'battle-end-portrait-img';
+  img.alt = theme.name || '';
+  const handleLoad = (el) => {
+    if (el.naturalHeight <= el.naturalWidth * 1.05) el.classList.add('square-or-wide');
+  };
+
+  if (theme.charId === 'custom') {
+    if (theme.charSrc) {
+      img.onload = () => handleLoad(img);
+      img.onerror = showFallbackCard;
+      img.src = theme.charSrc;
+      wrapEl.appendChild(img);
+    } else {
+      showFallbackCard();
+    }
+    return;
+  }
+
+  if (theme.charId && typeof applyCharacterImageToElement === 'function') {
+    const variant = isWin ? 'normal' : 'lose';
+    applyCharacterImageToElement(img, theme.charId, variant, {
+      fallbackToNormal: true,
+      onLoad: handleLoad,
+      onError: showFallbackCard
+    });
+    wrapEl.appendChild(img);
+    return;
+  }
+
+  if (theme.charSrc) {
+    img.onload = () => handleLoad(img);
+    img.onerror = showFallbackCard;
     img.src = theme.charSrc;
-    img.alt = theme.name || '';
-    img.onload = () => { if (img.naturalHeight <= img.naturalWidth * 1.05) img.classList.add('square-or-wide'); };
-    img.onerror = () => { wrapEl.innerHTML = `<div class="story-fallback-card" style="background:${theme.color || '#334155'};">${theme.name || ''}</div>`; };
     wrapEl.appendChild(img);
   } else {
-    wrapEl.innerHTML = `<div class="story-fallback-card" style="background:${theme?.color || '#334155'};">${theme?.name || ''}</div>`;
+    showFallbackCard();
   }
 }
 
@@ -1062,7 +1105,7 @@ function clearReadyGoTimers() {
   const overlay = document.getElementById('ready-go-overlay');
   if (overlay) overlay.style.display = 'none';
   const countEl = document.getElementById('ready-countdown-text');
-  if (countEl) { countEl.style.display = 'none'; countEl.opacity = '0'; countEl.innerText = ''; }
+  if (countEl) { countEl.style.display = 'none'; countEl.style.opacity = '0'; countEl.innerText = ''; }
 }
 
 function animateReadySubCountdown(countEl, num) {
@@ -1168,8 +1211,19 @@ function showHeaderCutinById(boxId, theme, text, accentColor = '#ffd700') {
   const nameEl = box.querySelector('.header-cutin-name');
   const textEl = box.querySelector('.header-cutin-text');
   if (!img || !nameEl || !textEl) return;
-  if (theme && theme.charSrc) { img.src = theme.charSrc; img.style.display = 'block'; }
-  else img.style.display = 'none';
+
+  if (theme && theme.charId && theme.charId !== 'custom' && typeof applyCharacterImageToElement === 'function') {
+    img.style.display = 'block';
+    applyCharacterImageToElement(img, theme.charId, 'normal', {
+      onError: () => { img.style.display = 'none'; }
+    });
+  } else if (theme && theme.charSrc) {
+    img.src = theme.charSrc;
+    img.style.display = 'block';
+  } else {
+    img.style.display = 'none';
+  }
+
   box.style.borderColor = (theme && theme.color) ? theme.color : '#ffd700';
   nameEl.innerText = (theme && theme.name) ? theme.name : 'YOU';
   textEl.innerText = text;

@@ -1,15 +1,17 @@
 // ==========================================
 // キャラクター定義 & アイコン選択 & スキルカルーセル & カスタム画像・ボイス・SE・ZIP一括読込 & 描画補助
 // ==========================================
+const IMG_EXTS = ['png', 'webp', 'gif', 'jpg', 'jpeg'];
+
 const CHARACTERS = [
-  { id: 'main00', name: 'フレア',   role: 'main',  file: 'assets/img/chara/main00.png',  color: '#ff3366' },
-  { id: 'sub01',  name: 'しずく',   role: 'sub',   file: 'assets/img/chara/sub01.png',   color: '#00d4ff' },
-  { id: 'sub02',  name: 'シルル',   role: 'sub',   file: 'assets/img/chara/sub02.png',   color: '#00e676' },
-  { id: 'sub03',  name: 'ブープル', role: 'sub',   file: 'assets/img/chara/sub03.png',   color: '#a855f7' },
-  { id: 'enemy01',name: 'ゴースト', role: 'enemy', file: 'assets/img/chara/enemy01.png', color: '#9d00ff' },
-  { id: 'enemy02',name: 'コーレム', role: 'enemy', file: 'assets/img/chara/enemy02.png', color: '#ff9100' },
-  { id: 'enemy03',name: 'デビビ',   role: 'enemy', file: 'assets/img/chara/enemy03.png', color: '#e94560' },
-  { id: 'enemy04',name: 'マーオ',   role: 'enemy', file: 'assets/img/chara/enemy04.png', color: '#ff007f' }
+  { id: 'main00', name: 'フレア',   role: 'main',  file: 'assets/img/chara/nomal/フレア.png',   color: '#ff3366' },
+  { id: 'sub01',  name: 'しずく',   role: 'sub',   file: 'assets/img/chara/nomal/しずく.png',   color: '#00d4ff' },
+  { id: 'sub02',  name: 'シルル',   role: 'sub',   file: 'assets/img/chara/nomal/シルル.png',   color: '#00e676' },
+  { id: 'sub03',  name: 'ブープル', role: 'sub',   file: 'assets/img/chara/nomal/ブープル.png', color: '#a855f7' },
+  { id: 'enemy01',name: 'ゴースト', role: 'enemy', file: 'assets/img/chara/nomal/ゴースト.png', color: '#9d00ff' },
+  { id: 'enemy02',name: 'コーレム', role: 'enemy', file: 'assets/img/chara/nomal/コーレム.png', color: '#ff9100' },
+  { id: 'enemy03',name: 'デビビ',   role: 'enemy', file: 'assets/img/chara/nomal/デビビ.png',   color: '#e94560' },
+  { id: 'enemy04',name: 'マーオ',   role: 'enemy', file: 'assets/img/chara/nomal/マーオ.png',   color: '#ff007f' }
 ];
 
 // 2・3・3・2 のアイコン配置定義
@@ -28,6 +30,8 @@ const SKILL_DESCRIPTIONS = {
 };
 
 const AssetCache = new Map();
+const ResolvedCharImgCache = {}; // { 'normal::フレア': url | null, 'lose::フレア': url | null }
+const ResolvingCharImgMap = {};  // { 'normal::フレア': Promise<string|null> }
 const CustomAssets = { chara: null, bg: null, frame: null };
 let selectedCharId = localStorage.getItem('pdw_char_id') || 'main00';
 let storySelectedCharId = localStorage.getItem('pdw_story_char_id') || (selectedCharId === 'custom' ? 'custom' : 'main00');
@@ -55,11 +59,12 @@ function onPlayerNameInput(val) {
 
 function getCharacterById(id) {
   if (id === 'custom') {
+    const fallbackNormal = ResolvedCharImgCache['normal::フレア'] || CHARACTERS[0].file;
     return {
       id: 'custom',
       name: getPlayerDisplayName(),
       role: 'custom',
-      file: CustomAssets.chara ? CustomAssets.chara.dataUrl : 'assets/img/chara/main00.png',
+      file: CustomAssets.chara ? CustomAssets.chara.dataUrl : fallbackNormal,
       color: '#4ecca3'
     };
   }
@@ -87,6 +92,135 @@ function resolvePlayableCharId(charId) {
   return charId || 'main00';
 }
 
+function buildCharImageCandidates(variant, charName) {
+  if (!charName) return [];
+  const isFileProto = (location.protocol === 'file:');
+  const safeName = isFileProto ? charName : encodeURIComponent(charName);
+  if (variant === 'lose') {
+    const safeLoseName = isFileProto ? `${charName}_lose` : encodeURIComponent(`${charName}_lose`);
+    return [
+      ...IMG_EXTS.map(ext => `assets/img/chara/lose/${safeLoseName}.${ext}`),
+      ...IMG_EXTS.map(ext => `assets/chara/lose/${safeLoseName}.${ext}`)
+    ];
+  }
+  return [
+    ...IMG_EXTS.map(ext => `assets/img/chara/nomal/${safeName}.${ext}`),
+    ...IMG_EXTS.map(ext => `assets/img/chara/normal/${safeName}.${ext}`)
+  ];
+}
+
+function probeCharImageUrl(url) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      AssetCache.set(url, { img, loaded: true, error: false });
+      resolve(true);
+    };
+    img.onerror = () => {
+      resolve(false);
+    };
+    img.src = url;
+  });
+}
+
+function resolveCharacterImage(variant, charName) {
+  if (!charName) return Promise.resolve(null);
+  const cacheKey = `${variant}::${charName}`;
+  if (Object.prototype.hasOwnProperty.call(ResolvedCharImgCache, cacheKey)) {
+    return Promise.resolve(ResolvedCharImgCache[cacheKey]);
+  }
+  if (ResolvingCharImgMap[cacheKey]) {
+    return ResolvingCharImgMap[cacheKey];
+  }
+
+  const candidates = buildCharImageCandidates(variant, charName);
+  const task = (async () => {
+    for (const url of candidates) {
+      const ok = await probeCharImageUrl(url);
+      if (ok) {
+        ResolvedCharImgCache[cacheKey] = url;
+        if (variant === 'normal') {
+          const ch = CHARACTERS.find(c => c.name === charName);
+          if (ch) ch.file = url;
+        }
+        return url;
+      }
+    }
+    ResolvedCharImgCache[cacheKey] = null;
+    return null;
+  })().finally(() => {
+    delete ResolvingCharImgMap[cacheKey];
+  });
+
+  ResolvingCharImgMap[cacheKey] = task;
+  return task;
+}
+
+function applyCharacterImageToElement(imgEl, charId, variant = 'normal', options = {}) {
+  if (!imgEl) return;
+  const fallbackToNormal = options.fallbackToNormal !== false;
+  const reqToken = String((parseInt(imgEl.dataset.charImgReq || '0', 10) || 0) + 1);
+  imgEl.dataset.charImgReq = reqToken;
+
+  const applyOrientationAndLoad = (url) => {
+    if (imgEl.dataset.charImgReq !== reqToken) return;
+    imgEl.onload = () => {
+      if (imgEl.dataset.charImgReq !== reqToken) return;
+      if (typeof options.onLoad === 'function') options.onLoad(imgEl);
+    };
+    imgEl.onerror = () => {
+      if (imgEl.dataset.charImgReq !== reqToken) return;
+      if (typeof options.onError === 'function') options.onError(imgEl);
+    };
+    imgEl.src = url;
+  };
+
+  if (charId === 'custom') {
+    if (options.customUrl) {
+      applyOrientationAndLoad(options.customUrl);
+      return;
+    }
+    if (CustomAssets.chara && CustomAssets.chara.dataUrl) {
+      applyOrientationAndLoad(CustomAssets.chara.dataUrl);
+      return;
+    }
+    charId = 'main00';
+  }
+
+  const ch = getCharacterById(charId);
+  const charName = ch ? ch.name : '';
+  if (!charName) {
+    if (typeof options.onError === 'function') options.onError(imgEl);
+    return;
+  }
+
+  const cacheKey = `${variant}::${charName}`;
+  if (Object.prototype.hasOwnProperty.call(ResolvedCharImgCache, cacheKey)) {
+    const resolved = ResolvedCharImgCache[cacheKey];
+    if (resolved) {
+      applyOrientationAndLoad(resolved);
+      return;
+    }
+    if (variant === 'lose' && fallbackToNormal) {
+      applyCharacterImageToElement(imgEl, charId, 'normal', options);
+      return;
+    }
+    if (typeof options.onError === 'function') options.onError(imgEl);
+    return;
+  }
+
+  resolveCharacterImage(variant, charName).then((url) => {
+    if (imgEl.dataset.charImgReq !== reqToken) return;
+    if (url) {
+      applyOrientationAndLoad(url);
+    } else if (variant === 'lose' && fallbackToNormal) {
+      applyCharacterImageToElement(imgEl, charId, 'normal', options);
+    } else if (typeof options.onError === 'function') {
+      options.onError(imgEl);
+    }
+  });
+}
+
 function getCachedImage(src) {
   if (!src) return null;
   if (AssetCache.has(src)) {
@@ -101,8 +235,31 @@ function getCachedImage(src) {
   return null;
 }
 
+function getThemeNormalImage(theme) {
+  if (!theme) return null;
+  if (theme.charId && theme.charId !== 'custom' && theme.voiceName) {
+    const key = `normal::${theme.voiceName}`;
+    if (Object.prototype.hasOwnProperty.call(ResolvedCharImgCache, key)) {
+      const resolved = ResolvedCharImgCache[key];
+      if (resolved) {
+        if (theme.charSrc !== resolved) theme.charSrc = resolved;
+        return getCachedImage(resolved);
+      }
+      return null;
+    }
+    resolveCharacterImage('normal', theme.voiceName).then((url) => {
+      if (url) theme.charSrc = url;
+    });
+    return null;
+  }
+  return theme.charSrc ? getCachedImage(theme.charSrc) : null;
+}
+
 function preloadDefaultCharImages() {
-  CHARACTERS.forEach(c => getCachedImage(c.file));
+  CHARACTERS.forEach(c => {
+    resolveCharacterImage('normal', c.name);
+    resolveCharacterImage('lose', c.name);
+  });
 }
 
 // --- バストアップアイコン選択GUI（ストーリー時はフレアとマイ立ち絵のみ表示） ---
@@ -162,15 +319,15 @@ function renderCharPicker(containerId, options = {}) {
       } else {
         const img = document.createElement('img');
         img.className = 'char-icon-img';
+        img.alt = ch.name;
         if (cid === 'custom' && CustomAssets.chara) {
           img.src = CustomAssets.chara.dataUrl;
           if (CustomAssets.chara.orientation === 'landscape') {
             img.classList.add('landscape-fit');
           }
         } else {
-          img.src = ch.file;
+          applyCharacterImageToElement(img, cid === 'custom' ? 'main00' : cid, 'normal');
         }
-        img.alt = ch.name;
         thumbWrap.appendChild(img);
       }
 
@@ -859,8 +1016,14 @@ async function handleCustomZipUpload(inputEl) {
 
 function buildThemeForCharacter(charId, customCharaDataUrl = null, includeMyGlobalBgFrame = true, customName = null, customFrameDataUrl = null) {
   const charDef = getCharacterById(charId);
-  const charSrc = customCharaDataUrl || charDef.file;
-  getCachedImage(charSrc);
+  let charSrc = customCharaDataUrl || charDef.file;
+  if (!customCharaDataUrl && charDef.id !== 'custom') {
+    const resolved = ResolvedCharImgCache[`normal::${charDef.name}`];
+    if (resolved) charSrc = resolved;
+    else if (resolved === undefined) resolveCharacterImage('normal', charDef.name);
+  }
+  if (charSrc) getCachedImage(charSrc);
+
   const bgSrc = includeMyGlobalBgFrame && CustomAssets.bg ? CustomAssets.bg.dataUrl : null;
   const frameSrc = customFrameDataUrl !== null
     ? customFrameDataUrl
@@ -935,17 +1098,15 @@ function drawBoardBgAddon(ctx, canvas, engine, renderer) {
     }
   }
 
-  if (theme.charSrc) {
-    const charImg = getCachedImage(theme.charSrc);
-    if (charImg) {
-      ctx.save();
-      ctx.globalAlpha = theme.bgSrc ? 0.65 : 0.75;
-      drawImageCover(ctx, charImg, 0, 0, W, H);
-      ctx.restore();
-    }
+  const charImg = getThemeNormalImage(theme);
+  if (charImg) {
+    ctx.save();
+    ctx.globalAlpha = theme.bgSrc ? 0.65 : 0.75;
+    drawImageCover(ctx, charImg, 0, 0, W, H);
+    ctx.restore();
   }
 
-  if (theme.bgSrc || theme.charSrc) {
+  if (theme.bgSrc || charImg) {
     ctx.fillStyle = 'rgba(0, 0, 0, 0.16)';
     ctx.fillRect(0, 0, W, H);
   }
@@ -973,21 +1134,19 @@ function drawBoardFgAddon(ctx, canvas, engine, renderer) {
     ctx.fillStyle = 'rgba(10, 15, 30, 0.86)';
     ctx.fillRect(0, bandY + 4, W, bandH - 8);
 
-    if (theme && theme.charSrc) {
-      const charImg = getCachedImage(theme.charSrc);
-      if (charImg) {
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect(0, bandY + 4, W, bandH - 8);
-        ctx.clip();
-        const iw = charImg.naturalWidth || charImg.width;
-        const ih = charImg.naturalHeight || charImg.height;
-        const cropH = ih > iw * 1.1 ? ih * 0.55 : ih;
-        const drawW = 88;
-        const drawH = drawW * (cropH / iw);
-        ctx.drawImage(charImg, 0, 0, iw, cropH, 6 + slideX, bandY + 4, drawW, drawH);
-        ctx.restore();
-      }
+    const charImg = getThemeNormalImage(theme);
+    if (charImg) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, bandY + 4, W, bandH - 8);
+      ctx.clip();
+      const iw = charImg.naturalWidth || charImg.width;
+      const ih = charImg.naturalHeight || charImg.height;
+      const cropH = ih > iw * 1.1 ? ih * 0.55 : ih;
+      const drawW = 88;
+      const drawH = drawW * (cropH / iw);
+      ctx.drawImage(charImg, 0, 0, iw, cropH, 6 + slideX, bandY + 4, drawW, drawH);
+      ctx.restore();
     }
 
     ctx.fillStyle = '#ffffff';

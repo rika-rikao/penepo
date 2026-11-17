@@ -21,6 +21,9 @@ class PonEngine {
     this.nextRow = []; 
     this.riseOffset = 0; 
     this.isPractice = false;
+    this.isSacrifice = false;
+    this.chainGraceTimer = 0;
+    this.chainGraceMax = 90;
     this.nextGroupId = 1;
     
     this.baseRiseSpeed = 0.0012 - (handicap - 3) * 0.0003;
@@ -47,6 +50,57 @@ class PonEngine {
     this.isRisingManualPad = false;
 
     this.initGrid(5);
+  }
+
+  getMaxDangerTimer() {
+    return this.isSacrifice ? 360 : 180;
+  }
+
+  setSacrifice(enabled) {
+    this.isSacrifice = !!enabled;
+    this.dangerTimer = this.getMaxDangerTimer();
+    this.chainGraceTimer = 0;
+  }
+
+  hasAnyMovingBlock() {
+    for (let r = 0; r < this.rows; r++) {
+      for (let c = 0; c < this.cols; c++) {
+        const b = this.grid[r][c];
+        if (b && (
+          b.state === 'match' ||
+          b.state === 'fall' ||
+          b.state === 'hover' ||
+          b.state === 'transforming' ||
+          b.state === 'transforming_wait' ||
+          b.state === 'transformed_wait'
+        )) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  finishChain() {
+    if (this.chain === 4) {
+      SE.play('fanfareMin');
+    } else if (this.chain === 5) {
+      SE.play('fanfareMid');
+    } else if (this.chain >= 6) {
+      SE.play('fanfareMax');
+    }
+
+    if (this.chain >= 2 && this.onChainEnd) {
+      this.onChainEnd(this.chain);
+    }
+
+    this.chain = 0;
+    this.chainGraceTimer = 0;
+    for (let r = 0; r < this.rows; r++) {
+      for (let c = 0; c < this.cols; c++) {
+        if (this.grid[r][c]) this.grid[r][c].chainEligible = false;
+      }
+    }
   }
 
   allocGroupId() {
@@ -245,6 +299,7 @@ class PonEngine {
        this.grid[r][c+1].swapAnim = { dir: 1, timer: 6 };
     }
 
+    // ブロック落下開始までの時間は通常状態（14フレーム）を維持
     if (this.grid[r][c] && r+1 < this.rows && this.grid[r+1][c] === null) { this.grid[r][c].state = 'hover'; this.grid[r][c].timer = 14; }
     if (this.grid[r][c+1] && r+1 < this.rows && this.grid[r+1][c+1] === null) { this.grid[r][c+1].state = 'hover'; this.grid[r][c+1].timer = 14; }
 
@@ -414,12 +469,16 @@ class PonEngine {
     this.checkMatches();
   }
 
-  addGarbage(w, h, isHard = false) { 
+  addGarbage(w, h, isHard = false, skipSacrificeMult = false) { 
     let adjustedH = h;
     if (this.handicap === 1) adjustedH = Math.floor(h * 1.5);
     else if (this.handicap === 2) adjustedH = Math.floor(h * 1.25);
     else if (this.handicap === 4) adjustedH = Math.ceil(h * 0.75);
     else if (this.handicap === 5) adjustedH = Math.ceil(h * 0.5);
+
+    if (this.isSacrifice && !skipSacrificeMult) {
+      adjustedH = Math.ceil(adjustedH * 1.2);
+    }
     
     if (adjustedH < 1) adjustedH = 1;
     this.garbageQueue.push({ w, h: adjustedH, delay: 150, isHard }); 
@@ -555,6 +614,15 @@ class PonEngine {
     }
     
     this.timeElapsed += deltaTime;
+
+    // スキル「代償」：5分（300,000ms）経過で自動敗北
+    if (this.isSacrifice && !this.isPractice && this.timeElapsed >= 300000 && !this.gameOver) {
+      this.gameOver = true;
+      this.startGameOverFillAnim();
+      if (this.onStateChange) this.onStateChange('gameover');
+      return;
+    }
+
     if (this.timeElapsed > 30000 && !this.keepSpeed) {
       this.riseSpeed = this.baseRiseSpeed * Math.pow(1.05, Math.floor((this.timeElapsed - 30000) / 20000));
     }
@@ -625,6 +693,7 @@ class PonEngine {
       }
     }
 
+    // ブロックの落下開始までの時間（hover）は常に通常通り維持
     transformGroups.forEach((blocks) => {
       const hasTransforming = blocks.some(b => b.state === 'transforming');
       if (!hasTransforming) {
@@ -720,7 +789,7 @@ class PonEngine {
         }
       }
     } else {
-      this.dangerTimer = 180;
+      this.dangerTimer = this.getMaxDangerTimer();
     }
 
     if (!isTopFilled && !garbageBlocked) {
@@ -748,7 +817,9 @@ class PonEngine {
             
             for (let ur = r - 1; ur >= 0; ur--) {
               const ub = this.grid[ur][c];
-              if (ub && ub.type !== 'garbage' && ub.state !== 'match') {
+              if (ub && ub.type !== 'garbage' && ub.state !== 'match'
+                  && !ub.transformGroupId
+                  && ub.state !== 'transforming' && ub.state !== 'transforming_wait' && ub.state !== 'transformed_wait') {
                 ub.state = 'hover';
                 ub.timer = 17;
                 ub.chainEligible = true;
@@ -884,7 +955,8 @@ class PonEngine {
           this.grid[r][c].state === 'match' ||
           this.grid[r][c].state === 'transforming' ||
           this.grid[r][c].state === 'transforming_wait' ||
-          this.grid[r][c].state === 'transformed_wait'
+          this.grid[r][c].state === 'transformed_wait' ||
+          this.grid[r][c].transformGroupId
         )) {
           r--;
         }
@@ -900,7 +972,8 @@ class PonEngine {
           let stack = [];
           let cur = r;
           while (cur >= 0 && this.grid[cur][c] && this.grid[cur][c].type !== 'garbage' && this.grid[cur][c].state !== 'match'
-                && this.grid[cur][c].state !== 'transforming' && this.grid[cur][c].state !== 'transforming_wait' && this.grid[cur][c].state !== 'transformed_wait') {
+                && this.grid[cur][c].state !== 'transforming' && this.grid[cur][c].state !== 'transforming_wait' && this.grid[cur][c].state !== 'transformed_wait'
+                && !this.grid[cur][c].transformGroupId) {
             stack.push({ r: cur, block: this.grid[cur][c] });
             cur--;
           }
@@ -961,6 +1034,16 @@ class PonEngine {
     }
 
     if (needsMatchCheck) this.checkMatches();
+
+    // 代償：盤面静止後も連鎖猶予時間（chainGraceTimer）が0になるまで連鎖判定を維持
+    if (this.isSacrifice && this.chain >= 1 && !this.hasAnyMovingBlock()) {
+      if (this.chainGraceTimer > 0) {
+        this.chainGraceTimer--;
+      }
+      if (this.chainGraceTimer <= 0) {
+        this.finishChain();
+      }
+    }
   }
 
   checkMatches() {
@@ -1002,6 +1085,10 @@ class PonEngine {
       let chainActive = false;
       let hasSpecial = false;
 
+      if (this.isSacrifice && this.chain >= 1 && this.chainGraceTimer > 0) {
+        chainActive = true;
+      }
+
       matchedPositions.forEach(pos => {
         const [r, c] = pos.split(',').map(Number);
         const block = this.grid[r][c];
@@ -1011,6 +1098,9 @@ class PonEngine {
       });
 
       if (chainActive) this.chain++; else this.chain = 1;
+      if (this.isSacrifice) {
+        this.chainGraceTimer = this.chainGraceMax;
+      }
 
       if (!this.popups) this.popups = [];
       const coordsArray = Array.from(matchedPositions);
@@ -1059,13 +1149,22 @@ class PonEngine {
       this.score += matchedPositions.size * 10 * this.chain;
 
       let totalBlocks = 0;
-      if (this.chain >= 2) {
-        totalBlocks += (this.chain - 1) * 6;
+      if (this.isSacrifice) {
+        if (this.chain >= 3) {
+          totalBlocks += (this.chain - 2) * 6;
+        }
+        if (matchedPositions.size === 5) totalBlocks += 3;
+        else if (matchedPositions.size === 6) totalBlocks += 4;
+        else if (matchedPositions.size >= 7) totalBlocks += 5;
+      } else {
+        if (this.chain >= 2) {
+          totalBlocks += (this.chain - 1) * 6;
+        }
+        if (matchedPositions.size === 4) totalBlocks += 3;
+        else if (matchedPositions.size === 5) totalBlocks += 4;
+        else if (matchedPositions.size === 6) totalBlocks += 5;
+        else if (matchedPositions.size >= 7) totalBlocks += 6;
       }
-      if (matchedPositions.size === 4) totalBlocks += 3;
-      else if (matchedPositions.size === 5) totalBlocks += 4;
-      else if (matchedPositions.size === 6) totalBlocks += 5;
-      else if (matchedPositions.size >= 7) totalBlocks += 6;
 
       if (hasSpecial) {
         totalBlocks += 6;
@@ -1081,36 +1180,17 @@ class PonEngine {
         this.onSimultaneousMatch(matchedPositions.size);
       }
     } else {
-      let isMoving = false;
-      for (let r = 0; r < this.rows; r++) {
-        for (let c = 0; c < this.cols; c++) {
-          const b = this.grid[r][c];
-          if (b && (b.state === 'match' || b.state === 'fall' || b.state === 'hover' || b.state === 'transforming' || b.state === 'transforming_wait' || b.state === 'transformed_wait')) isMoving = true;
+      if (!this.hasAnyMovingBlock()) {
+        if (this.isSacrifice && this.chain >= 1 && this.chainGraceTimer > 0) {
+          return;
         }
-      }
-      if (!isMoving) {
-        if (this.chain === 4) {
-           SE.play('fanfareMin');
-        } else if (this.chain === 5) {
-           SE.play('fanfareMid');
-        } else if (this.chain >= 6) {
-           SE.play('fanfareMax');
-        }
-
-        if (this.chain >= 2 && this.onChainEnd) {
-          this.onChainEnd(this.chain);
-        }
-
-        this.chain = 0;
-        for (let r = 0; r < this.rows; r++) {
-          for (let c = 0; c < this.cols; c++) if (this.grid[r][c]) this.grid[r][c].chainEligible = false;
-        }
+        this.finishChain();
       }
     }
   }
 }
 
-// --- 描画エンジン ---
+// --- 描画エンジン（追加素材なしで視認性・立体感＆4隅外飛び出しパーティクル＆代償赤黒オーラ強化） ---
 class BoardRenderer {
   constructor(canvasId) {
     this.canvas = document.getElementById(canvasId);
@@ -1119,11 +1199,235 @@ class BoardRenderer {
     this.canvas.height = ROWS * CELL_PX + CELL_PX * 0.75; 
     this.theme = null;
   }
+
+  drawSacrificeAura(ctx, engine) {
+    if (!engine.isSacrifice || engine.endAnim) return;
+    const W = this.canvas.width;
+    const H = this.canvas.height;
+    const t = Date.now() * 0.004;
+    const pulse = 0.5 + 0.5 * Math.sin(t);
+
+    ctx.save();
+    const edgeGrad = ctx.createRadialGradient(
+      W / 2, H / 2, W * 0.22,
+      W / 2, H / 2, Math.max(W, H) * 0.65
+    );
+    edgeGrad.addColorStop(0, 'rgba(0, 0, 0, 0)');
+    edgeGrad.addColorStop(0.65, `rgba(60, 0, 12, ${0.18 + pulse * 0.12})`);
+    edgeGrad.addColorStop(1, `rgba(185, 28, 28, ${0.38 + pulse * 0.18})`);
+    ctx.fillStyle = edgeGrad;
+    ctx.fillRect(0, 0, W, H);
+
+    for (let i = 0; i < 8; i++) {
+      const seed = i * 1.73;
+      const px = ((Math.sin(seed * 3.1 + t * 0.5) * 0.5 + 0.5) * (W - 16)) + 8;
+      const py = H - (((t * 38 + i * 54) % (H + 20)) - 10);
+      const rad = 3 + (i % 3) * 2;
+      ctx.fillStyle = i % 2 === 0 ? 'rgba(220, 38, 38, 0.32)' : 'rgba(20, 0, 5, 0.45)';
+      ctx.beginPath();
+      ctx.arc(px, py, rad, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // 連鎖猶予発動中は上端に薄いゴールドの猶予ゲージを表示
+    if (engine.chain >= 1 && engine.chainGraceTimer > 0 && !engine.hasAnyMovingBlock()) {
+      const ratio = Math.max(0, Math.min(1, engine.chainGraceTimer / (engine.chainGraceMax || 90)));
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+      ctx.fillRect(4, 3, W - 8, 4);
+      ctx.fillStyle = '#ffd700';
+      ctx.fillRect(4, 3, (W - 8) * ratio, 4);
+    }
+    ctx.restore();
+  }
+
+  drawPanelBlock(ctx, x, y, conf, isFlashing, bounceY = 0, isNextRow = false, matchTimer = 0) {
+    const pad = 2;
+    const bx = x + pad;
+    const by = y + pad;
+    const bw = CELL_PX - pad * 2;
+    const bh = CELL_PX - pad * 2;
+    const radius = 8;
+
+    ctx.save();
+    if (isNextRow) {
+      ctx.globalAlpha = 0.42;
+    }
+
+    if (matchTimer > 0 && matchTimer <= 12) {
+      const scale = 1.0 + (12 - matchTimer) * 0.014;
+      ctx.translate(x + CELL_PX / 2, y + CELL_PX / 2);
+      ctx.scale(scale, scale);
+      ctx.translate(-(x + CELL_PX / 2), -(y + CELL_PX / 2));
+    }
+
+    ctx.fillStyle = isFlashing ? '#94a3b8' : conf.bg;
+    ctx.beginPath();
+    ctx.roundRect(bx, by, bw, bh, radius);
+    ctx.fill();
+
+    if (!isFlashing) {
+      const topGrad = ctx.createLinearGradient(bx, by, bx, by + bh);
+      topGrad.addColorStop(0, 'rgba(255, 255, 255, 0.42)');
+      topGrad.addColorStop(0.42, 'rgba(255, 255, 255, 0.08)');
+      topGrad.addColorStop(0.55, 'rgba(0, 0, 0, 0.0)');
+      topGrad.addColorStop(1, 'rgba(0, 0, 0, 0.34)');
+      ctx.fillStyle = topGrad;
+      ctx.beginPath();
+      ctx.roundRect(bx, by, bw, bh, radius);
+      ctx.fill();
+
+      ctx.strokeStyle = conf.isSpecial ? 'rgba(0, 0, 0, 0.25)' : 'rgba(255, 255, 255, 0.36)';
+      ctx.lineWidth = 1.25;
+      ctx.beginPath();
+      ctx.roundRect(bx + 1.5, by + 1.5, bw - 3, bh - 3, Math.max(4, radius - 2));
+      ctx.stroke();
+    } else {
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.roundRect(bx + 1, by + 1, bw - 2, bh - 2, radius);
+      ctx.stroke();
+    }
+
+    if (isNextRow) {
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.28)';
+      ctx.beginPath();
+      ctx.roundRect(bx, by, bw, bh, radius);
+      ctx.fill();
+    }
+
+    const cx = x + CELL_PX / 2;
+    const cy = y + CELL_PX / 2 + bounceY;
+    ctx.font = 'bold 16px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    if (!isFlashing && !conf.isSpecial) {
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+      ctx.fillText(conf.symbol, cx, cy + 1.5);
+    }
+    ctx.fillStyle = isFlashing ? '#ffffff' : (conf.textColor || '#ffffff');
+    ctx.fillText(conf.symbol, cx, cy);
+
+    ctx.restore();
+  }
+
+  drawMatchParticles(ctx, engine, offsetY) {
+    const dirs = [[-1, -1], [1, -1], [-1, 1], [1, 1]];
+    for (let r = 0; r < engine.rows; r++) {
+      for (let c = 0; c < engine.cols; c++) {
+        const b = engine.grid[r][c];
+        if (!b || b.state !== 'match' || b.timer > 16 || b.timer <= 0) continue;
+
+        const p = (16 - b.timer) / 16;
+        const cx = c * CELL_PX + CELL_PX / 2;
+        const cy = r * CELL_PX - offsetY + (b.fallY * CELL_PX) + CELL_PX / 2;
+        const conf = b.type === 'garbage' ? null : COLORS.find(item => item.id === b.type);
+        const color = conf ? conf.bg : '#e2e8f0';
+
+        const dist = CELL_PX * 0.34 + p * (CELL_PX * 0.40);
+        const size = Math.max(2.0, (1 - p * 0.55) * 5.8);
+        const alpha = Math.max(0, 1 - p * 0.92);
+
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        dirs.forEach(([dx, dy]) => {
+          const px = cx + dx * dist;
+          const py = cy + dy * dist;
+
+          ctx.fillStyle = color;
+          ctx.beginPath();
+          ctx.moveTo(px, py - size);
+          ctx.lineTo(px + size, py);
+          ctx.lineTo(px, py + size);
+          ctx.lineTo(px - size, py);
+          ctx.closePath();
+          ctx.fill();
+
+          ctx.fillStyle = '#ffffff';
+          ctx.beginPath();
+          ctx.arc(px, py, size * 0.42, 0, Math.PI * 2);
+          ctx.fill();
+        });
+        ctx.restore();
+      }
+    }
+  }
+
+  drawGarbageCell(ctx, x, y, b, sameTop, sameBottom, sameLeft, sameRight) {
+    const isFlashing = (b.state === 'match' && Math.floor(b.timer / 4) % 2 === 0);
+    ctx.fillStyle = isFlashing ? '#ffffff' : (b.isHard ? '#a8b2bd' : '#5c636a');
+    ctx.fillRect(x, y, CELL_PX, CELL_PX);
+
+    if (!isFlashing) {
+      const gGrad = ctx.createLinearGradient(x, y, x, y + CELL_PX);
+      gGrad.addColorStop(0, 'rgba(255, 255, 255, 0.18)');
+      gGrad.addColorStop(0.5, 'rgba(255, 255, 255, 0.0)');
+      gGrad.addColorStop(1, 'rgba(0, 0, 0, 0.28)');
+      ctx.fillStyle = gGrad;
+      ctx.fillRect(x, y, CELL_PX, CELL_PX);
+    }
+
+    ctx.strokeStyle = '#dee2e6';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    if (!sameTop) { ctx.moveTo(x, y + 1); ctx.lineTo(x + CELL_PX, y + 1); }
+    if (!sameBottom) { ctx.moveTo(x, y + CELL_PX - 1); ctx.lineTo(x + CELL_PX, y + CELL_PX - 1); }
+    if (!sameLeft) { ctx.moveTo(x + 1, y); ctx.lineTo(x + 1, y + CELL_PX); }
+    if (!sameRight) { ctx.moveTo(x + CELL_PX - 1, y); ctx.lineTo(x + CELL_PX - 1, y + CELL_PX); }
+    ctx.stroke();
+
+    if (!isFlashing) {
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';
+      if (!sameTop && !sameLeft) { ctx.beginPath(); ctx.arc(x + 5, y + 5, 1.5, 0, Math.PI * 2); ctx.fill(); }
+      if (!sameTop && !sameRight) { ctx.beginPath(); ctx.arc(x + CELL_PX - 5, y + 5, 1.5, 0, Math.PI * 2); ctx.fill(); }
+      if (!sameBottom && !sameLeft) { ctx.beginPath(); ctx.arc(x + 5, y + CELL_PX - 5, 1.5, 0, Math.PI * 2); ctx.fill(); }
+      if (!sameBottom && !sameRight) { ctx.beginPath(); ctx.arc(x + CELL_PX - 5, y + CELL_PX - 5, 1.5, 0, Math.PI * 2); ctx.fill(); }
+    }
+
+    if (b.isHard) {
+      ctx.strokeStyle = 'rgba(15, 23, 42, 0.35)';
+      ctx.lineWidth = 5;
+      ctx.beginPath();
+      ctx.moveTo(x + CELL_PX * 0.25, y + CELL_PX * 0.25);
+      ctx.lineTo(x + CELL_PX * 0.75, y + CELL_PX * 0.75);
+      ctx.moveTo(x + CELL_PX * 0.75, y + CELL_PX * 0.25);
+      ctx.lineTo(x + CELL_PX * 0.25, y + CELL_PX * 0.75);
+      ctx.stroke();
+
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.45)';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(x + CELL_PX * 0.25, y + CELL_PX * 0.25);
+      ctx.lineTo(x + CELL_PX * 0.75, y + CELL_PX * 0.75);
+      ctx.moveTo(x + CELL_PX * 0.75, y + CELL_PX * 0.25);
+      ctx.lineTo(x + CELL_PX * 0.25, y + CELL_PX * 0.75);
+      ctx.stroke();
+    } else {
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.09)';
+      ctx.beginPath();
+      ctx.arc(x + CELL_PX / 2, y + CELL_PX / 2, CELL_PX / 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    if (b.state === 'transforming') {
+      if (b.transformDelay < 13) {
+        ctx.fillStyle = `rgba(255, 255, 255, ${(13 - b.transformDelay) / 13})`;
+        ctx.fillRect(x, y, CELL_PX, CELL_PX);
+      }
+    }
+
+    if (b.particleTimer > 0) {
+      ctx.fillStyle = `rgba(255, 255, 255, ${b.particleTimer / 35})`;
+      ctx.fillRect(x, y, CELL_PX, CELL_PX);
+    }
+  }
+
   draw(engine) {
     const ctx = this.ctx;
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     if (typeof drawBoardBgAddon === 'function') drawBoardBgAddon(ctx, this.canvas, engine, this);
-    
+    this.drawSacrificeAura(ctx, engine);
+
     ctx.save();
     if (engine.shakeTimer > 0) {
        engine.shakeTimer--;
@@ -1157,6 +1461,15 @@ class BoardRenderer {
        }
     }
 
+    if (isEnginePanic) {
+      const warnAlpha = 0.14 + Math.sin(Date.now() / 140) * 0.08;
+      const warnGrad = ctx.createLinearGradient(0, 0, 0, CELL_PX * 2.5);
+      warnGrad.addColorStop(0, `rgba(255, 0, 85, ${warnAlpha})`);
+      warnGrad.addColorStop(1, 'rgba(255, 0, 85, 0)');
+      ctx.fillStyle = warnGrad;
+      ctx.fillRect(0, 0, this.canvas.width, CELL_PX * 2.5);
+    }
+
     for (let r = 0; r < engine.rows; r++) {
       for (let c = 0; c < engine.cols; c++) {
         const b = engine.grid[r][c];
@@ -1184,123 +1497,68 @@ class BoardRenderer {
               ctx.strokeRect(x + shrink + 1, y + shrink + 1, CELL_PX - shrink * 2 - 2, CELL_PX - shrink * 2 - 2);
               ctx.restore();
             } else {
-              const isFlashing = (b.state === 'match' && Math.floor(b.timer / 4) % 2 === 0);
-              ctx.fillStyle = isFlashing ? '#ffffff' : (b.isHard ? '#a8b2bd' : '#5c636a'); 
-              ctx.fillRect(x, y, CELL_PX, CELL_PX);
-              ctx.strokeStyle = '#dee2e6'; ctx.lineWidth = 2;
-              
               const sameTop = b.groupId && r > 0 && engine.grid[r-1][c] && engine.grid[r-1][c].groupId === b.groupId;
               const sameBottom = b.groupId && r < engine.rows-1 && engine.grid[r+1][c] && engine.grid[r+1][c].groupId === b.groupId;
               const sameLeft = b.groupId && c > 0 && engine.grid[r][c-1] && engine.grid[r][c-1].groupId === b.groupId;
               const sameRight = b.groupId && c < engine.cols-1 && engine.grid[r][c+1] && engine.grid[r][c+1].groupId === b.groupId;
-
-              ctx.beginPath();
-              if (!sameTop) { ctx.moveTo(x, y+1); ctx.lineTo(x+CELL_PX, y+1); }
-              if (!sameBottom) { ctx.moveTo(x, y+CELL_PX-1); ctx.lineTo(x+CELL_PX, y+CELL_PX-1); }
-              if (!sameLeft) { ctx.moveTo(x+1, y); ctx.lineTo(x+1, y+CELL_PX); }
-              if (!sameRight) { ctx.moveTo(x+CELL_PX-1, y); ctx.lineTo(x+CELL_PX-1, y+CELL_PX); }
-              ctx.stroke();
-
-              if (b.isHard) {
-                ctx.strokeStyle = 'rgba(255,255,255,0.35)';
-                ctx.lineWidth = 4;
-                ctx.beginPath();
-                ctx.moveTo(x + CELL_PX * 0.25, y + CELL_PX * 0.25);
-                ctx.lineTo(x + CELL_PX * 0.75, y + CELL_PX * 0.75);
-                ctx.moveTo(x + CELL_PX * 0.75, y + CELL_PX * 0.25);
-                ctx.lineTo(x + CELL_PX * 0.25, y + CELL_PX * 0.75);
-                ctx.stroke();
-              } else {
-                ctx.fillStyle = 'rgba(255,255,255,0.08)';
-                ctx.beginPath(); ctx.arc(x+CELL_PX/2, y+CELL_PX/2, CELL_PX/4, 0, Math.PI*2); ctx.fill();
-              }
-
-              if (b.state === 'transforming') {
-                if (b.transformDelay < 13) {
-                  ctx.fillStyle = `rgba(255, 255, 255, ${(13 - b.transformDelay) / 13})`;
-                  ctx.fillRect(x, y, CELL_PX, CELL_PX);
-                }
-              }
-              
-              if (b.particleTimer > 0) {
-                ctx.fillStyle = `rgba(255, 255, 255, ${b.particleTimer / 35})`;
-                ctx.fillRect(x, y, CELL_PX, CELL_PX);
-              }
+              this.drawGarbageCell(ctx, x, y, b, sameTop, sameBottom, sameLeft, sameRight);
             }
           } else {
             const conf = COLORS.find(item => item.id === b.type);
             if (conf) {
               const isFlashing = (b.state === 'match' && Math.floor(b.timer / 4) % 2 === 0);
-              
               const isHighestCol = isEnginePanic && highestCols.has(c);
               const time = Date.now();
               const bounceY = isHighestCol ? Math.sin(time / 60 + c) * 3 : 0;
-
-              ctx.fillStyle = isFlashing ? '#6c757d' : conf.bg;
-              ctx.beginPath(); ctx.roundRect(x+2, y+2, CELL_PX-4, CELL_PX-4, 8); ctx.fill();
-              
-              ctx.fillStyle = isFlashing ? '#ffffff' : (conf.textColor || '#fff'); 
-              ctx.font = 'bold 16px sans-serif'; 
-              ctx.textAlign = 'center'; 
-              ctx.textBaseline = 'middle'; 
-              ctx.fillText(conf.symbol, x+CELL_PX/2, y+CELL_PX/2 + bounceY);
+              const matchTimer = (b.state === 'match') ? b.timer : 0;
+              this.drawPanelBlock(ctx, x, y, conf, isFlashing, bounceY, false, matchTimer);
             }
           }
         }
       }
     }
 
+    const nextRowY = engine.rows * CELL_PX - offsetY;
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.22)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, nextRowY);
+    ctx.lineTo(this.canvas.width, nextRowY);
+    ctx.stroke();
+
     for (let c = 0; c < engine.cols; c++) {
       const b = engine.nextRow[c];
       if (b) {
         const x = c * CELL_PX;
-        const y = engine.rows * CELL_PX - offsetY;
+        const y = nextRowY;
         if (b.type === 'garbage') {
-          ctx.fillStyle = b.isHard ? '#a8b2bd' : '#5c636a';
-          ctx.fillRect(x, y, CELL_PX, CELL_PX);
-          ctx.strokeStyle = '#dee2e6'; ctx.lineWidth = 2;
           const sameLeft = b.groupId && c > 0 && engine.nextRow[c-1] && engine.nextRow[c-1].groupId === b.groupId;
           const sameRight = b.groupId && c < engine.cols-1 && engine.nextRow[c+1] && engine.nextRow[c+1].groupId === b.groupId;
-          ctx.beginPath();
-          ctx.moveTo(x, y+1); ctx.lineTo(x+CELL_PX, y+1);
-          ctx.moveTo(x, y+CELL_PX-1); ctx.lineTo(x+CELL_PX, y+CELL_PX-1);
-          if (!sameLeft) { ctx.moveTo(x+1, y); ctx.lineTo(x+1, y+CELL_PX); }
-          if (!sameRight) { ctx.moveTo(x+CELL_PX-1, y); ctx.lineTo(x+CELL_PX-1, y+CELL_PX); }
-          ctx.stroke();
-          if (b.isHard) {
-            ctx.strokeStyle = 'rgba(255,255,255,0.35)';
-            ctx.lineWidth = 4;
-            ctx.beginPath();
-            ctx.moveTo(x + CELL_PX * 0.25, y + CELL_PX * 0.25);
-            ctx.lineTo(x + CELL_PX * 0.75, y + CELL_PX * 0.75);
-            ctx.moveTo(x + CELL_PX * 0.75, y + CELL_PX * 0.25);
-            ctx.lineTo(x + CELL_PX * 0.25, y + CELL_PX * 0.75);
-            ctx.stroke();
-          }
-          if (b.particleTimer > 0) {
-            ctx.fillStyle = `rgba(255, 255, 255, ${b.particleTimer / 35})`;
-            ctx.fillRect(x, y, CELL_PX, CELL_PX);
-          }
+          this.drawGarbageCell(ctx, x, y, b, false, false, sameLeft, sameRight);
         } else {
           const conf = COLORS.find(item => item.id === b.type);
           if (conf) {
-            ctx.globalAlpha = 0.35; 
-            ctx.fillStyle = conf.bg;
-            ctx.beginPath(); ctx.roundRect(x+2, y+2, CELL_PX-4, CELL_PX-4, 8); ctx.fill();
-            ctx.fillStyle = conf.textColor || '#fff'; 
-            ctx.font = 'bold 16px sans-serif'; 
-            ctx.textAlign = 'center'; 
-            ctx.textBaseline = 'middle'; 
-            ctx.fillText(conf.symbol, x+CELL_PX/2, y+CELL_PX/2);
-            ctx.globalAlpha = 1.0;  
+            this.drawPanelBlock(ctx, x, y, conf, false, 0, true, 0);
           }
         }
       }
     }
 
+    this.drawMatchParticles(ctx, engine, offsetY);
+
     if (!engine.endAnim) {
-      ctx.strokeStyle = '#fff'; ctx.lineWidth = 3;
-      ctx.strokeRect(engine.cursor.x * CELL_PX - 2, engine.cursor.y * CELL_PX - offsetY - 2, CELL_PX * 2 + 4, CELL_PX + 4);
+      const cx = engine.cursor.x * CELL_PX - 2;
+      const cy = engine.cursor.y * CELL_PX - offsetY - 2;
+      const cw = CELL_PX * 2 + 4;
+      const ch = CELL_PX + 4;
+      ctx.save();
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.6)';
+      ctx.lineWidth = 5;
+      ctx.strokeRect(cx, cy, cw, ch);
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2.5;
+      ctx.strokeRect(cx, cy, cw, ch);
+      ctx.restore();
     }
 
     if (engine.popups) {
@@ -1315,13 +1573,7 @@ class BoardRenderer {
         const floatY = progress * 22;
         ctx.globalAlpha = Math.max(0, p.timer / 15); 
         ctx.fillStyle = p.color || '#ffdf00'; 
-        
-        if (p.isNumber) {
-           ctx.font = 'bold 24px sans-serif';
-        } else {
-           ctx.font = 'bold 18px sans-serif'; 
-        }
-        
+        ctx.font = p.isNumber ? 'bold 24px sans-serif' : 'bold 18px sans-serif';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.lineWidth = 3;
@@ -1345,43 +1597,604 @@ class BoardRenderer {
   }
 }
 
-// --- COM(AI) エンジン ---
+// --- COM(AI) エンジン（盤面全体一括把握・最大5手先ビームサーチ・予告お邪魔把握・停止防止） ---
 class ComAI {
   constructor(engine, level, id) {
-    this.engine = engine; this.level = level; this.id = id;
+    this.engine = engine;
+    this.level = Math.max(1, Math.min(99, parseInt(level, 10) || 1));
+    this.id = id;
     this.target = null;
-    this.thinkInterval = Math.max(2, Math.floor(50 - level * 1.5));
-    this.moveInterval = Math.max(1, Math.floor(15 - level * 0.5));
+
+    if (this.level <= 50) {
+      this.thinkInterval = Math.max(2, Math.round(28 - ((this.level - 1) / 49) * 25));
+      this.moveInterval = Math.max(1, Math.round(8 - ((this.level - 1) / 49) * 6.5));
+    } else {
+      this.thinkInterval = Math.max(1, Math.round(3 - ((this.level - 50) / 49) * 2));
+      this.moveInterval = 1;
+    }
+
+    if (this.level <= 15) {
+      this.searchDepth = 1;
+      this.beamWidth = 5;
+    } else if (this.level <= 35) {
+      this.searchDepth = 2;
+      this.beamWidth = 7;
+    } else if (this.level <= 55) {
+      this.searchDepth = 3;
+      this.beamWidth = 10;
+    } else if (this.level <= 75) {
+      this.searchDepth = 4;
+      this.beamWidth = 12;
+    } else {
+      this.searchDepth = 5;
+      this.beamWidth = 14;
+    }
+
     this.actionTimer = this.thinkInterval;
     this.moveTimer = 0;
-    this.engine.baseRiseSpeed = 0.0010 + (level * 0.0001);
+
+    this.engine.baseRiseSpeed = 0.0009 + this.level * 0.000018;
     this.engine.riseSpeed = this.engine.baseRiseSpeed;
-    
+
+    this.riseTryProb = Math.min(0.98, 0.25 + (this.level / 50) * 0.65);
+    this.topChoiceNoise = Math.max(0, (45 - this.level) * 0.006);
+
     const patterns = ['small_chain', 'big_chain', 'multi_match', 'survival'];
     this.pattern = patterns[Math.floor(Math.random() * patterns.length)];
+
+    this.movePlan = [];
+    this.planSignature = '';
+    this.recentSwaps = [];
+    this.frameCount = 0;
+    this.risingTargetMaxH = 0;
+    this.riseCooldown = 0;
+  }
+
+  canSwapAt(r, c) {
+    const grid = this.engine.grid;
+    if (r < 0 || r >= ROWS || c < 0 || c >= COLS - 1) return false;
+    const b1 = grid[r][c];
+    const b2 = grid[r][c + 1];
+    if (!b1 && !b2) return false;
+    if (b1 && (b1.state !== 'normal' || b1.type === 'garbage')) return false;
+    if (b2 && (b2.state !== 'normal' || b2.type === 'garbage')) return false;
+    if (b1 && b2 && b1.type === b2.type) return false;
+    if (b1 && r < ROWS - 1 && grid[r + 1][c] === null) return false;
+    if (b2 && r < ROWS - 1 && grid[r + 1][c + 1] === null) return false;
+    return true;
+  }
+
+  captureSnapshot() {
+    const grid = this.engine.grid;
+    const board = new Int8Array(ROWS * COLS);
+    const locked = new Uint8Array(ROWS * COLS);
+    const colHeights = new Int8Array(COLS);
+    let maxH = 0;
+    let garbageCount = 0;
+    let sigParts = [];
+
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        const idx = r * COLS + c;
+        const b = grid[r][c];
+        if (!b) {
+          board[idx] = 0;
+          sigParts.push('0');
+        } else {
+          const h = ROWS - r;
+          if (h > colHeights[c]) colHeights[c] = h;
+          if (h > maxH) maxH = h;
+
+          if (b.type === 'garbage') {
+            board[idx] = b.isHard ? -2 : -1;
+            locked[idx] = 1;
+            garbageCount++;
+            sigParts.push(b.isHard ? 'H' : 'G');
+          } else {
+            board[idx] = b.type;
+            if (b.state !== 'normal' || b.transformGroupId) {
+              locked[idx] = 1;
+            }
+            sigParts.push(String(b.type));
+          }
+        }
+      }
+    }
+
+    let pendingGarbageH = 0;
+    let minGarbageDelay = 9999;
+    const q = this.engine.garbageQueue || [];
+    for (let i = 0; i < q.length; i++) {
+      const g = q[i];
+      pendingGarbageH += (g.w >= 4 ? g.h : Math.ceil(g.h * 0.6));
+      if (g.delay < minGarbageDelay) minGarbageDelay = g.delay;
+    }
+
+    const effMaxH = maxH + (minGarbageDelay <= 120 ? pendingGarbageH : Math.ceil(pendingGarbageH * 0.6));
+    const isPinch = (maxH >= 9)
+      || (effMaxH >= 10)
+      || (this.engine.dangerTimer < 165)
+      || (maxH >= 7 && pendingGarbageH >= 2 && minGarbageDelay <= 95);
+
+    return {
+      board,
+      locked,
+      colHeights,
+      maxH,
+      garbageCount,
+      pendingGarbageH,
+      minGarbageDelay,
+      effMaxH,
+      isPinch,
+      signature: sigParts.join('')
+    };
+  }
+
+  simApplySwap(boardIn, lockedIn, r, c) {
+    const idx1 = r * COLS + c;
+    const idx2 = idx1 + 1;
+    if (lockedIn && (lockedIn[idx1] || lockedIn[idx2])) return null;
+
+    const v1 = boardIn[idx1];
+    const v2 = boardIn[idx2];
+    if (v1 === 0 && v2 === 0) return null;
+    if (v1 < 0 || v2 < 0) return null;
+    if (v1 === v2) return null;
+    if (r < ROWS - 1) {
+      if (v1 > 0 && boardIn[(r + 1) * COLS + c] === 0) return null;
+      if (v2 > 0 && boardIn[(r + 1) * COLS + c + 1] === 0) return null;
+    }
+
+    const b = new Int8Array(boardIn);
+    b[idx1] = v2;
+    b[idx2] = v1;
+
+    let totalCleared = 0;
+    let maxChain = 0;
+    let totalSentEstimate = 0;
+    let garbageThawed = 0;
+    let hardGarbageHit = 0;
+    let specialCleared = 0;
+    let minClearedRow = ROWS;
+
+    for (let step = 0; step < 8; step++) {
+      let moved = true;
+      while (moved) {
+        moved = false;
+        for (let rr = ROWS - 2; rr >= 0; rr--) {
+          let cc = 0;
+          while (cc < COLS) {
+            const val = b[rr * COLS + cc];
+            if (val > 0) {
+              if (!lockedIn || !lockedIn[rr * COLS + cc]) {
+                if (b[(rr + 1) * COLS + cc] === 0) {
+                  b[(rr + 1) * COLS + cc] = val;
+                  b[rr * COLS + cc] = 0;
+                  moved = true;
+                }
+              }
+              cc++;
+            } else if (val < 0) {
+              let endC = cc + 1;
+              while (endC < COLS && b[rr * COLS + endC] < 0) endC++;
+              let canDrop = true;
+              for (let k = cc; k < endC; k++) {
+                if (b[(rr + 1) * COLS + k] !== 0) {
+                  canDrop = false;
+                  break;
+                }
+              }
+              if (canDrop) {
+                for (let k = cc; k < endC; k++) {
+                  b[(rr + 1) * COLS + k] = b[rr * COLS + k];
+                  b[rr * COLS + k] = 0;
+                }
+                moved = true;
+              }
+              cc = endC;
+            } else {
+              cc++;
+            }
+          }
+        }
+      }
+
+      const matched = new Uint8Array(ROWS * COLS);
+      let matchCount = 0;
+
+      for (let rr = 0; rr < ROWS; rr++) {
+        for (let cc = 0; cc < COLS - 2; cc++) {
+          const v = b[rr * COLS + cc];
+          if (v <= 0) continue;
+          if (lockedIn && step === 0 && lockedIn[rr * COLS + cc]) continue;
+          let len = 1;
+          while (cc + len < COLS && b[rr * COLS + cc + len] === v && !(lockedIn && step === 0 && lockedIn[rr * COLS + cc + len])) {
+            len++;
+          }
+          if (len >= 3) {
+            for (let k = 0; k < len; k++) matched[rr * COLS + cc + k] = 1;
+          }
+        }
+      }
+      for (let cc = 0; cc < COLS; cc++) {
+        for (let rr = 0; rr < ROWS - 2; rr++) {
+          const v = b[rr * COLS + cc];
+          if (v <= 0) continue;
+          if (lockedIn && step === 0 && lockedIn[rr * COLS + cc]) continue;
+          let len = 1;
+          while (rr + len < ROWS && b[(rr + len) * COLS + cc] === v && !(lockedIn && step === 0 && lockedIn[(rr + len) * COLS + cc])) {
+            len++;
+          }
+          if (len >= 3) {
+            for (let k = 0; k < len; k++) matched[(rr + k) * COLS + cc] = 1;
+          }
+        }
+      }
+
+      for (let i = 0; i < ROWS * COLS; i++) {
+        if (matched[i]) matchCount++;
+      }
+      if (matchCount === 0) break;
+
+      maxChain++;
+      totalCleared += matchCount;
+
+      if (maxChain >= 2) totalSentEstimate += 6;
+      if (matchCount === 4) totalSentEstimate += 3;
+      else if (matchCount === 5) totalSentEstimate += 4;
+      else if (matchCount === 6) totalSentEstimate += 5;
+      else if (matchCount >= 7) totalSentEstimate += 6;
+
+      const thawVisited = new Uint8Array(ROWS * COLS);
+      const thawQueue = [];
+      for (let rr = 0; rr < ROWS; rr++) {
+        for (let cc = 0; cc < COLS; cc++) {
+          const idx = rr * COLS + cc;
+          if (!matched[idx]) continue;
+          if (rr < minClearedRow) minClearedRow = rr;
+          if (b[idx] === 7) {
+            specialCleared++;
+            totalSentEstimate += 6;
+          }
+          b[idx] = 0;
+
+          const dirs = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+          for (let d = 0; d < 4; d++) {
+            const nr = rr + dirs[d][0];
+            const nc = cc + dirs[d][1];
+            if (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS) {
+              const nIdx = nr * COLS + nc;
+              if (b[nIdx] < 0 && !thawVisited[nIdx]) {
+                thawVisited[nIdx] = 1;
+                thawQueue.push(nIdx);
+              }
+            }
+          }
+        }
+      }
+
+      while (thawQueue.length > 0) {
+        const curIdx = thawQueue.shift();
+        const cr = Math.floor(curIdx / COLS);
+        const cc = curIdx % COLS;
+        if (b[curIdx] === -2) {
+          hardGarbageHit++;
+          b[curIdx] = -1;
+        } else if (b[curIdx] === -1) {
+          garbageThawed++;
+          b[curIdx] = 0;
+        }
+        const dirs = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+        for (let d = 0; d < 4; d++) {
+          const nr = cr + dirs[d][0];
+          const nc = cc + dirs[d][1];
+          if (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS) {
+            const nIdx = nr * COLS + nc;
+            if (b[nIdx] < 0 && !thawVisited[nIdx]) {
+              thawVisited[nIdx] = 1;
+              thawQueue.push(nIdx);
+            }
+          }
+        }
+      }
+
+      lockedIn = null;
+    }
+
+    return {
+      board: b,
+      cleared: totalCleared,
+      chain: maxChain,
+      sentEstimate: totalSentEstimate,
+      garbageThawed,
+      hardGarbageHit,
+      specialCleared,
+      minClearedRow
+    };
+  }
+
+  evaluateSimNode(board, accStats, snap) {
+    let maxH = 0;
+    let holes = 0;
+    let colHeights = new Int8Array(COLS);
+    let garbageRemaining = 0;
+
+    for (let c = 0; c < COLS; c++) {
+      let topSeen = false;
+      for (let r = 0; r < ROWS; r++) {
+        const v = board[r * COLS + c];
+        if (v !== 0) {
+          if (!topSeen) {
+            colHeights[c] = ROWS - r;
+            if (colHeights[c] > maxH) maxH = colHeights[c];
+            topSeen = true;
+          }
+          if (v < 0) garbageRemaining++;
+        } else if (topSeen) {
+          holes++;
+        }
+      }
+    }
+
+    let bumpiness = 0;
+    for (let c = 0; c < COLS - 1; c++) {
+      bumpiness += Math.abs(colHeights[c] - colHeights[c + 1]);
+    }
+
+    const pendingImpact = snap.minGarbageDelay <= 120 ? snap.pendingGarbageH : Math.ceil(snap.pendingGarbageH * 0.55);
+    const effH = maxH + pendingImpact;
+
+    let potential = 0;
+    for (let r = 0; r < ROWS; r++) {
+      const rowOffset = r * COLS;
+      const counts = [0, 0, 0, 0, 0, 0, 0, 0];
+      let hasGarbageRow = false;
+      for (let c = 0; c < COLS; c++) {
+        const v = board[rowOffset + c];
+        if (v > 0 && v <= 7) {
+          counts[v]++;
+          if (c + 1 < COLS && board[rowOffset + c + 1] === v) potential += 14;
+          if (r + 1 < ROWS && board[(r + 1) * COLS + c] === v) potential += 14;
+          if (r > 0 && board[(r - 1) * COLS + c] < 0) potential += 8;
+        } else if (v < 0) {
+          hasGarbageRow = true;
+        }
+      }
+      for (let colorId = 1; colorId <= 7; colorId++) {
+        if (counts[colorId] >= 3) {
+          potential += (counts[colorId] - 2) * (hasGarbageRow ? 34 : 22);
+        }
+      }
+    }
+
+    let score = 0;
+
+    if (effH >= 9) {
+      score -= (effH - 8) * 750;
+    } else if (maxH <= 6) {
+      score += 120;
+    }
+    const heightReduced = snap.maxH - maxH;
+    score += heightReduced * (snap.isPinch ? 260 : 65);
+    score -= bumpiness * (snap.isPinch ? 28 : 10);
+    score -= holes * 22;
+
+    score += accStats.sent * (snap.isPinch ? 65 : 135);
+    score += accStats.cleared * 48;
+    if (accStats.maxChain >= 2) {
+      score += accStats.maxChain * accStats.maxChain * (this.pattern === 'big_chain' ? 140 : 95);
+    }
+    score += accStats.special * 180;
+
+    score += accStats.garbageThawed * (snap.isPinch ? 190 : 125);
+    score += accStats.hardGarbageHit * 95;
+    if (snap.garbageCount > 0 && garbageRemaining < snap.garbageCount) {
+      score += (snap.garbageCount - garbageRemaining) * 45;
+    }
+
+    score += potential;
+    score -= accStats.steps * 18;
+
+    return score;
+  }
+
+  runBeamSearch(snap) {
+    const startTime = performance.now();
+    const maxDepth = this.searchDepth;
+    const beamWidth = this.beamWidth;
+    const MAX_NODES = 280;
+    let expandedNodes = 0;
+
+    const baseStats = { cleared: 0, sent: 0, maxChain: 0, garbageThawed: 0, hardGarbageHit: 0, special: 0, steps: 0 };
+    const baseEval = this.evaluateSimNode(snap.board, baseStats, snap);
+
+    let beam = [{
+      board: snap.board,
+      locked: snap.locked,
+      moves: [],
+      acc: baseStats,
+      score: baseEval,
+      firstClearedStep: -1
+    }];
+
+    let bestClearNode = null;
+    let bestPrepNode = null;
+
+    for (let depth = 0; depth < maxDepth; depth++) {
+      const nextCandidates = [];
+      const seenBoards = new Set();
+
+      for (let bi = 0; bi < beam.length; bi++) {
+        const node = beam[bi];
+        if (performance.now() - startTime > 3.8 || expandedNodes >= MAX_NODES) break;
+
+        const prevMove = node.moves.length > 0 ? node.moves[node.moves.length - 1] : null;
+
+        for (let r = 0; r < ROWS; r++) {
+          for (let c = 0; c < COLS - 1; c++) {
+            if (prevMove && prevMove.x === c && prevMove.y === r) continue;
+            if (depth === 0 && this.isSwapRecentlyDone(r, c)) continue;
+
+            const res = this.simApplySwap(node.board, node.locked, r, c);
+            if (!res) continue;
+
+            expandedNodes++;
+            const nextMoves = node.moves.concat([{ x: c, y: r }]);
+            const nextAcc = {
+              cleared: node.acc.cleared + res.cleared,
+              sent: node.acc.sent + res.sentEstimate,
+              maxChain: Math.max(node.acc.maxChain, res.chain),
+              garbageThawed: node.acc.garbageThawed + res.garbageThawed,
+              hardGarbageHit: node.acc.hardGarbageHit + res.hardGarbageHit,
+              special: node.acc.special + res.specialCleared,
+              steps: nextMoves.length
+            };
+
+            const evalScore = this.evaluateSimNode(res.board, nextAcc, snap);
+            const firstClearedStep = node.firstClearedStep !== -1
+              ? node.firstClearedStep
+              : (res.cleared > 0 ? nextMoves.length : -1);
+
+            let finalScore = evalScore;
+            if (res.cleared > 0 && snap.isPinch) {
+              finalScore += (ROWS - res.minClearedRow) * 55 - nextMoves.length * 40;
+            }
+            if (depth === 0) {
+              const dist = Math.abs(this.engine.cursor.x - c) + Math.abs(this.engine.cursor.y - r);
+              finalScore -= dist * 2;
+            }
+
+            const childNode = {
+              board: res.board,
+              locked: null,
+              moves: nextMoves,
+              acc: nextAcc,
+              score: finalScore,
+              firstClearedStep
+            };
+
+            if (nextAcc.cleared > 0) {
+              if (!bestClearNode || childNode.score > bestClearNode.score) {
+                bestClearNode = childNode;
+              }
+            } else {
+              if (!bestPrepNode || childNode.score > bestPrepNode.score) {
+                bestPrepNode = childNode;
+              }
+            }
+
+            if (depth + 1 < maxDepth && res.cleared === 0) {
+              const key = childNode.board.join(',');
+              if (!seenBoards.has(key)) {
+                seenBoards.add(key);
+                nextCandidates.push(childNode);
+              }
+            }
+          }
+        }
+      }
+
+      if (nextCandidates.length === 0 || performance.now() - startTime > 3.8 || expandedNodes >= MAX_NODES) {
+        break;
+      }
+      nextCandidates.sort((a, b) => b.score - a.score);
+      beam = nextCandidates.slice(0, beamWidth);
+    }
+
+    if (bestClearNode && bestClearNode.moves.length > 0) {
+      return { type: 'clear', moves: bestClearNode.moves, score: bestClearNode.score };
+    }
+    if (bestPrepNode && bestPrepNode.score > baseEval + 12 && bestPrepNode.moves.length > 0) {
+      return { type: 'prep', moves: [bestPrepNode.moves[0]], score: bestPrepNode.score };
+    }
+    return null;
+  }
+
+  isSwapRecentlyDone(r, c) {
+    return this.recentSwaps.some(item => item.r === r && item.c === c && item.expire > this.frameCount);
+  }
+
+  recordSwap(r, c) {
+    this.recentSwaps.push({ r, c, expire: this.frameCount + 50 });
+    if (this.recentSwaps.length > 10) this.recentSwaps.shift();
   }
 
   update() {
-    if (this.engine.gameOver || matchState !== 'playing') return;
-    
-    let maxH = 0;
-    for (let c=0; c<COLS; c++) { 
-      for (let r=0; r<ROWS; r++) { 
-        if (this.engine.grid[r][c]) { maxH = Math.max(maxH, ROWS-r); break; } 
-      } 
+    if (this.engine.gameOver || matchState !== 'playing') {
+      this.engine.isRisingManualPad = false;
+      this.movePlan = [];
+      return;
     }
-    if (maxH >= 6) this.engine.isRisingManualPad = false; 
+
+    this.frameCount++;
+    if (this.riseCooldown > 0) this.riseCooldown--;
+
+    if (this.engine.isRisingManualPad) {
+      const snap = this.captureSnapshot();
+      if (snap.maxH >= this.risingTargetMaxH
+          || snap.effMaxH >= 8
+          || snap.pendingGarbageH > 0
+          || this.engine.stopTimer > 0) {
+        this.engine.isRisingManualPad = false;
+        this.actionTimer = 1;
+      } else {
+        if (this.frameCount % Math.max(2, this.thinkInterval) === 0) {
+          const quickPlan = this.runBeamSearch({ ...snap });
+          if (quickPlan && quickPlan.type === 'clear') {
+            this.engine.isRisingManualPad = false;
+            this.movePlan = quickPlan.moves.slice();
+            this.planSignature = snap.signature;
+            this.target = this.movePlan.shift();
+            this.moveTimer = 0;
+          }
+        }
+        return;
+      }
+    }
 
     if (this.target) {
-      this.moveTimer--;
-      if (this.moveTimer <= 0) {
-        this.moveTimer = this.moveInterval;
-        let moved = false;
-        if (this.engine.cursor.x < this.target.x) { this.engine.cursor.x++; moved = true; }
-        else if (this.engine.cursor.x > this.target.x) { this.engine.cursor.x--; moved = true; }
-        else if (this.engine.cursor.y < this.target.y) { this.engine.cursor.y++; moved = true; }
-        else if (this.engine.cursor.y > this.target.y) { this.engine.cursor.y--; moved = true; }
-        if (!moved) { this.engine.swap(this.engine.cursor.x, this.engine.cursor.y); this.target = null; this.actionTimer = this.thinkInterval; }
+      if (!this.canSwapAt(this.target.y, this.target.x)) {
+        this.target = null;
+        this.movePlan = [];
+        this.actionTimer = Math.min(this.thinkInterval, 1);
+        return;
+      }
+
+      if (this.moveTimer > 0) {
+        this.moveTimer--;
+        return;
+      }
+
+      this.moveTimer = Math.max(0, this.moveInterval - 1);
+      let moved = false;
+      if (this.engine.cursor.x < this.target.x) { this.engine.cursor.x++; moved = true; }
+      else if (this.engine.cursor.x > this.target.x) { this.engine.cursor.x--; moved = true; }
+      else if (this.engine.cursor.y < this.target.y) { this.engine.cursor.y++; moved = true; }
+      else if (this.engine.cursor.y > this.target.y) { this.engine.cursor.y--; moved = true; }
+
+      if (!moved) {
+        const sx = this.engine.cursor.x;
+        const sy = this.engine.cursor.y;
+        const ok = this.engine.swap(sx, sy);
+        if (ok) {
+          this.recordSwap(sy, sx);
+        }
+        this.target = null;
+
+        if (ok && this.movePlan.length > 0 && this.engine.stopTimer <= 0) {
+          const nextStep = this.movePlan.shift();
+          if (nextStep && this.canSwapAt(nextStep.y, nextStep.x)) {
+            this.target = nextStep;
+            this.moveTimer = Math.max(0, this.moveInterval - 1);
+            return;
+          } else {
+            this.movePlan = [];
+          }
+        } else {
+          this.movePlan = [];
+        }
+
+        this.actionTimer = this.thinkInterval;
       }
     } else {
       this.actionTimer--;
@@ -1393,141 +2206,69 @@ class ComAI {
     if (this.engine.gameOver || matchState !== 'playing') return;
     this.actionTimer = this.thinkInterval;
     this.engine.isRisingManualPad = false;
+    this.movePlan = [];
 
-    let maxH = 0;
-    for (let c=0; c<COLS; c++) { 
-      for (let r=0; r<ROWS; r++) { 
-        if (this.engine.grid[r][c]) { maxH = Math.max(maxH, ROWS-r); break; } 
-      } 
-    }
+    const snap = this.captureSnapshot();
 
-    let bestMoves = [];
-    let maxScore = -1;
-
-    for (let r=0; r<ROWS; r++) {
-      for (let c=0; c<COLS-1; c++) {
-        let score = this.evaluateMove(r, c);
-        if (score > 0) {
-          if (score > maxScore) {
-            maxScore = score;
-            bestMoves = [{x:c, y:r}];
-          } else if (score === maxScore) {
-            bestMoves.push({x:c, y:r});
-          }
-        }
+    const plan = this.runBeamSearch(snap);
+    if (plan && plan.moves && plan.moves.length > 0) {
+      if (plan.type === 'clear' || Math.random() >= this.topChoiceNoise) {
+        this.movePlan = plan.moves.slice();
+        this.target = this.movePlan.shift();
+        this.moveTimer = Math.max(0, this.moveInterval - 1);
+        return;
       }
     }
 
-    if (bestMoves.length > 0) {
-      this.target = bestMoves[Math.floor(Math.random() * bestMoves.length)];
-      this.moveTimer = this.moveInterval;
-    } else {
-      if (this.level >= 3 && maxH <= 5 && this.engine.garbageQueue.length === 0) {
-        if (this.pattern === 'survival' || this.pattern === 'small_chain') {
-           this.engine.isRisingManualPad = true;
-        } else {
-           this.engine.isRisingManualPad = (Math.random() < 0.5);
-        }
-        this.target = null;
-      } else { 
-        this.engine.isRisingManualPad = false;
-        
-        let meaningfulTargets = [];
-        for (let r = ROWS - 1; r >= 0; r--) {
-          let hasNormal = false;
-          for (let c = 0; c < COLS; c++) {
-            const b = this.engine.grid[r][c];
-            if (b && b.state === 'normal' && b.type !== 'garbage') {
-              hasNormal = true; break;
-            }
-          }
-          if (hasNormal) {
-            for (let c = 0; c < COLS - 1; c++) {
-              const b1 = this.engine.grid[r][c];
-              const b2 = this.engine.grid[r][c+1];
-              if (!b1 && !b2) continue; 
-              if (b1 && b1.type === 'garbage' && b2 && b2.type === 'garbage') continue; 
-              if (b1 && b1.type === 'garbage' && !b2) continue; 
-              if (!b1 && b2 && b2.type === 'garbage') continue; 
-              meaningfulTargets.push({x: c, y: r});
-            }
-          }
-        }
-        
-        if (meaningfulTargets.length > 0) {
-          this.target = meaningfulTargets[Math.floor(Math.random() * meaningfulTargets.length)];
-        } else {
-          this.target = { x: Math.floor(Math.random()*(COLS-1)), y: Math.floor(Math.random()*(ROWS-2))+2 }; 
-        }
-        this.moveTimer = this.moveInterval; 
-      }
+    const canSafeRise = !snap.isPinch
+      && snap.effMaxH <= 7
+      && snap.maxH <= 6
+      && snap.pendingGarbageH === 0
+      && this.engine.stopTimer <= 0
+      && this.riseCooldown <= 0;
+
+    if (canSafeRise && Math.random() < this.riseTryProb) {
+      const targetRiseRows = snap.maxH <= 4 ? 2 : 1;
+      this.risingTargetMaxH = Math.min(7, snap.maxH + targetRiseRows);
+      this.engine.isRisingManualPad = true;
+      this.riseCooldown = 34;
+      this.target = null;
+      return;
     }
+
+    const flatten = this.findFlattenOrSafeMove(snap);
+    if (flatten) {
+      this.target = flatten;
+      this.moveTimer = Math.max(0, this.moveInterval - 1);
+      return;
+    }
+
+    this.target = null;
+    this.actionTimer = Math.max(this.thinkInterval, 5);
   }
 
-  evaluateMove(r, c) {
-    const b1 = this.engine.grid[r][c], b2 = this.engine.grid[r][c+1];
-    if (b1 && b1.state !== 'normal') return 0;
-    if (b2 && b2.state !== 'normal') return 0;
-    if (!b1 && !b2) return 0;
-    if (b1 && b2 && b1.type === b2.type) return 0;
+  findFlattenOrSafeMove(snap) {
+    let best = null;
+    let bestScore = -9999;
 
-    let hasMatch = false;
-    const temp = this.engine.grid.map(row => row.map(cell => cell ? {...cell} : null));
-    let t = temp[r][c]; temp[r][c] = temp[r][c+1]; temp[r][c+1] = t;
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS - 1; c++) {
+        if (!this.canSwapAt(r, c)) continue;
+        if (this.isSwapRecentlyDone(r, c)) continue;
 
-    let matchedPositions = new Set();
-    for (let rr=0; rr<ROWS; rr++) {
-      for (let cc=0; cc<COLS-2; cc++) {
-        if (temp[rr][cc] && temp[rr][cc].type!=='garbage' && temp[rr][cc+1] && temp[rr][cc+2] && temp[rr][cc].type===temp[rr][cc+1].type && temp[rr][cc].type===temp[rr][cc+2].type) {
-           matchedPositions.add(`${rr},${cc}`); matchedPositions.add(`${rr},${cc+1}`); matchedPositions.add(`${rr},${cc+2}`);
-           hasMatch = true;
-        }
-      }
-    }
-    for (let cc=0; cc<COLS; cc++) {
-      for (let rr=0; rr<ROWS-2; rr++) {
-        if (temp[rr][cc] && temp[rr][cc].type!=='garbage' && temp[rr+1][cc] && temp[rr+2][cc] && temp[rr][cc].type===temp[rr+1][cc].type && temp[rr][cc].type===temp[rr+2][cc].type) {
-           matchedPositions.add(`${rr},${cc}`); matchedPositions.add(`${rr+1},${cc}`); matchedPositions.add(`${rr+2},${cc}`);
-           hasMatch = true;
+        const b1 = this.engine.grid[r][c];
+        const b2 = this.engine.grid[r][c + 1];
+
+        if (b1 && b2 === null && snap.colHeights[c] > snap.colHeights[c + 1]) {
+          const sc = (snap.colHeights[c] - snap.colHeights[c + 1]) * 30 + (snap.isPinch ? (ROWS - r) * 25 : 0);
+          if (sc > bestScore) { bestScore = sc; best = { x: c, y: r }; }
+        } else if (b2 && b1 === null && snap.colHeights[c + 1] > snap.colHeights[c]) {
+          const sc = (snap.colHeights[c + 1] - snap.colHeights[c]) * 30 + (snap.isPinch ? (ROWS - r) * 25 : 0);
+          if (sc > bestScore) { bestScore = sc; best = { x: c, y: r }; }
         }
       }
     }
 
-    let matchCount = matchedPositions.size;
-    let score = 0;
-    let heightScore = ROWS - r; 
-    
-    let isChainSetup = false;
-    if (!hasMatch) {
-       if (r + 1 < ROWS && ((this.engine.grid[r+1][c] && this.engine.grid[r+1][c].state === 'match') || (this.engine.grid[r+1][c+1] && this.engine.grid[r+1][c+1].state === 'match'))) {
-           isChainSetup = true;
-       }
-    }
-
-    if (hasMatch) {
-        score = 10;
-        switch(this.pattern) {
-            case 'small_chain': score += 5; break;
-            case 'big_chain': score = 5; break;
-            case 'multi_match':
-                if (matchCount >= 4) score += matchCount * 20; 
-                else score += 1; 
-                break;
-            case 'survival': score += heightScore * 10; break;
-        }
-    } else {
-        if (isChainSetup) {
-            switch(this.pattern) {
-                case 'small_chain': score = 15; break;
-                case 'big_chain': score = 20; break;
-                case 'multi_match': score = 2; break;
-                case 'survival': score = 1; break;
-            }
-        } else {
-            if (this.pattern === 'big_chain' && Math.random() < 0.1) score = 1; 
-        }
-    }
-
-    return score;
+    return best;
   }
 }

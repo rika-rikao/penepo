@@ -1,5 +1,5 @@
 // ==========================================
-// キャラクター定義 & アイコン選択 & スキルカルーセル & カスタム画像・ボイス・SE・ZIP一括読込 & 描画補助
+// キャラクター定義 & ループ型3Dカバーフロー & ハブ立ち絵設定 & カスタム画像・ボイス・SE・ZIP一括読込 & 描画補助
 // ==========================================
 const IMG_EXTS = ['png', 'webp', 'gif', 'jpg', 'jpeg'];
 
@@ -14,7 +14,13 @@ const CHARACTERS = [
   { id: 'enemy04',name: 'マーオ',   role: 'enemy', file: 'assets/img/chara/nomal/マーオ.png',   color: '#ff007f' }
 ];
 
-// 2・3・3・2 のアイコン配置定義
+// カバーフロー並び順
+const CHAR_PICKER_ORDER = [
+  'main00', 'sub01', 'sub02', 'sub03',
+  'enemy01', 'enemy02', 'enemy03', 'enemy04',
+  'custom', 'random'
+];
+
 const CHAR_PICKER_ROWS = [
   ['main00', 'custom'],
   ['sub01', 'sub02', 'sub03'],
@@ -26,7 +32,33 @@ const SKILL_DESCRIPTIONS = {
   erase_color: '盤面にあるマークの中から、ランダムで2種類の色をまとめて消します！ピンチの打開や連鎖のきっかけにぴったりです。',
   erase_rows: '下から1段目・5段目・9段目の横一列をすべて消します！お邪魔ブロックもまとめて消せるのでピンチに強いです。',
   purify_garbage: '盤面のお邪魔ブロックをすべて消して、下の段を2段せり上げたあと通常のブロックに変えます！大逆転が狙えます。',
-  corrupt_enemy_row: '相手のブロックがある段をランダムで1段お邪魔に変え、さらに上から幅3のお邪魔ブロックを1段降らせます！'
+  corrupt_enemy_row: '相手のブロックがある段をランダムで1段お邪魔に変え、さらに上から幅3のお邪魔ブロックを1段降らせます！',
+  seal_skill: '相手（ターゲット優先）のスキル発動までに必要な残りスコアを300点追加して、スキルを遠ざけます！',
+  convert_blocks: '盤面にあるマークの中からランダムで3色のブロックを、別の2色のブロックに一斉変換します！大連鎖の大チャンス！',
+  sacrifice: '発動不可・被弾お邪魔1.2倍・送信お邪魔1段階低下(5個/3連鎖〜)・5分で自動敗北する代わりに、連鎖猶予と天井判定時間が常時2倍に！',
+  no_skill: 'スキルを使用しません。自分だけスキルなし・純粋なパズル勝負で挑みます。'
+};
+
+const SKILL_ICONS = {
+  erase_color: '🎨',
+  erase_rows: '⚡',
+  purify_garbage: '✨',
+  corrupt_enemy_row: '👾',
+  seal_skill: '🔒',
+  convert_blocks: '🔄',
+  sacrifice: '💀',
+  no_skill: '🚫'
+};
+
+const SKILL_COLORS = {
+  erase_color: '#00d4ff',
+  erase_rows: '#ffd700',
+  purify_garbage: '#4ecca3',
+  corrupt_enemy_row: '#ff007f',
+  seal_skill: '#a855f7',
+  convert_blocks: '#38bdf8',
+  sacrifice: '#dc2626',
+  no_skill: '#94a3b8'
 };
 
 const AssetCache = new Map();
@@ -36,6 +68,65 @@ const CustomAssets = { chara: null, bg: null, frame: null };
 let selectedCharId = localStorage.getItem('pdw_char_id') || 'main00';
 let storySelectedCharId = localStorage.getItem('pdw_story_char_id') || (selectedCharId === 'custom' ? 'custom' : 'main00');
 let playerCustomName = localStorage.getItem('pdw_player_name') || '';
+let hubPortraitMode = localStorage.getItem('pdw_hub_char') || 'random';
+let currentHubRandomCharId = null;
+
+function pickHubPortraitCharId(reroll = false) {
+  if (hubPortraitMode && hubPortraitMode !== 'random') {
+    if (hubPortraitMode === 'custom') {
+      return CustomAssets.chara ? 'custom' : 'main00';
+    }
+    if (CHARACTERS.some(c => c.id === hubPortraitMode)) {
+      return hubPortraitMode;
+    }
+  }
+  const pool = CHARACTERS.map(c => c.id);
+  if (CustomAssets.chara) pool.push('custom');
+  if (reroll || !currentHubRandomCharId || !pool.includes(currentHubRandomCharId)) {
+    currentHubRandomCharId = pool[Math.floor(Math.random() * pool.length)];
+  }
+  return currentHubRandomCharId;
+}
+
+function onHubCharSettingChange(val) {
+  hubPortraitMode = val || 'random';
+  if (hubPortraitMode === 'random') {
+    pickHubPortraitCharId(true);
+  }
+  if (typeof refreshMenuHeaderAndPreview === 'function') {
+    refreshMenuHeaderAndPreview();
+  }
+}
+
+function refreshHubCharSelectOptions() {
+  const sel = document.getElementById('settings-hub-char');
+  if (!sel) return;
+  const curVal = hubPortraitMode || 'random';
+  sel.innerHTML = '';
+
+  const optRand = document.createElement('option');
+  optRand.value = 'random';
+  optRand.innerText = 'ランダム（マイキャラ含む）';
+  sel.appendChild(optRand);
+
+  CHARACTERS.forEach(c => {
+    const opt = document.createElement('option');
+    opt.value = c.id;
+    opt.innerText = `固定: ${c.name}`;
+    sel.appendChild(opt);
+  });
+
+  if (CustomAssets.chara) {
+    const optCustom = document.createElement('option');
+    optCustom.value = 'custom';
+    optCustom.innerText = `固定: ${getPlayerDisplayName()} (マイ)`;
+    sel.appendChild(optCustom);
+  }
+
+  const hasCur = Array.from(sel.options).some(o => o.value === curVal);
+  sel.value = hasCur ? curVal : 'random';
+  if (!hasCur) hubPortraitMode = 'random';
+}
 
 function getPlayerDisplayName() {
   const trimmed = (playerCustomName || '').trim();
@@ -52,9 +143,13 @@ function onPlayerNameInput(val) {
   document.querySelectorAll('.char-name-inline-input').forEach(el => {
     if (el.value !== playerCustomName) el.value = playerCustomName;
   });
-  document.querySelectorAll('.char-icon-btn[data-char-id="custom"] .char-icon-name').forEach(el => {
+  document.querySelectorAll('.cf-card[data-item-id="custom"] .cf-card-label').forEach(el => {
     el.innerText = CustomAssets.chara ? getPlayerDisplayName() : 'マイ(未設定)';
   });
+  refreshHubCharSelectOptions();
+  if (typeof refreshMenuHeaderAndPreview === 'function') {
+    refreshMenuHeaderAndPreview();
+  }
 }
 
 function getCharacterById(id) {
@@ -255,14 +350,293 @@ function getThemeNormalImage(theme) {
   return theme.charSrc ? getCachedImage(theme.charSrc) : null;
 }
 
-function preloadDefaultCharImages() {
+function preloadDefaultCharImages(onProgress = null) {
+  const total = CHARACTERS.length * 2;
+  let done = 0;
+  const tasks = [];
   CHARACTERS.forEach(c => {
-    resolveCharacterImage('normal', c.name);
-    resolveCharacterImage('lose', c.name);
+    ['normal', 'lose'].forEach(variant => {
+      tasks.push(
+        resolveCharacterImage(variant, c.name).finally(() => {
+          done++;
+          if (typeof onProgress === 'function') onProgress(done, total);
+        })
+      );
+    });
   });
+  return Promise.all(tasks);
 }
 
-// --- バストアップアイコン選択GUI（ストーリー時はフレアとマイ立ち絵のみ表示） ---
+// ==========================================
+// 汎用・ループ型 CSS 3D カバーフローエンジン
+// ==========================================
+function createCoverFlow(container, config) {
+  const items = config.items || [];
+  if (!container || items.length === 0) return null;
+
+  const total = items.length;
+  let activeIdx = Math.max(0, Math.min(total - 1, config.initialIndex || 0));
+  const compact = !!config.compact;
+  const wrapperClass = config.wrapperClass || '';
+  const showSlider = config.showSlider !== false && total > 1;
+  const spreadX = compact ? 132 : 84;
+  const sideOffset = compact ? 22 : 16;
+
+  container.innerHTML = '';
+
+  const wrapper = document.createElement('div');
+  wrapper.className = `cf-wrapper ${wrapperClass}`.trim();
+
+  if (config.title) {
+    const hdr = document.createElement('div');
+    hdr.className = 'cf-header-row';
+    const titleSpan = document.createElement('span');
+    titleSpan.innerText = config.title;
+    const countSpan = document.createElement('span');
+    countSpan.className = 'cf-count-text';
+    hdr.append(titleSpan, countSpan);
+    wrapper.appendChild(hdr);
+  }
+
+  const stageWrap = document.createElement('div');
+  stageWrap.className = 'cf-stage-wrap' + (compact ? ' compact' : '');
+  const stage = document.createElement('div');
+  stage.className = 'cf-stage';
+  stageWrap.appendChild(stage);
+
+  const cardEls = items.map((item, idx) => {
+    const card = document.createElement('div');
+    card.className = 'cf-card' + (item.disabled ? ' is-disabled' : '');
+    card.dataset.itemId = String(item.id);
+    if (item.accentColor) {
+      card.style.setProperty('--cf-accent', item.accentColor);
+    }
+
+    if (typeof config.renderCard === 'function') {
+      config.renderCard(card, item, idx);
+    } else {
+      const thumb = document.createElement('div');
+      thumb.className = 'cf-card-thumb';
+      if (item.iconHtml) {
+        thumb.innerHTML = item.iconHtml;
+      }
+      const lbl = document.createElement('div');
+      lbl.className = 'cf-card-label';
+      lbl.innerText = item.label || '';
+      card.append(thumb, lbl);
+    }
+
+    const reflect = document.createElement('div');
+    reflect.className = 'cf-card-reflect';
+    card.appendChild(reflect);
+
+    card.addEventListener('click', () => {
+      if (suppressNextClick) return;
+      if (idx === activeIdx) {
+        if (typeof config.onCenterClick === 'function') {
+          config.onCenterClick(items[idx], idx);
+        } else if (items[idx].disabled && typeof config.onDisabledSelect === 'function') {
+          config.onDisabledSelect(items[idx], idx);
+        }
+      } else {
+        setActiveIndex(idx, true);
+      }
+    });
+
+    stage.appendChild(card);
+    return card;
+  });
+
+  wrapper.appendChild(stageWrap);
+
+  let sliderEl = null;
+  if (showSlider) {
+    const ctrlRow = document.createElement('div');
+    ctrlRow.className = 'cf-controls-row';
+
+    const prevBtn = document.createElement('button');
+    prevBtn.type = 'button';
+    prevBtn.className = 'cf-nav-btn';
+    prevBtn.innerText = '◀';
+    prevBtn.onclick = () => stepIndex(-1);
+
+    sliderEl = document.createElement('input');
+    sliderEl.type = 'range';
+    sliderEl.className = 'cf-slider';
+    sliderEl.min = '0';
+    sliderEl.max = String(Math.max(0, total - 1));
+    sliderEl.step = '1';
+    sliderEl.value = String(activeIdx);
+    sliderEl.oninput = () => {
+      const v = parseInt(sliderEl.value, 10) || 0;
+      if (v !== activeIdx) setActiveIndex(v, true);
+    };
+    sliderEl._cfStep = (dir) => stepIndex(dir);
+    sliderEl._cfConfirm = () => {
+      if (typeof config.onCenterClick === 'function') {
+        config.onCenterClick(items[activeIdx], activeIdx);
+      }
+    };
+
+    const nextBtn = document.createElement('button');
+    nextBtn.type = 'button';
+    nextBtn.className = 'cf-nav-btn';
+    nextBtn.innerText = '▶';
+    nextBtn.onclick = () => stepIndex(1);
+
+    ctrlRow.append(prevBtn, sliderEl, nextBtn);
+    wrapper.appendChild(ctrlRow);
+  }
+
+  let descEl = null;
+  if (config.showDesc) {
+    descEl = document.createElement('div');
+    descEl.className = 'cf-desc-box';
+    wrapper.appendChild(descEl);
+  }
+
+  container.appendChild(wrapper);
+
+  let dragPointerId = null;
+  let dragStartX = 0;
+  let dragAccumX = 0;
+  let suppressNextClick = false;
+  const SWIPE_STEP_PX = 42;
+
+  stageWrap.addEventListener('pointerdown', (e) => {
+    if (e.button !== undefined && e.button !== 0) return;
+    dragPointerId = e.pointerId;
+    dragStartX = e.clientX;
+    dragAccumX = 0;
+    suppressNextClick = false;
+  });
+
+  stageWrap.addEventListener('pointermove', (e) => {
+    if (e.pointerId !== dragPointerId) return;
+    const dx = e.clientX - dragStartX;
+    dragAccumX += dx;
+    dragStartX = e.clientX;
+    if (Math.abs(dragAccumX) >= SWIPE_STEP_PX) {
+      suppressNextClick = true;
+      const steps = Math.trunc(dragAccumX / SWIPE_STEP_PX);
+      dragAccumX -= steps * SWIPE_STEP_PX;
+      stepIndex(-steps);
+    }
+  });
+
+  const endDrag = (e) => {
+    if (e.pointerId !== dragPointerId) return;
+    dragPointerId = null;
+    if (suppressNextClick) {
+      setTimeout(() => { suppressNextClick = false; }, 60);
+    }
+  };
+  stageWrap.addEventListener('pointerup', endDrag);
+  stageWrap.addEventListener('pointercancel', endDrag);
+
+  let wheelLockUntil = 0;
+  stageWrap.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const now = performance.now();
+    if (now < wheelLockUntil) return;
+    const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+    if (Math.abs(delta) < 6) return;
+    wheelLockUntil = now + 90;
+    stepIndex(delta > 0 ? 1 : -1);
+  }, { passive: false });
+
+  function updateVisual() {
+    const countSpan = wrapper.querySelector('.cf-count-text');
+    if (countSpan) countSpan.innerText = `${activeIdx + 1} / ${total}`;
+    if (sliderEl && parseInt(sliderEl.value, 10) !== activeIdx) {
+      sliderEl.value = String(activeIdx);
+    }
+    if (descEl) {
+      descEl.innerText = items[activeIdx]?.desc || '';
+    }
+
+    cardEls.forEach((card, i) => {
+      let diff = i - activeIdx;
+      if (total > 2) {
+        if (diff > total / 2) diff -= total;
+        if (diff < -total / 2) diff += total;
+      }
+
+      const absD = Math.abs(diff);
+      let tx = diff * spreadX;
+      let tz = 0;
+      let rotY = 0;
+      let scale = 1.0;
+      let opacity = 1.0;
+      let zIndex = 20 - Math.round(absD * 4);
+
+      if (diff < 0) {
+        tx -= sideOffset;
+        tz = -95 - absD * 34;
+        rotY = 44;
+        scale = Math.max(0.7, 0.88 - absD * 0.06);
+      } else if (diff > 0) {
+        tx += sideOffset;
+        tz = -95 - absD * 34;
+        rotY = -44;
+        scale = Math.max(0.7, 0.88 - absD * 0.06);
+      } else {
+        tz = 18;
+        scale = 1.04;
+        zIndex = 30;
+      }
+
+      if (absD > 2) {
+        opacity = 0;
+        card.style.pointerEvents = 'none';
+      } else {
+        opacity = diff === 0 ? 1 : Math.max(0.45, 0.86 - (absD - 1) * 0.25);
+        card.style.pointerEvents = 'auto';
+      }
+
+      card.classList.toggle('is-center', diff === 0);
+      if (diff === 0 && items[i].accentColor) {
+        card.style.borderColor = items[i].accentColor;
+      } else {
+        card.style.borderColor = '';
+      }
+      card.style.zIndex = String(zIndex);
+      card.style.opacity = String(opacity);
+      card.style.transform = `translate3d(${tx}px, 0px, ${tz}px) rotateY(${rotY}deg) scale(${scale})`;
+    });
+  }
+
+  function setActiveIndex(newIdx, notify = true) {
+    const wrapped = ((newIdx % total) + total) % total;
+    if (wrapped === activeIdx && notify) return;
+    activeIdx = wrapped;
+    updateVisual();
+    if (notify) {
+      if (typeof SE !== 'undefined') SE.play('cursorMove');
+      const item = items[activeIdx];
+      if (item.disabled) {
+        if (typeof config.onDisabledSelect === 'function') config.onDisabledSelect(item, activeIdx);
+      } else if (typeof config.onSelect === 'function') {
+        config.onSelect(item, activeIdx);
+      }
+    }
+  }
+
+  function stepIndex(delta) {
+    setActiveIndex(activeIdx + delta, true);
+  }
+
+  updateVisual();
+
+  return {
+    wrapper,
+    getIndex: () => activeIdx,
+    setIndex: (idx) => setActiveIndex(idx, false),
+    step: stepIndex
+  };
+}
+
+// --- キャラ選択（ループ型3Dカバーフロー） ---
 function renderCharPicker(containerId, options = {}) {
   const container = document.getElementById(containerId);
   if (!container) return;
@@ -282,191 +656,191 @@ function renderCharPicker(containerId, options = {}) {
     currentId = selectedCharId;
   }
 
-  container.innerHTML = '';
+  const idList = storyOnly ? ['main00', 'custom'] : CHAR_PICKER_ORDER;
+  const items = idList.map(cid => {
+    const ch = getCharacterById(cid);
+    const isCustomEmpty = (cid === 'custom' && !CustomAssets.chara);
+    return {
+      id: cid,
+      label: isCustomEmpty ? 'マイ(未設定)' : ch.name,
+      accentColor: ch.color,
+      disabled: isCustomEmpty,
+      charDef: ch
+    };
+  });
 
-  const titleEl = document.createElement('div');
-  titleEl.className = 'char-picker-title';
-  titleEl.innerText = options.title || (storyOnly
+  let initialIndex = items.findIndex(it => it.id === currentId);
+  if (initialIndex < 0) initialIndex = 0;
+
+  const titleText = options.title || (storyOnly
     ? '使用キャラ選択（フレア / マイ立ち絵）'
-    : '使用キャラ選択');
-  container.appendChild(titleEl);
+    : '使用キャラ選択（スワイプ・バーで選択）');
 
-  const rowsToRender = storyOnly ? [['main00', 'custom']] : CHAR_PICKER_ROWS;
+  const syncInlineNameBox = (selectedId) => {
+    let nameRow = container.querySelector('.char-name-inline-row');
+    const shouldShow = (selectedId === 'custom' && CustomAssets.chara && !options.hideNameInput);
+    if (shouldShow && !nameRow) {
+      nameRow = document.createElement('div');
+      nameRow.className = 'char-name-inline-row';
+      const lbl = document.createElement('span');
+      lbl.innerText = 'プレイヤー名:';
+      const inp = document.createElement('input');
+      inp.type = 'text';
+      inp.className = 'char-name-inline-input';
+      inp.maxLength = 10;
+      inp.placeholder = 'マイキャラ';
+      inp.value = playerCustomName;
+      inp.oninput = (e) => onPlayerNameInput(e.target.value);
+      nameRow.append(lbl, inp);
+      const cfWrap = container.querySelector('.cf-wrapper');
+      if (cfWrap) cfWrap.appendChild(nameRow);
+      else container.appendChild(nameRow);
+    } else if (!shouldShow && nameRow) {
+      nameRow.remove();
+    }
+  };
 
-  rowsToRender.forEach((rowIds) => {
-    const rowEl = document.createElement('div');
-    rowEl.className = 'char-picker-row';
-
-    rowIds.forEach((cid) => {
-      const ch = getCharacterById(cid);
-      const isCustomEmpty = (cid === 'custom' && !CustomAssets.chara);
-
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'char-icon-btn';
-      btn.dataset.charId = cid;
-      if (cid === currentId) btn.classList.add('selected');
-      if (isCustomEmpty) btn.classList.add('empty-custom');
-
-      const thumbWrap = document.createElement('div');
-      thumbWrap.className = 'char-icon-thumb-wrap';
-
-      if (cid === 'random') {
+  createCoverFlow(container, {
+    items,
+    initialIndex,
+    title: titleText,
+    compact: false,
+    renderCard: (card, item) => {
+      const thumb = document.createElement('div');
+      thumb.className = 'cf-card-thumb';
+      if (item.id === 'random') {
         const q = document.createElement('div');
         q.className = 'char-icon-random';
         q.innerText = '？';
-        thumbWrap.appendChild(q);
+        thumb.appendChild(q);
       } else {
         const img = document.createElement('img');
-        img.className = 'char-icon-img';
-        img.alt = ch.name;
-        if (cid === 'custom' && CustomAssets.chara) {
+        img.className = 'cf-card-img';
+        img.alt = item.label;
+        if (item.id === 'custom' && CustomAssets.chara) {
           img.src = CustomAssets.chara.dataUrl;
           if (CustomAssets.chara.orientation === 'landscape') {
             img.classList.add('landscape-fit');
           }
         } else {
-          applyCharacterImageToElement(img, cid === 'custom' ? 'main00' : cid, 'normal');
+          applyCharacterImageToElement(img, item.id === 'custom' ? 'main00' : item.id, 'normal');
         }
-        thumbWrap.appendChild(img);
+        thumb.appendChild(img);
       }
-
-      const nameEl = document.createElement('div');
-      nameEl.className = 'char-icon-name';
-      nameEl.innerText = isCustomEmpty ? 'マイ(未設定)' : ch.name;
-
-      btn.appendChild(thumbWrap);
-      btn.appendChild(nameEl);
-
-      btn.onclick = () => {
-        if (isCustomEmpty) {
-          showToast('「せってい → がぞう」からマイ立ち絵を登録すると選べます');
-          return;
-        }
-        if (typeof options.onSelect === 'function') {
-          options.onSelect(cid);
-        } else if (storyOnly) {
-          storySelectedCharId = cid;
-          localStorage.setItem('pdw_story_char_id', cid);
-        } else {
-          selectedCharId = cid;
-          localStorage.setItem('pdw_char_id', cid);
-        }
-        if (typeof SE !== 'undefined') SE.play('cursorMove');
-        renderCharPicker(containerId, options.onSelect ? { ...options, currentId: cid } : options);
-      };
-
-      rowEl.appendChild(btn);
-    });
-
-    container.appendChild(rowEl);
+      if (item.disabled) {
+        const badge = document.createElement('span');
+        badge.className = 'cf-card-badge';
+        badge.innerText = '未設定';
+        thumb.appendChild(badge);
+      }
+      const lbl = document.createElement('div');
+      lbl.className = 'cf-card-label';
+      lbl.innerText = item.label;
+      card.append(thumb, lbl);
+    },
+    onDisabledSelect: () => {
+      showToast('「せってい → がぞう」からマイ立ち絵を登録すると選べます');
+    },
+    onSelect: (item) => {
+      if (typeof options.onSelect === 'function') {
+        options.onSelect(item.id);
+      } else if (storyOnly) {
+        storySelectedCharId = item.id;
+        localStorage.setItem('pdw_story_char_id', item.id);
+      } else {
+        selectedCharId = item.id;
+        localStorage.setItem('pdw_char_id', item.id);
+      }
+      syncInlineNameBox(item.id);
+      if (typeof refreshMenuHeaderAndPreview === 'function') {
+        refreshMenuHeaderAndPreview();
+      }
+    }
   });
 
-  if (currentId === 'custom' && CustomAssets.chara && !options.hideNameInput) {
-    const nameRow = document.createElement('div');
-    nameRow.className = 'char-name-inline-row';
-    const lbl = document.createElement('span');
-    lbl.innerText = 'プレイヤー名:';
-    const inp = document.createElement('input');
-    inp.type = 'text';
-    inp.className = 'char-name-inline-input';
-    inp.maxLength = 10;
-    inp.placeholder = 'マイキャラ';
-    inp.value = playerCustomName;
-    inp.oninput = (e) => onPlayerNameInput(e.target.value);
-    nameRow.appendChild(lbl);
-    nameRow.appendChild(inp);
-    container.appendChild(nameRow);
-  }
+  syncInlineNameBox(currentId);
 }
 
-// --- スキルカルーセル & 半透明説明テキストボックス ---
-function renderSkillCarousel(containerId) {
+// --- スキル選択（ループ型3Dカバーフロー・新4種＆ノースキル対応） ---
+function getSkillSubLabel(skillId) {
+  if (skillId === 'no_skill') return '使用不可（スキルなし）';
+  if (skillId === 'sacrifice') return '常時発動（代償効果）';
+  return '最大3回 / 300点毎';
+}
+
+function renderSkillCarousel(containerId, options = {}) {
   const container = document.getElementById(containerId);
   if (!container) return;
-  const ids = (typeof SKILL_IDS !== 'undefined') ? SKILL_IDS : ['erase_color', 'erase_rows', 'purify_garbage', 'corrupt_enemy_row'];
+  const ids = (typeof SKILL_IDS !== 'undefined')
+    ? SKILL_IDS
+    : ['erase_color', 'erase_rows', 'purify_garbage', 'corrupt_enemy_row', 'seal_skill', 'convert_blocks', 'sacrifice', 'no_skill'];
   const labels = (typeof SKILL_LABELS !== 'undefined') ? SKILL_LABELS : {
     erase_color: 'マーク全消し',
     erase_rows: '1・5・9段消し',
     purify_garbage: 'お邪魔浄化',
-    corrupt_enemy_row: 'お邪魔侵食'
+    corrupt_enemy_row: 'お邪魔侵食',
+    seal_skill: 'スキル封印',
+    convert_blocks: 'ブロック変換',
+    sacrifice: '代償',
+    no_skill: 'ノースキル'
   };
 
-  let curId = (typeof selectedPlayerSkill !== 'undefined') ? selectedPlayerSkill : ids[0];
+  let curId = options.currentSkillId !== undefined
+    ? options.currentSkillId
+    : ((typeof selectedPlayerSkill !== 'undefined') ? selectedPlayerSkill : ids[0]);
   let idx = ids.indexOf(curId);
-  if (idx === -1) {
-    idx = 0;
-    curId = ids[0];
-  }
+  if (idx === -1) { idx = 0; curId = ids[0]; }
 
-  container.innerHTML = '';
+  const items = ids.map(id => ({
+    id,
+    label: labels[id] || id,
+    icon: SKILL_ICONS[id] || '⚡',
+    desc: SKILL_DESCRIPTIONS[id] || '',
+    sub: getSkillSubLabel(id),
+    accentColor: SKILL_COLORS[id] || '#ff007f'
+  }));
 
-  const panel = document.createElement('div');
-  panel.className = 'carousel-panel';
-  panel.style.borderColor = '#ff007f';
-
-  const row = document.createElement('div');
-  row.className = 'carousel-row';
-
-  const prevBtn = document.createElement('button');
-  prevBtn.type = 'button';
-  prevBtn.className = 'carousel-arrow-btn';
-  prevBtn.innerText = '◀';
-  prevBtn.onclick = () => {
-    const nextIdx = (idx - 1 + ids.length) % ids.length;
-    if (typeof onPlayerSkillSelectChange === 'function') onPlayerSkillSelectChange(ids[nextIdx]);
-    if (typeof SE !== 'undefined') SE.play('cursorMove');
-    refreshAllSkillCarousels();
-  };
-
-  const body = document.createElement('div');
-  body.className = 'carousel-body';
-  const title = document.createElement('div');
-  title.className = 'carousel-title';
-  title.style.color = '#ffd700';
-  title.innerText = `⚡ ${labels[curId] || curId}`;
-  const sub = document.createElement('div');
-  sub.className = 'carousel-sub';
-  sub.innerText = `スキル ${idx + 1} / ${ids.length}`;
-  body.append(title, sub);
-
-  const nextBtn = document.createElement('button');
-  nextBtn.type = 'button';
-  nextBtn.className = 'carousel-arrow-btn';
-  nextBtn.innerText = '▶';
-  nextBtn.onclick = () => {
-    const nextIdx = (idx + 1) % ids.length;
-    if (typeof onPlayerSkillSelectChange === 'function') onPlayerSkillSelectChange(ids[nextIdx]);
-    if (typeof SE !== 'undefined') SE.play('cursorMove');
-    refreshAllSkillCarousels();
-  };
-
-  row.append(prevBtn, body, nextBtn);
-
-  const dots = document.createElement('div');
-  dots.className = 'carousel-dots';
-  ids.forEach((id, i) => {
-    const d = document.createElement('span');
-    d.className = 'carousel-dot' + (i === idx ? ' active' : '');
-    dots.appendChild(d);
+  createCoverFlow(container, {
+    items,
+    initialIndex: idx,
+    title: options.title || 'スキルを選択（左右スワイプ / バー）',
+    compact: true,
+    wrapperClass: 'skill-theme',
+    showDesc: true,
+    renderCard: (card, item) => {
+      const iconBox = document.createElement('div');
+      iconBox.className = 'cf-skill-icon';
+      iconBox.innerText = item.icon;
+      const lbl = document.createElement('div');
+      lbl.className = 'cf-card-label';
+      lbl.style.color = item.id === 'sacrifice' ? '#f87171' : (item.id === 'no_skill' ? '#cbd5e1' : '#ffd700');
+      lbl.innerText = item.label;
+      const sub = document.createElement('div');
+      sub.className = 'cf-card-sub';
+      sub.innerText = item.sub;
+      card.append(iconBox, lbl, sub);
+    },
+    onSelect: (item) => {
+      if (typeof options.onSelect === 'function') {
+        options.onSelect(item.id);
+      } else if (typeof onPlayerSkillSelectChange === 'function') {
+        onPlayerSkillSelectChange(item.id);
+      }
+    },
+    onCenterClick: (item) => {
+      if (typeof options.onCenterClick === 'function') {
+        options.onCenterClick(item.id);
+      }
+    }
   });
-
-  panel.append(row, dots);
-
-  const descBox = document.createElement('div');
-  descBox.className = 'skill-desc-box';
-  descBox.innerText = SKILL_DESCRIPTIONS[curId] || '';
-
-  container.append(panel, descBox);
 }
 
 function refreshAllSkillCarousels() {
-  ['story-skill-picker', 'single-skill-picker', 'com-skill-picker', 'online-skill-picker'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el && el.style.display !== 'none') {
-      renderSkillCarousel(id);
-    }
-  });
+  const modalPicker = document.getElementById('skill-modal-picker');
+  if (modalPicker && document.getElementById('skill-select-modal')?.style.display === 'flex') {
+    const curSlider = modalPicker.querySelector('.cf-slider');
+    if (!curSlider) renderSkillCarousel('skill-modal-picker');
+  }
 }
 
 // --- IndexedDB 管理 ---
@@ -652,7 +1026,7 @@ async function handleCustomAssetUpload(kind, inputEl) {
   const file = inputEl.files && inputEl.files[0];
   if (!file) return;
   try {
-    showToast('画像を最適化して保存中...');
+    if (typeof BusyLoader !== 'undefined') BusyLoader.show('画像を最適化中...', file.name || '');
     const record = await compressImageSmart(file, kind);
     CustomAssets[kind] = record;
     AssetCache.delete(record.dataUrl);
@@ -661,18 +1035,18 @@ async function handleCustomAssetUpload(kind, inputEl) {
     if (kind === 'chara') {
       selectedCharId = 'custom';
       storySelectedCharId = 'custom';
-      localStorage.setItem('pdw_char_id', 'custom');
-      localStorage.setItem('pdw_story_char_id', 'custom');
     }
     if (kind === 'frame') {
       applyGlobalFrameTheme(record.dataUrl);
     }
     refreshCustomAssetsUI();
-    showToast(`${kind === 'chara' ? '立ち絵' : kind === 'bg' ? '背景' : 'フレーム'}を保存しました (${record.width}x${record.height})`);
+    if (typeof refreshMenuHeaderAndPreview === 'function') refreshMenuHeaderAndPreview();
+    showToast(`${kind === 'chara' ? '立ち絵' : kind === 'bg' ? '背景' : 'フレーム'}をセットしました (${record.width}x${record.height})`);
   } catch (e) {
     console.error(e);
     showToast('画像の読み込みに失敗しました');
   } finally {
+    if (typeof BusyLoader !== 'undefined') BusyLoader.hide();
     inputEl.value = '';
   }
 }
@@ -681,27 +1055,22 @@ async function clearCustomAsset(kind) {
   CustomAssets[kind] = null;
   await deleteCustomAssetDB(kind).catch(() => {});
   if (kind === 'chara') {
-    if (selectedCharId === 'custom') {
-      selectedCharId = 'main00';
-      localStorage.setItem('pdw_char_id', 'main00');
-    }
-    if (storySelectedCharId === 'custom') {
-      storySelectedCharId = 'main00';
-      localStorage.setItem('pdw_story_char_id', 'main00');
-    }
+    if (selectedCharId === 'custom') selectedCharId = 'main00';
+    if (storySelectedCharId === 'custom') storySelectedCharId = 'main00';
   }
   if (kind === 'frame') {
     applyGlobalFrameTheme(null);
   }
   refreshCustomAssetsUI();
+  if (typeof refreshMenuHeaderAndPreview === 'function') refreshMenuHeaderAndPreview();
   showToast('リセットしました');
 }
 
-// --- カスタムボイス個別登録・解除・試聴 ---
 async function handleCustomVoiceUpload(category, inputEl) {
   const file = inputEl.files && inputEl.files[0];
   if (!file || typeof VOICE === 'undefined') return;
   try {
+    if (typeof BusyLoader !== 'undefined') BusyLoader.show('ボイスを読み込み中...', file.name || '');
     const buf = await file.arrayBuffer();
     const mime = file.type || guessMimeFromExt((file.name.split('.').pop() || '').toLowerCase());
     const dataUrl = arrayBufferToDataUrl(buf, mime);
@@ -713,11 +1082,12 @@ async function handleCustomVoiceUpload(category, inputEl) {
     await saveCustomAssetDB(`voice_${category}`, { dataUrl, name: file.name });
     refreshCustomAssetsUI();
     const labelMap = { attack: '攻撃(お邪魔)', win: '勝利時', lose: '敗北時' };
-    showToast(`カスタムボイス(${labelMap[category] || category})を保存しました`);
+    showToast(`カスタムボイス(${labelMap[category] || category})をセットしました`);
   } catch (e) {
     console.error(e);
     showToast('ボイスの読み込みに失敗しました');
   } finally {
+    if (typeof BusyLoader !== 'undefined') BusyLoader.hide();
     inputEl.value = '';
   }
 }
@@ -779,6 +1149,7 @@ function refreshCustomAssetsUI() {
   }
   const nameInput = document.getElementById('settings-player-name');
   if (nameInput) nameInput.value = playerCustomName;
+  refreshHubCharSelectOptions();
 }
 
 // --- 純JS ZIPパーサ＆カスタムセット一括読込 ---
@@ -881,6 +1252,9 @@ function matchSeKeyFromPath(lowerPath, lowerStem) {
     ['countdown_go', ['countdown_go', 'cd_go', 'count_go', 'countgo', 'go']],
     ['countdown', ['countdown']],
     ['cursorMove', ['cursor_move', 'cursormove', 'cursor']],
+    ['select', ['select', 'decide']],
+    ['cancel', ['cancel', 'back']],
+    ['skillFilled', ['skill_filled', 'skillfilled']],
     ['falledBlock', ['falled_block', 'falledblock', 'falled', 'fall']],
     ['garbageErase', ['garbage_block_erase', 'garbage_erase', 'garbageerase', 'garbage']],
     ['normalErase', ['nomal_block_erase', 'normal_block_erase', 'normal_erase', 'normalerase', 'erase']],
@@ -904,13 +1278,17 @@ async function handleCustomZipUpload(inputEl) {
   const file = inputEl.files && inputEl.files[0];
   if (!file) return;
   try {
-    showToast('ZIPを展開して読み込み中...');
+    if (typeof BusyLoader !== 'undefined') BusyLoader.show('ZIP一括読み込み中...', file.name || '');
     const zipBuf = await file.arrayBuffer();
     const entries = await extractZipEntries(zipBuf);
     let loadedImg = 0, loadedVoice = 0, loadedSe = 0, loadedBgm = 0;
     const bgmFiles = [];
 
-    for (const entry of entries) {
+    for (let idx = 0; idx < entries.length; idx++) {
+      const entry = entries[idx];
+      if (typeof BusyLoader !== 'undefined') {
+        BusyLoader.show('ZIP一括読み込み中...', `${idx + 1} / ${entries.length}: ${entry.baseName}`);
+      }
       const lowerPath = entry.path.toLowerCase();
       const lowerBase = entry.baseName.toLowerCase();
       const dotIdx = lowerBase.lastIndexOf('.');
@@ -948,8 +1326,6 @@ async function handleCustomZipUpload(inputEl) {
           if (kind === 'chara') {
             selectedCharId = 'custom';
             storySelectedCharId = 'custom';
-            localStorage.setItem('pdw_char_id', 'custom');
-            localStorage.setItem('pdw_story_char_id', 'custom');
           }
           if (kind === 'frame') {
             applyGlobalFrameTheme(record.dataUrl);
@@ -1001,6 +1377,7 @@ async function handleCustomZipUpload(inputEl) {
     }
 
     refreshCustomAssetsUI();
+    if (typeof refreshMenuHeaderAndPreview === 'function') refreshMenuHeaderAndPreview();
     const infoEl = document.getElementById('custom-zip-info');
     if (infoEl) {
       infoEl.innerText = `読込完了: 画像${loadedImg} / Voice${loadedVoice} / SE${loadedSe} / BGM${loadedBgm}`;
@@ -1010,6 +1387,7 @@ async function handleCustomZipUpload(inputEl) {
     console.error(e);
     showToast('ZIPの読み込みに失敗しました: ' + (e.message || ''));
   } finally {
+    if (typeof BusyLoader !== 'undefined') BusyLoader.hide();
     inputEl.value = '';
   }
 }
@@ -1084,7 +1462,6 @@ function drawImageCover(ctx, img, x, y, w, h) {
   ctx.drawImage(img, x + (w - dw) / 2, y + (h - dh) / 2, dw, dh);
 }
 
-// ⑤ 盤面背景キャラを全体表示＆視認性の高い不透明度に調整
 function drawBoardBgAddon(ctx, canvas, engine, renderer) {
   const theme = renderer.theme;
   if (!theme) return;
@@ -1112,7 +1489,6 @@ function drawBoardBgAddon(ctx, canvas, engine, renderer) {
   }
 }
 
-// ② ローカル対戦のスキル時（allowBoardCutin）または対戦相手の盤面上に立ち絵付きカットインを描画
 function drawBoardFgAddon(ctx, canvas, engine, renderer) {
   const theme = renderer.theme;
   const W = canvas.width;
@@ -1163,7 +1539,44 @@ function drawBoardFgAddon(ctx, canvas, engine, renderer) {
 }
 
 async function initAssetsSystem() {
-  preloadDefaultCharImages();
-  await loadAllCustomAssets();
-  refreshCustomAssetsUI();
+  if (typeof AppLoader !== 'undefined') {
+    AppLoader.show('カスタム・効果音データを準備中...');
+  }
+
+  const safetyTimer = setTimeout(() => {
+    if (typeof AppLoader !== 'undefined') AppLoader.hide();
+  }, 3500);
+
+  try {
+    await loadAllCustomAssets();
+    if (typeof AppLoader !== 'undefined') {
+      AppLoader.setProgress(35, 'キャラクター画像を読み込み中...');
+    }
+
+    const preloadPromise = preloadDefaultCharImages((done, total) => {
+      if (typeof AppLoader !== 'undefined' && total > 0) {
+        const pct = 35 + Math.round((done / total) * 55);
+        AppLoader.setProgress(pct, `キャラクター画像を読み込み中... (${done}/${total})`);
+      }
+    });
+
+    const seWait = (typeof SE !== 'undefined' && SE.readyPromise)
+      ? SE.readyPromise.catch(() => {})
+      : Promise.resolve();
+
+    await Promise.race([
+      Promise.all([preloadPromise, seWait]),
+      new Promise(resolve => setTimeout(resolve, 3000))
+    ]);
+
+    refreshCustomAssetsUI();
+    if (typeof refreshMenuHeaderAndPreview === 'function') {
+      refreshMenuHeaderAndPreview(true);
+    }
+  } finally {
+    clearTimeout(safetyTimer);
+    if (typeof AppLoader !== 'undefined') {
+      AppLoader.hide();
+    }
+  }
 }

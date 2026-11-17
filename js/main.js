@@ -1,5 +1,5 @@
 // ==========================================
-// 対戦・ターゲット・ローカルマルチ・シェア対戦・メニュー統合管理システム
+// 対戦・ターゲット・ローカルスマブラ風UI・確認モーダル・シェア対戦統合管理システム
 // ==========================================
 let myEngine, myRenderer;
 let opponents = [];
@@ -18,6 +18,7 @@ let hostDisconnected = false;
 let isPracticeMode = false;
 let currentSurvivalWins = 0;
 let endSequenceTriggered = false;
+let maxChainInMatch = 0;
 
 let rematchReady = {};
 let boardReady = {};
@@ -46,31 +47,188 @@ let rankingModeIdx = 0;
 function onPlayerSkillSelectChange(val) {
   selectedPlayerSkill = val || 'erase_color';
   localStorage.setItem('pdw_player_skill', selectedPlayerSkill);
-  syncPlayerSkillSelects();
 }
 
 function syncPlayerSkillSelects() {
   if (typeof refreshAllSkillCarousels === 'function') refreshAllSkillCarousels();
 }
 
-function onSkillToggleUiChange(prefix) {
-  const toggleMap = {
-    story:  ['story-skill-toggle',  'story-skill-picker'],
-    single: ['single-skill-toggle', 'single-skill-picker'],
-    com:    ['com-cheat-toggle',    'com-skill-picker'],
-    online: ['online-skill-toggle', 'online-skill-picker']
+// ==========================================
+// スキル選択モーダル & 確認モーダル フロー
+// ==========================================
+let activeSkillConfirmFlow = null;
+
+function openSkillAndConfirmFlow(flowCfg) {
+  activeSkillConfirmFlow = {
+    charId: flowCfg.charId || resolvePlayableCharId(selectedCharId),
+    extraText: flowCfg.extraText || '',
+    okLabel: flowCfg.okLabel || 'OK！（開始）',
+    onConfirm: flowCfg.onConfirm || null
   };
-  const pair = toggleMap[prefix];
-  if (!pair) return;
-  const cb = document.getElementById(pair[0]);
-  const picker = document.getElementById(pair[1]);
-  if (!cb || !picker) return;
-  if (cb.checked) {
-    picker.style.display = 'flex';
-    if (typeof renderSkillCarousel === 'function') renderSkillCarousel(pair[1]);
-  } else {
-    picker.style.display = 'none';
+  openSkillSelectModal();
+}
+
+function openSkillSelectModal() {
+  if (!activeSkillConfirmFlow) return;
+  const modal = document.getElementById('skill-select-modal');
+  const confirmModal = document.getElementById('confirm-match-modal');
+  if (confirmModal) confirmModal.style.display = 'none';
+
+  const charBadge = document.getElementById('skill-modal-char-badge');
+  const ch = getCharacterById(activeSkillConfirmFlow.charId);
+  if (charBadge) {
+    charBadge.innerText = `選択キャラ: ${ch.name}` + (activeSkillConfirmFlow.extraText ? `  |  ${activeSkillConfirmFlow.extraText}` : '');
   }
+
+  if (typeof renderSkillCarousel === 'function') {
+    renderSkillCarousel('skill-modal-picker', {
+      currentSkillId: selectedPlayerSkill,
+      onSelect: (skId) => onPlayerSkillSelectChange(skId),
+      onCenterClick: () => confirmSkillSelectModal()
+    });
+  }
+  if (modal) {
+    modal.style.display = 'flex';
+    const slider = modal.querySelector('.cf-slider');
+    if (slider) slider.focus();
+  }
+}
+
+function closeSkillSelectModal(silent = false) {
+  const modal = document.getElementById('skill-select-modal');
+  if (modal) modal.style.display = 'none';
+  if (!silent && activeSkillConfirmFlow) SE.play('cancel');
+  activeSkillConfirmFlow = null;
+}
+
+function confirmSkillSelectModal() {
+  const modal = document.getElementById('skill-select-modal');
+  if (modal) modal.style.display = 'none';
+  if (!activeSkillConfirmFlow) return;
+  SE.play('select');
+  openConfirmMatchModal();
+}
+
+function openConfirmMatchModal() {
+  if (!activeSkillConfirmFlow) return;
+  const modal = document.getElementById('confirm-match-modal');
+  if (!modal) {
+    acceptConfirmModal();
+    return;
+  }
+  const charId = activeSkillConfirmFlow.charId;
+  const ch = getCharacterById(charId);
+  const imgEl = document.getElementById('confirm-modal-char-img');
+  const nameEl = document.getElementById('confirm-modal-char-name');
+  if (imgEl) {
+    if (charId === 'random') {
+      applyCharacterImageToElement(imgEl, 'main00', 'normal');
+    } else if (charId === 'custom' && CustomAssets.chara) {
+      imgEl.src = CustomAssets.chara.dataUrl;
+    } else {
+      applyCharacterImageToElement(imgEl, charId, 'normal');
+    }
+  }
+  if (nameEl) nameEl.innerText = ch.name;
+
+  const skId = selectedPlayerSkill;
+  const skIcon = (typeof SKILL_ICONS !== 'undefined' && SKILL_ICONS[skId]) ? SKILL_ICONS[skId] : '⚡';
+  const skName = (typeof SKILL_LABELS !== 'undefined' && SKILL_LABELS[skId]) ? SKILL_LABELS[skId] : skId;
+  const skDesc = (typeof SKILL_DESCRIPTIONS !== 'undefined' && SKILL_DESCRIPTIONS[skId]) ? SKILL_DESCRIPTIONS[skId] : '';
+  document.getElementById('confirm-modal-skill-icon').innerText = skIcon;
+  document.getElementById('confirm-modal-skill-name').innerText = skName;
+  document.getElementById('confirm-modal-skill-desc').innerText = skDesc;
+  document.getElementById('confirm-modal-extra').innerText = activeSkillConfirmFlow.extraText || '';
+
+  const okBtn = document.getElementById('confirm-modal-ok-btn');
+  if (okBtn) {
+    okBtn.innerText = activeSkillConfirmFlow.okLabel || 'OK！';
+    modal.style.display = 'flex';
+    okBtn.focus();
+  } else {
+    modal.style.display = 'flex';
+  }
+}
+
+function backFromConfirmModal() {
+  const modal = document.getElementById('confirm-match-modal');
+  if (modal) modal.style.display = 'none';
+  SE.play('cancel');
+  openSkillSelectModal();
+}
+
+function acceptConfirmModal() {
+  const modal = document.getElementById('confirm-match-modal');
+  if (modal) modal.style.display = 'none';
+  const cb = activeSkillConfirmFlow && activeSkillConfirmFlow.onConfirm;
+  activeSkillConfirmFlow = null;
+  SE.play('select');
+  if (typeof cb === 'function') cb();
+}
+
+function beginSingleStartFlow() {
+  SE.play('select');
+  const skillOn = !!document.getElementById('single-skill-toggle')?.checked;
+  if (!skillOn) {
+    startSingleMode();
+    return;
+  }
+  const modeNames = { free: 'フリー', ta: 'タイムアタック', sa: 'スコアアタック', survival: '勝ち抜き' };
+  openSkillAndConfirmFlow({
+    charId: selectedCharId,
+    extraText: `練習: ${modeNames[selectedSingleMode] || 'フリー'}`,
+    okLabel: 'OK！スタート',
+    onConfirm: () => startSingleMode()
+  });
+}
+
+function beginComStartFlow() {
+  SE.play('select');
+  const skillOn = !!document.getElementById('com-cheat-toggle')?.checked;
+  if (!skillOn) {
+    startComGameFromSlider();
+    return;
+  }
+  const lv = parseInt(document.getElementById('com-level-slider')?.value, 10) || 2;
+  openSkillAndConfirmFlow({
+    charId: selectedCharId,
+    extraText: `COM対戦 (${selectedComCount}人 / Lv.${lv})`,
+    okLabel: 'OK！対戦開始',
+    onConfirm: () => startComGameFromSlider()
+  });
+}
+
+function beginOnlineCreateFlow() {
+  SE.play('select');
+  const skillOn = !!document.getElementById('online-skill-toggle')?.checked;
+  if (!skillOn) {
+    createRoom();
+    return;
+  }
+  const maxP = document.getElementById('online-max-players')?.value || '2';
+  openSkillAndConfirmFlow({
+    charId: selectedCharId,
+    extraText: `オンライン部屋作成 (${maxP}人 / スキルON)`,
+    okLabel: 'OK！部屋を作る',
+    onConfirm: () => createRoom()
+  });
+}
+
+function beginOnlineJoinFlow() {
+  const code = document.getElementById('peer-room-id')?.value.trim();
+  if (!code) { SE.play('cancel'); showToast('部屋コードを入力してください'); return; }
+  SE.play('select');
+  const skillOn = !!document.getElementById('online-skill-toggle')?.checked;
+  if (!skillOn) {
+    joinRoom();
+    return;
+  }
+  openSkillAndConfirmFlow({
+    charId: selectedCharId,
+    extraText: `部屋参加: ${code.toUpperCase()}`,
+    okLabel: 'OK！部屋に入る',
+    onConfirm: () => joinRoom()
+  });
 }
 
 function syncHandicapFromSlider(val) {
@@ -85,14 +243,657 @@ function syncHandicapFromSlider(val) {
   });
 }
 
-let localSlotsConfig = [
-  { isCom: false, comLevel: 3, charId: 'main00', skillId: 'erase_color' },
-  { isCom: false, comLevel: 3, charId: 'sub01',  skillId: 'erase_rows' },
-  { isCom: true,  comLevel: 3, charId: 'sub02',  skillId: 'purify_garbage' },
-  { isCom: true,  comLevel: 3, charId: 'sub03',  skillId: 'corrupt_enemy_row' }
-];
-let activeLocalTab = 0;
+// ==========================================
+// 縦UIハブ大型立ち絵（ランダム/固定） & Switch風メニュー2ペイン制御
+// ==========================================
+function refreshMenuHeaderAndPreview(rerollHubChar = false) {
+  // 横画面Switch風：使用中キャラ表示
+  const charId = resolvePlayableCharId(selectedCharId);
+  const ch = getCharacterById(charId);
+  const customUrl = (charId === 'custom' && CustomAssets.chara) ? CustomAssets.chara.dataUrl : null;
+  const heroImg = document.getElementById('switch-hero-img');
+  if (heroImg && typeof applyCharacterImageToElement === 'function') {
+    applyCharacterImageToElement(heroImg, charId, 'normal', { customUrl });
+  }
 
+  // 縦UIハブ：ランダム（または設定で固定された）キャラを大きく表示
+  const hubCharId = typeof pickHubPortraitCharId === 'function' ? pickHubPortraitCharId(rerollHubChar) : charId;
+  const hubCh = getCharacterById(hubCharId);
+  const hubCustomUrl = (hubCharId === 'custom' && CustomAssets.chara) ? CustomAssets.chara.dataUrl : null;
+  const vImg = document.getElementById('vertical-hub-hero-img');
+  const vName = document.getElementById('vertical-hub-hero-name');
+  if (vImg && typeof applyCharacterImageToElement === 'function') {
+    applyCharacterImageToElement(vImg, hubCharId, 'normal', { customUrl: hubCustomUrl });
+  }
+  if (vName) {
+    vName.innerText = (hubCharId === 'custom') ? getPlayerDisplayName() : hubCh.name;
+    vName.style.borderColor = hubCh.color || '#ffd700';
+  }
+}
+
+function setSwitchHeroPreview(title, desc, badge = 'PUZZLE ACTION') {
+  const tEl = document.getElementById('switch-hero-title');
+  const dEl = document.getElementById('switch-hero-desc');
+  const bEl = document.getElementById('switch-hero-badge');
+  if (tEl && title) tEl.innerText = title;
+  if (dEl && desc) dEl.innerText = desc;
+  if (bEl && badge) bEl.innerText = badge;
+}
+
+function refreshMenuLayoutState(rerollHubChar = false) {
+  const menuOverlay = document.getElementById('menu-overlay');
+  if (!menuOverlay) return;
+  const isLandscape = window.innerWidth > window.innerHeight && window.innerWidth >= 700;
+  const isVis = (id) => {
+    const el = document.getElementById(id);
+    return el && window.getComputedStyle(el).display !== 'none';
+  };
+  const isWaiting = isVis('room-waiting');
+  // ハブ画面（メイン / ひとりで / みんなで）のみ立ち絵表示。深い階層に入ったら完全排除
+  const isHub = !isWaiting && (
+    (isVis('main-menu') && isVis('main-menu-actions')) ||
+    isVis('solo-hub-menu') ||
+    isVis('multi-hub-menu')
+  );
+
+  menuOverlay.classList.toggle('switch-hub-active', isLandscape && isHub);
+  menuOverlay.classList.toggle('vertical-hub-active', !isLandscape && isHub);
+
+  const verticalHubHero = document.getElementById('vertical-hub-hero');
+  if (verticalHubHero) {
+    verticalHubHero.style.display = (!isLandscape && isHub) ? 'flex' : 'none';
+  }
+  const heroPanel = document.getElementById('switch-hero-panel');
+  if (heroPanel) {
+    heroPanel.style.display = (isLandscape && isHub) ? 'flex' : 'none';
+  }
+  refreshMenuHeaderAndPreview(rerollHubChar);
+}
+
+function bindSwitchMenuHoverEvents() {
+  document.querySelectorAll('.menu-card-btn').forEach(btn => {
+    const update = () => {
+      const desc = btn.dataset.desc || '';
+      const title = btn.innerText.trim();
+      setSwitchHeroPreview(title, desc, 'MODE SELECT');
+    };
+    btn.addEventListener('mouseenter', update);
+    btn.addEventListener('focus', update);
+  });
+}
+
+function bindMenuHoverCursorSE() {
+  let lastHoveredEl = null;
+  document.addEventListener('pointerover', (e) => {
+    if (e.pointerType && e.pointerType !== 'mouse') return;
+    const isGameVisible = document.getElementById('game-area')?.style.display === 'flex';
+    const isResultVisible = document.getElementById('result-overlay')?.style.display === 'flex';
+    const isSettingsVisible = document.getElementById('settings-overlay')?.style.display === 'block';
+    const isSkillModalVisible = document.getElementById('skill-select-modal')?.style.display === 'flex';
+    const isConfirmModalVisible = document.getElementById('confirm-match-modal')?.style.display === 'flex';
+    const isSharePrepVisible = document.getElementById('share-prep-overlay')?.style.display === 'flex';
+    const isMenuHoverContext = !isGameVisible || isResultVisible || isSettingsVisible || isSkillModalVisible || isConfirmModalVisible || isSharePrepVisible;
+    if (!isMenuHoverContext) {
+      lastHoveredEl = null;
+      return;
+    }
+
+    const target = e.target && e.target.closest
+      ? e.target.closest('button, label.small-btn, .switch-wrapper, .local-select-tile, .share-prep-char-btn, .cf-nav-btn')
+      : null;
+    if (!target) {
+      lastHoveredEl = null;
+      return;
+    }
+    if (target.disabled || target === lastHoveredEl) return;
+    lastHoveredEl = target;
+    if (typeof SE !== 'undefined') SE.play('cursorMove');
+  });
+}
+
+// ==========================================
+// ローカル対戦：スマブラ風 上半分タイル＆下半分4等分立ち絵・スキル・OK帯
+// ==========================================
+let localSlotsConfig = [
+  { isCom: false, comLevel: 3, charId: 'main00', skillId: 'erase_color',       phase: 'char', cursorStage: 'char', charCursorIdx: 0, skillCursorIdx: 0 },
+  { isCom: false, comLevel: 3, charId: 'sub01',  skillId: 'erase_rows',        phase: 'char', cursorStage: 'char', charCursorIdx: 1, skillCursorIdx: 1 },
+  { isCom: true,  comLevel: 3, charId: 'sub02',  skillId: 'purify_garbage',    phase: 'ready', cursorStage: 'char', charCursorIdx: 2, skillCursorIdx: 2 },
+  { isCom: true,  comLevel: 3, charId: 'sub03',  skillId: 'corrupt_enemy_row', phase: 'ready', cursorStage: 'char', charCursorIdx: 3, skillCursorIdx: 3 }
+];
+let activeLocalTouchActor = 0;
+let localAutoStartTimer = null;
+let localMenuPadPrev = [{}, {}, {}, {}];
+let localMenuPadHold = [
+  { Up: 0, Down: 0, Left: 0, Right: 0 },
+  { Up: 0, Down: 0, Left: 0, Right: 0 },
+  { Up: 0, Down: 0, Left: 0, Right: 0 },
+  { Up: 0, Down: 0, Left: 0, Right: 0 }
+];
+
+function getLocalPlayerCount() {
+  return Math.max(2, Math.min(4, parseInt(document.getElementById('local-player-count')?.value, 10) || 2));
+}
+
+function isLocalSkillRuleOn() {
+  return !!document.getElementById('local-skill-toggle')?.checked;
+}
+
+function cancelLocalAutoStart() {
+  if (localAutoStartTimer) {
+    clearTimeout(localAutoStartTimer);
+    localAutoStartTimer = null;
+  }
+}
+
+function resetLocalSelectionStates() {
+  cancelLocalAutoStart();
+  const cnt = getLocalPlayerCount();
+  for (let i = 0; i < 4; i++) {
+    const slot = localSlotsConfig[i];
+    if (i === 0) slot.isCom = false;
+    slot.charCursorIdx = Math.max(0, CHAR_PICKER_ORDER.indexOf(slot.charId));
+    slot.skillCursorIdx = Math.max(0, SKILL_IDS.indexOf(slot.skillId));
+    if (slot.isCom) {
+      slot.phase = 'ready';
+      slot.cursorStage = 'char';
+    } else {
+      slot.phase = 'char';
+      slot.cursorStage = 'char';
+    }
+  }
+  if (activeLocalTouchActor >= cnt || localSlotsConfig[activeLocalTouchActor].isCom) {
+    activeLocalTouchActor = 0;
+  }
+}
+
+function onLocalCountChange() {
+  cancelLocalAutoStart();
+  SE.play('select');
+  const count = getLocalPlayerCount();
+  for (let i = 0; i < count; i++) {
+    if (localSlotsConfig[i].isCom) localSlotsConfig[i].phase = 'ready';
+  }
+  if (activeLocalTouchActor >= count) activeLocalTouchActor = 0;
+  renderLocalMenuUI();
+}
+
+function onLocalSkillRuleToggle() {
+  cancelLocalAutoStart();
+  SE.play('select');
+  const skillOn = isLocalSkillRuleOn();
+  const count = getLocalPlayerCount();
+  for (let i = 0; i < count; i++) {
+    const slot = localSlotsConfig[i];
+    if (!slot.isCom && !skillOn && slot.phase === 'skill') {
+      slot.phase = 'ready';
+      slot.cursorStage = 'char';
+    }
+    if (!slot.isCom && skillOn && slot.phase === 'ready') {
+      slot.phase = 'skill';
+      slot.cursorStage = 'skill';
+    }
+  }
+  renderLocalMenuUI();
+  checkLocalAllReady();
+}
+
+function toggleLocalSlotCom(slotIdx) {
+  if (slotIdx === 0) return;
+  cancelLocalAutoStart();
+  const slot = localSlotsConfig[slotIdx];
+  slot.isCom = !slot.isCom;
+  if (slot.isCom) {
+    slot.phase = 'ready';
+    slot.cursorStage = 'char';
+    if (activeLocalTouchActor === slotIdx) {
+      activeLocalTouchActor = findNextUnreadyHumanSlot(0);
+    }
+  } else {
+    slot.phase = 'char';
+    slot.cursorStage = 'char';
+    activeLocalTouchActor = slotIdx;
+  }
+  SE.play('select');
+  renderLocalMenuUI();
+  checkLocalAllReady();
+}
+
+function adjustLocalComLevel(slotIdx, delta) {
+  const slot = localSlotsConfig[slotIdx];
+  slot.comLevel = Math.max(1, Math.min(99, (slot.comLevel || 3) + delta));
+  SE.play('cursorMove');
+  renderLocalMenuUI();
+}
+
+function findNextUnreadyHumanSlot(fallback = 0) {
+  const count = getLocalPlayerCount();
+  for (let i = 0; i < count; i++) {
+    if (!localSlotsConfig[i].isCom && localSlotsConfig[i].phase !== 'ready') return i;
+  }
+  return fallback;
+}
+
+function confirmLocalCharForSlot(slotIdx, tileIdx) {
+  const slot = localSlotsConfig[slotIdx];
+  const cid = CHAR_PICKER_ORDER[tileIdx];
+  if (!cid) return;
+  if (cid === 'custom' && !CustomAssets.chara) {
+    SE.play('cancel');
+    showToast('マイ立ち絵が未設定です');
+    return;
+  }
+  cancelLocalAutoStart();
+  slot.charCursorIdx = tileIdx;
+  slot.charId = cid;
+
+  if (slot.isCom) {
+    slot.phase = 'ready';
+  } else if (isLocalSkillRuleOn()) {
+    slot.phase = 'skill';
+    slot.cursorStage = 'skill';
+  } else {
+    slot.phase = 'ready';
+  }
+  SE.play('select');
+  renderLocalMenuUI();
+  checkLocalAllReady();
+}
+
+function confirmLocalSkillForSlot(slotIdx, tileIdx) {
+  if (!isLocalSkillRuleOn()) return;
+  const slot = localSlotsConfig[slotIdx];
+  const skId = SKILL_IDS[tileIdx];
+  if (!skId) return;
+  cancelLocalAutoStart();
+  slot.skillCursorIdx = tileIdx;
+  slot.skillId = skId;
+  slot.phase = 'ready';
+  SE.play('select');
+
+  if (slotIdx === activeLocalTouchActor) {
+    activeLocalTouchActor = findNextUnreadyHumanSlot(slotIdx);
+  }
+  renderLocalMenuUI();
+  checkLocalAllReady();
+}
+
+function cancelLocalStepForSlot(slotIdx) {
+  cancelLocalAutoStart();
+  const slot = localSlotsConfig[slotIdx];
+  if (slot.isCom) {
+    slot.phase = (slot.phase === 'ready') ? 'char' : 'ready';
+    slot.cursorStage = 'char';
+    SE.play('cancel');
+    renderLocalMenuUI();
+    return;
+  }
+  if (slot.phase === 'ready') {
+    if (isLocalSkillRuleOn()) {
+      slot.phase = 'skill';
+      slot.cursorStage = 'skill';
+    } else {
+      slot.phase = 'char';
+      slot.cursorStage = 'char';
+    }
+    SE.play('cancel');
+  } else if (slot.phase === 'skill') {
+    slot.phase = 'char';
+    slot.cursorStage = 'char';
+    SE.play('cancel');
+  }
+  renderLocalMenuUI();
+}
+
+function moveLocalTileCursor(slotIdx, dx, dy) {
+  const slot = localSlotsConfig[slotIdx];
+  if (!slot || slot.phase === 'ready') return;
+
+  if (slot.cursorStage === 'char') {
+    const cols = 5;
+    const total = CHAR_PICKER_ORDER.length;
+    let idx = slot.charCursorIdx;
+    let r = Math.floor(idx / cols);
+    let c = idx % cols;
+    const rows = Math.ceil(total / cols);
+    c = (c + dx + cols) % cols;
+    r = (r + dy + rows) % rows;
+    let nextIdx = r * cols + c;
+    if (nextIdx >= total) nextIdx = total - 1;
+    if (nextIdx !== slot.charCursorIdx) {
+      slot.charCursorIdx = nextIdx;
+      const cid = CHAR_PICKER_ORDER[nextIdx];
+      if (cid !== 'custom' || CustomAssets.chara) slot.charId = cid;
+      SE.play('cursorMove');
+      renderLocalMenuUI();
+    }
+  } else if (slot.cursorStage === 'skill' && isLocalSkillRuleOn()) {
+    const cols = 4;
+    const total = SKILL_IDS.length;
+    let idx = slot.skillCursorIdx;
+    let r = Math.floor(idx / cols);
+    let c = idx % cols;
+    const rows = Math.ceil(total / cols);
+    c = (c + dx + cols) % cols;
+    r = (r + dy + rows) % rows;
+    let nextIdx = r * cols + c;
+    if (nextIdx >= total) nextIdx = total - 1;
+    if (nextIdx !== slot.skillCursorIdx) {
+      slot.skillCursorIdx = nextIdx;
+      slot.skillId = SKILL_IDS[nextIdx];
+      SE.play('cursorMove');
+      renderLocalMenuUI();
+    }
+  }
+}
+
+function checkLocalAllReady() {
+  cancelLocalAutoStart();
+  const count = getLocalPlayerCount();
+  let allReady = true;
+  for (let i = 0; i < count; i++) {
+    if (localSlotsConfig[i].phase !== 'ready') {
+      allReady = false;
+      break;
+    }
+  }
+  if (allReady) {
+    showToast('全員OK！対戦を開始します！');
+    localAutoStartTimer = setTimeout(() => {
+      localAutoStartTimer = null;
+      if (document.getElementById('local-menu')?.style.display === 'flex') {
+        startLocalGame();
+      }
+    }, 650);
+  }
+}
+
+function pollLocalMenuGamepads(pads) {
+  const count = getLocalPlayerCount();
+  for (let slotIdx = 0; slotIdx < count; slotIdx++) {
+    const slot = localSlotsConfig[slotIdx];
+    if (slot.isCom) continue;
+    const pSlot = playerConfigs[slotIdx].padSlot;
+    const padObj = (pSlot >= 0 && pads[pSlot]) ? pads[pSlot] : null;
+    if (!padObj) {
+      localMenuPadHold[slotIdx] = { Up: 0, Down: 0, Left: 0, Right: 0 };
+      continue;
+    }
+    const prev = localMenuPadPrev[slotIdx];
+    const cur = {};
+    padObj.buttons.forEach((b, i) => cur[i] = b.pressed);
+    const cfg = playerConfigs[slotIdx].pad;
+    const just = (btnIdx) => btnIdx !== null && btnIdx !== undefined && cur[btnIdx] && !prev[btnIdx];
+    const isRep = (dir, btnIdx) => {
+      if (btnIdx === null || btnIdx === undefined || !cur[btnIdx]) {
+        localMenuPadHold[slotIdx][dir] = 0;
+        return false;
+      }
+      const f = localMenuPadHold[slotIdx][dir]++;
+      return f === 0 || (f >= 10 && (f - 10) % 3 === 0);
+    };
+
+    if (just(cfg.Skill) || just(cfg.GrabLeft)) {
+      if (slot.phase === 'char' && slotIdx === 0) {
+        backToMultiHubMenu(true);
+      } else {
+        cancelLocalStepForSlot(slotIdx);
+      }
+    } else if (just(cfg.Swap) || just(cfg.GrabRight)) {
+      if (slot.phase === 'char') confirmLocalCharForSlot(slotIdx, slot.charCursorIdx);
+      else if (slot.phase === 'skill') confirmLocalSkillForSlot(slotIdx, slot.skillCursorIdx);
+    } else {
+      if (isRep('Left', cfg.Left)) moveLocalTileCursor(slotIdx, -1, 0);
+      if (isRep('Right', cfg.Right)) moveLocalTileCursor(slotIdx, 1, 0);
+      if (isRep('Up', cfg.Up)) moveLocalTileCursor(slotIdx, 0, -1);
+      if (isRep('Down', cfg.Down)) moveLocalTileCursor(slotIdx, 0, 1);
+    }
+    localMenuPadPrev[slotIdx] = cur;
+  }
+}
+
+function renderLocalMenuUI() {
+  const count = getLocalPlayerCount();
+  const skillOn = isLocalSkillRuleOn();
+  const actorBar = document.getElementById('local-touch-actor-bar');
+  const charGrid = document.getElementById('local-char-tiles');
+  const skillGrid = document.getElementById('local-skill-tiles');
+  const skillSection = document.getElementById('local-skill-section');
+  const dockEl = document.getElementById('local-slots-dock');
+  if (!charGrid || !skillGrid || !dockEl) return;
+
+  if (activeLocalTouchActor >= count) activeLocalTouchActor = 0;
+
+  if (actorBar) {
+    actorBar.innerHTML = '';
+    const colors = ['#10b981', '#f43f5e', '#fbbf24', '#a855f7'];
+    for (let i = 0; i < count; i++) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'local-actor-btn' + (activeLocalTouchActor === i ? ' active' : '');
+      if (activeLocalTouchActor === i) {
+        btn.style.background = colors[i];
+        btn.style.borderColor = '#fff';
+        if (i === 2) btn.style.color = '#070b14';
+      }
+      btn.innerText = `${i + 1}P操作`;
+      btn.onclick = () => {
+        activeLocalTouchActor = i;
+        SE.play('cursorMove');
+        renderLocalMenuUI();
+      };
+      actorBar.appendChild(btn);
+    }
+  }
+
+  charGrid.innerHTML = '';
+  CHAR_PICKER_ORDER.forEach((cid, tIdx) => {
+    const ch = getCharacterById(cid);
+    const isCustomEmpty = (cid === 'custom' && !CustomAssets.chara);
+    const tile = document.createElement('button');
+    tile.type = 'button';
+    tile.className = 'local-select-tile' + (isCustomEmpty ? ' disabled-tile' : '');
+
+    const imgWrap = document.createElement('div');
+    imgWrap.className = 'local-tile-img-wrap';
+    if (cid === 'random') {
+      imgWrap.innerHTML = '<span class="char-icon-random" style="font-size:1.1rem;">？</span>';
+    } else {
+      const img = document.createElement('img');
+      img.alt = ch.name;
+      if (cid === 'custom' && CustomAssets.chara) img.src = CustomAssets.chara.dataUrl;
+      else applyCharacterImageToElement(img, cid === 'custom' ? 'main00' : cid, 'normal');
+      imgWrap.appendChild(img);
+    }
+
+    const lbl = document.createElement('div');
+    lbl.className = 'local-tile-label';
+    lbl.innerText = isCustomEmpty ? 'マイ(無)' : ch.name;
+
+    const badges = document.createElement('div');
+    badges.className = 'local-cursor-badges';
+    for (let i = 0; i < count; i++) {
+      const sl = localSlotsConfig[i];
+      if (!sl.isCom && sl.phase === 'char' && sl.charCursorIdx === tIdx) {
+        tile.classList.add(`has-cursor-${i}`);
+        const chip = document.createElement('span');
+        chip.className = `local-cursor-chip p${i}`;
+        chip.innerText = `${i + 1}P`;
+        badges.appendChild(chip);
+      }
+    }
+
+    tile.append(badges, imgWrap, lbl);
+    tile.onclick = () => {
+      const targetSlot = activeLocalTouchActor;
+      if (localSlotsConfig[targetSlot].phase === 'ready') cancelLocalAutoStart();
+      confirmLocalCharForSlot(targetSlot, tIdx);
+    };
+    charGrid.appendChild(tile);
+  });
+
+  if (skillSection) skillSection.classList.toggle('disabled-section', !skillOn);
+  skillGrid.innerHTML = '';
+  SKILL_IDS.forEach((skId, tIdx) => {
+    const tile = document.createElement('button');
+    tile.type = 'button';
+    tile.className = 'local-select-tile';
+    tile.disabled = !skillOn;
+
+    const icon = document.createElement('div');
+    icon.className = 'local-tile-skill-icon';
+    icon.innerText = SKILL_ICONS[skId] || '⚡';
+
+    const lbl = document.createElement('div');
+    lbl.className = 'local-tile-label';
+    lbl.innerText = SKILL_LABELS[skId] || skId;
+
+    const badges = document.createElement('div');
+    badges.className = 'local-cursor-badges';
+    if (skillOn) {
+      for (let i = 0; i < count; i++) {
+        const sl = localSlotsConfig[i];
+        if (!sl.isCom && sl.phase === 'skill' && sl.skillCursorIdx === tIdx) {
+          tile.classList.add(`has-cursor-${i}`);
+          const chip = document.createElement('span');
+          chip.className = `local-cursor-chip p${i}`;
+          chip.innerText = `${i + 1}P`;
+          badges.appendChild(chip);
+        }
+      }
+    }
+
+    tile.append(badges, icon, lbl);
+    tile.onclick = () => {
+      if (!skillOn) return;
+      const targetSlot = activeLocalTouchActor;
+      confirmLocalSkillForSlot(targetSlot, tIdx);
+    };
+    skillGrid.appendChild(tile);
+  });
+
+  dockEl.innerHTML = '';
+  for (let i = 0; i < 4; i++) {
+    const slotEl = document.createElement('div');
+    if (i >= count) {
+      slotEl.className = `local-dock-slot p${i} is-empty`;
+      slotEl.innerHTML = `<div style="font-size:0.85rem;font-weight:900;color:#64748b;">${i + 1}P<br>未使用</div>`;
+      dockEl.appendChild(slotEl);
+      continue;
+    }
+
+    const slot = localSlotsConfig[i];
+    const displayCharId = (slot.phase === 'char' && !slot.isCom)
+      ? (CHAR_PICKER_ORDER[slot.charCursorIdx] || slot.charId)
+      : slot.charId;
+    const ch = getCharacterById(displayCharId);
+    const displaySkillId = (slot.phase === 'skill' && !slot.isCom)
+      ? (SKILL_IDS[slot.skillCursorIdx] || slot.skillId)
+      : slot.skillId;
+
+    slotEl.className = `local-dock-slot p${i}` + (activeLocalTouchActor === i ? ' is-active-touch' : '');
+    slotEl.onclick = (e) => {
+      if (e.target.closest('button')) return;
+      activeLocalTouchActor = i;
+      if (slot.phase === 'ready' && !slot.isCom) {
+        cancelLocalStepForSlot(i);
+      } else {
+        SE.play('cursorMove');
+        renderLocalMenuUI();
+      }
+    };
+
+    const topRow = document.createElement('div');
+    topRow.className = 'local-slot-top';
+    const tag = document.createElement('span');
+    tag.className = 'local-slot-tag';
+    tag.innerText = `${i + 1}P` + (slot.isCom ? ' (COM)' : '');
+    topRow.appendChild(tag);
+
+    if (i > 0) {
+      const toggleBtn = document.createElement('button');
+      toggleBtn.type = 'button';
+      toggleBtn.className = 'local-slot-type-btn';
+      toggleBtn.innerText = slot.isCom ? 'COM⇄人' : '人⇄COM';
+      toggleBtn.onclick = (ev) => { ev.stopPropagation(); toggleLocalSlotCom(i); };
+      topRow.appendChild(toggleBtn);
+    }
+    slotEl.appendChild(topRow);
+
+    if (slot.isCom) {
+      const lvRow = document.createElement('div');
+      lvRow.className = 'local-slot-com-lv';
+      const minus = document.createElement('button');
+      minus.type = 'button'; minus.className = 'local-slot-lv-btn'; minus.innerText = '-';
+      minus.onclick = (ev) => { ev.stopPropagation(); adjustLocalComLevel(i, -5); };
+      const lvTxt = document.createElement('span');
+      lvTxt.innerText = `Lv.${slot.comLevel}`;
+      const plus = document.createElement('button');
+      plus.type = 'button'; plus.className = 'local-slot-lv-btn'; plus.innerText = '+';
+      plus.onclick = (ev) => { ev.stopPropagation(); adjustLocalComLevel(i, 5); };
+      lvRow.append(minus, lvTxt, plus);
+      slotEl.appendChild(lvRow);
+    }
+
+    const portrait = document.createElement('div');
+    portrait.className = 'local-slot-portrait';
+    if (displayCharId === 'random') {
+      portrait.innerHTML = '<span class="char-icon-random">？</span>';
+    } else {
+      const img = document.createElement('img');
+      img.alt = ch.name;
+      if (displayCharId === 'custom' && CustomAssets.chara) img.src = CustomAssets.chara.dataUrl;
+      else applyCharacterImageToElement(img, displayCharId === 'custom' ? 'main00' : displayCharId, 'normal');
+      portrait.appendChild(img);
+    }
+    const charNameEl = document.createElement('div');
+    charNameEl.className = 'local-slot-char-name';
+    charNameEl.innerText = ch.name;
+    slotEl.append(portrait, charNameEl);
+
+    const skBox = document.createElement('div');
+    skBox.className = 'local-slot-skill-box';
+    if (skillOn) {
+      const skIcon = SKILL_ICONS[displaySkillId] || '⚡';
+      const skLabel = SKILL_LABELS[displaySkillId] || displaySkillId;
+      const skDesc = SKILL_DESCRIPTIONS[displaySkillId] || '';
+      skBox.innerHTML = `
+        <div class="local-slot-skill-name">${skIcon} ${skLabel}</div>
+        <div class="local-slot-skill-desc">${skDesc}</div>
+      `;
+    } else {
+      skBox.innerHTML = `
+        <div class="local-slot-skill-name" style="color:#94a3b8;">スキル: OFF</div>
+        <div class="local-slot-skill-desc">スキルなしの純粋パズル対戦</div>
+      `;
+    }
+    slotEl.appendChild(skBox);
+
+    if (slot.phase !== 'ready') {
+      const hint = document.createElement('div');
+      hint.className = 'local-slot-phase-hint';
+      hint.innerText = slot.phase === 'char' ? 'キャラ選択中…' : 'スキル選択中…';
+      slotEl.appendChild(hint);
+    } else {
+      const okRibbon = document.createElement('div');
+      okRibbon.className = 'local-slot-ok-ribbon';
+      okRibbon.innerText = 'OK!';
+      slotEl.appendChild(okRibbon);
+    }
+
+    dockEl.appendChild(slotEl);
+  }
+}
+
+function startLocalGame() {
+  cancelLocalAutoStart();
+  const count = getLocalPlayerCount();
+  const skillEnabled = isLocalSkillRuleOn();
+  startGame('local', 3, count, skillEnabled);
+}
+
+// ==========================================
+// シェア対戦 & メニューナビゲーション
+// ==========================================
 let sharePrepConfig = {
   p1: { charId: 'main00', handicap: 3, skillEnabled: false, skillId: 'erase_color', ready: false },
   p2: { charId: 'sub01',  handicap: 3, skillId: 'erase_rows', ready: false }
@@ -131,6 +932,8 @@ function bindMultiTouchTap(el, handler) {
 }
 
 function openSharePrepMenu() {
+  cancelLocalAutoStart();
+  SE.play('select');
   if (typeof closeRangeDigitEdit === 'function') closeRangeDigitEdit();
   sharePrepConfig.p1.ready = false;
   sharePrepConfig.p2.ready = false;
@@ -143,11 +946,13 @@ function openSharePrepMenu() {
   renderSharePrepUI();
 }
 
-function closeSharePrepMenu() {
+function closeSharePrepMenu(silent = false) {
   if (shareStartTimer) { clearTimeout(shareStartTimer); shareStartTimer = null; }
   const overlay = document.getElementById('share-prep-overlay');
+  const wasOpen = overlay && overlay.style.display === 'flex';
   if (overlay) overlay.style.display = 'none';
   document.body.classList.remove('share-force-portrait');
+  if (wasOpen && !silent) SE.play('cancel');
 }
 
 function renderSharePrepUI() {
@@ -214,9 +1019,9 @@ function renderSharePrepSide(playerNum) {
     nm.innerText = isCustomEmpty ? 'マイ(無)' : ch.name;
     btn.append(thumb, nm);
     bindMultiTouchTap(btn, () => {
-      if (isCustomEmpty) { showToast('設定からマイ立ち絵を登録すると選べます'); return; }
+      if (isCustomEmpty) { SE.play('cancel'); showToast('設定からマイ立ち絵を登録すると選べます'); return; }
       cfg.charId = cid; cfg.ready = false;
-      SE.play('cursorMove');
+      SE.play('select');
       renderSharePrepUI();
     });
     grid.appendChild(btn);
@@ -235,7 +1040,7 @@ function renderSharePrepSide(playerNum) {
     b.innerText = item.t;
     bindMultiTouchTap(b, () => {
       cfg.handicap = item.v; cfg.ready = false;
-      SE.play('cursorMove');
+      SE.play('select');
       renderSharePrepUI();
     });
     hdRow.appendChild(b);
@@ -251,7 +1056,7 @@ function renderSharePrepSide(playerNum) {
     bindMultiTouchTap(toggleBtn, () => {
       sharePrepConfig.p1.skillEnabled = !sharePrepConfig.p1.skillEnabled;
       sharePrepConfig.p1.ready = false; sharePrepConfig.p2.ready = false;
-      SE.play('cursorMove');
+      SE.play('select');
       renderSharePrepUI();
     });
     skRow.appendChild(toggleBtn);
@@ -262,17 +1067,20 @@ function renderSharePrepSide(playerNum) {
     ruleBadge.innerText = `スキル:${skillEnabled ? 'ON(1P決定)' : 'OFF(1P決定)'}`;
     skRow.appendChild(ruleBadge);
   }
-  const skillShort = { erase_color: '2色消', erase_rows: '1・5・9段', purify_garbage: '浄化', corrupt_enemy_row: '侵食' };
-  ['erase_color', 'erase_rows', 'purify_garbage', 'corrupt_enemy_row'].forEach(skId => {
+  const skillShort = {
+    erase_color: '2色消', erase_rows: '1・5・9段', purify_garbage: '浄化', corrupt_enemy_row: '侵食',
+    seal_skill: '封印', convert_blocks: '変換', sacrifice: '代償', no_skill: '無'
+  };
+  SKILL_IDS.forEach(skId => {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'share-pill-btn' + (cfg.skillId === skId ? ' active' : '');
     b.disabled = !skillEnabled;
-    b.innerText = skillShort[skId];
+    b.innerText = skillShort[skId] || skId;
     bindMultiTouchTap(b, () => {
       if (!sharePrepConfig.p1.skillEnabled) return;
       cfg.skillId = skId; cfg.ready = false;
-      SE.play('cursorMove');
+      SE.play('select');
       renderSharePrepUI();
     });
     skRow.appendChild(b);
@@ -284,7 +1092,7 @@ function renderSharePrepSide(playerNum) {
   readyBtn.innerText = cfg.ready ? 'READY! (取消は再タップ)' : '決定 / READY';
   bindMultiTouchTap(readyBtn, () => {
     cfg.ready = !cfg.ready;
-    SE.play('cursorMove');
+    SE.play(cfg.ready ? 'select' : 'cancel');
     renderSharePrepUI();
     checkSharePrepBothReady();
   });
@@ -305,7 +1113,7 @@ function showToast(msg) {
 }
 
 function hideAllMenuSubViews() {
-  ['main-menu-actions', 'solo-hub-menu', 'multi-hub-menu', 'com-menu', 'single-menu',
+  ['main-menu', 'main-menu-actions', 'solo-hub-menu', 'multi-hub-menu', 'com-menu', 'single-menu',
    'local-menu', 'online-menu', 'ranking-menu', 'story-menu'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.style.display = 'none';
@@ -313,40 +1121,66 @@ function hideAllMenuSubViews() {
 }
 
 function showSoloHubMenu() {
+  SE.play('select');
   hideAllMenuSubViews();
   document.getElementById('solo-hub-menu').style.display = 'flex';
+  setSwitchHeroPreview('ひとりで', 'ストーリー・COM対戦・各種練習モードを楽しめます。', 'SOLO PLAY');
+  refreshMenuLayoutState(true);
 }
 function showMultiHubMenu() {
+  SE.play('select');
   hideAllMenuSubViews();
   document.getElementById('multi-hub-menu').style.display = 'flex';
+  setSwitchHeroPreview('みんなで', '1台で最大4人対戦、またはP2Pオンライン対戦を選べます。', 'MULTI PLAY');
+  refreshMenuLayoutState(true);
 }
-function backToMainMenu() {
+function backToMainMenu(playSe = true) {
+  if (playSe) SE.play('cancel');
+  cancelLocalAutoStart();
   if (typeof closeRangeDigitEdit === 'function') closeRangeDigitEdit();
-  closeSharePrepMenu();
+  closeSharePrepMenu(true);
+  closeSkillSelectModal(true);
+  const cModal = document.getElementById('confirm-match-modal');
+  if (cModal) cModal.style.display = 'none';
   hideAllMenuSubViews();
+  const mainMenu = document.getElementById('main-menu');
+  if (mainMenu) mainMenu.style.display = 'flex';
   document.getElementById('main-menu-actions').style.display = 'flex';
+  setSwitchHeroPreview('ぺねぽ', '連鎖とスキルで相手にお邪魔を送り込む対戦パズル！', 'MAIN MENU');
+  refreshMenuLayoutState(true);
 }
-function backToSoloHubMenu() {
+function backToSoloHubMenu(playSe = true) {
+  if (playSe) SE.play('cancel');
   if (typeof closeRangeDigitEdit === 'function') closeRangeDigitEdit();
   hideAllMenuSubViews();
   document.getElementById('solo-hub-menu').style.display = 'flex';
+  refreshMenuLayoutState(true);
 }
-function backToMultiHubMenu() {
+function backToMultiHubMenu(playSe = true) {
+  if (playSe) SE.play('cancel');
+  cancelLocalAutoStart();
   if (typeof closeRangeDigitEdit === 'function') closeRangeDigitEdit();
-  closeSharePrepMenu();
+  closeSharePrepMenu(true);
   hideAllMenuSubViews();
   document.getElementById('multi-hub-menu').style.display = 'flex';
+  refreshMenuLayoutState(true);
 }
 
 function handleMenuCancelAction() {
+  if (document.getElementById('confirm-match-modal')?.style.display === 'flex') {
+    backFromConfirmModal();
+    return true;
+  }
+  if (document.getElementById('skill-select-modal')?.style.display === 'flex') {
+    closeSkillSelectModal();
+    return true;
+  }
   if (document.getElementById('settings-overlay')?.style.display === 'block') {
-    closeSettings();
-    SE.play('cursorMove');
+    cancelSettings();
     return true;
   }
   if (document.getElementById('room-waiting')?.style.display === 'flex') {
     cancelRoom();
-    SE.play('cursorMove');
     return true;
   }
   const isVisible = (id) => {
@@ -354,24 +1188,22 @@ function handleMenuCancelAction() {
     return el && window.getComputedStyle(el).display !== 'none';
   };
   if (isVisible('story-menu') || isVisible('single-menu') || isVisible('com-menu')) {
-    backToSoloHubMenu();
-    SE.play('cursorMove');
+    backToSoloHubMenu(true);
     return true;
   }
   if (isVisible('local-menu') || isVisible('online-menu')) {
-    backToMultiHubMenu();
-    SE.play('cursorMove');
+    backToMultiHubMenu(true);
     return true;
   }
   if (isVisible('solo-hub-menu') || isVisible('multi-hub-menu') || isVisible('ranking-menu')) {
-    backToMainMenu();
-    SE.play('cursorMove');
+    backToMainMenu(true);
     return true;
   }
   return false;
 }
 
 function selectSingleModeBtn(mode) {
+  if (selectedSingleMode !== mode) SE.play('select');
   selectedSingleMode = mode || 'free';
   document.querySelectorAll('#single-mode-buttons button').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.val === selectedSingleMode);
@@ -380,51 +1212,59 @@ function selectSingleModeBtn(mode) {
 }
 
 function selectComCountBtn(cnt) {
-  selectedComCount = parseInt(cnt, 10) || 2;
+  const nextCnt = parseInt(cnt, 10) || 2;
+  if (selectedComCount !== nextCnt) SE.play('select');
+  selectedComCount = nextCnt;
   document.querySelectorAll('#com-player-count-buttons button').forEach(btn => {
     btn.classList.toggle('active', parseInt(btn.dataset.val, 10) === selectedComCount);
   });
 }
 
 function showSingleMenu() {
+  SE.play('select');
   hideAllMenuSubViews();
   document.getElementById('single-menu').style.display = 'flex';
   selectSingleModeBtn(selectedSingleMode);
   syncHandicapFromSlider(document.getElementById('handicap-val')?.value || 3);
-  onSkillToggleUiChange('single');
   renderCharPicker('single-char-picker', { storyOnly: false });
   if (typeof enhanceAllRangeSliders === 'function') enhanceAllRangeSliders();
+  refreshMenuLayoutState();
 }
 
 function showComMenu() {
+  SE.play('select');
   hideAllMenuSubViews();
   document.getElementById('com-menu').style.display = 'flex';
   selectComCountBtn(selectedComCount);
   syncHandicapFromSlider(document.getElementById('handicap-val')?.value || 3);
-  onSkillToggleUiChange('com');
   renderCharPicker('com-char-picker', { storyOnly: false });
   if (typeof enhanceAllRangeSliders === 'function') enhanceAllRangeSliders();
+  refreshMenuLayoutState();
 }
 
 function showLocalMenu() {
+  SE.play('select');
   hideAllMenuSubViews();
   document.getElementById('local-menu').style.display = 'flex';
+  resetLocalSelectionStates();
   renderLocalMenuUI();
+  refreshMenuLayoutState();
 }
 
-function showOnlineMenu() {
+function showOnlineMenu(silent = false) {
+  if (!silent) SE.play('select');
   hideAllMenuSubViews();
   document.getElementById('online-menu').style.display = 'flex';
   syncHandicapFromSlider(document.getElementById('handicap-val')?.value || 3);
-  onSkillToggleUiChange('online');
   renderCharPicker('online-char-picker', { storyOnly: false });
   if (typeof enhanceAllRangeSliders === 'function') enhanceAllRangeSliders();
+  refreshMenuLayoutState();
 }
 
 function moveRankingCarousel(delta) {
   rankingModeIdx = (rankingModeIdx + delta + RANKING_MODES.length) % RANKING_MODES.length;
   SE.play('cursorMove');
-  showRankingMenu();
+  showRankingMenu(true);
 }
 
 function renderRankingCarousel() {
@@ -465,10 +1305,12 @@ function renderRankingCarousel() {
   container.append(row, dots);
 }
 
-function showRankingMenu() {
+function showRankingMenu(silent = false) {
+  if (!silent) SE.play('select');
   hideAllMenuSubViews();
   document.getElementById('ranking-menu').style.display = 'flex';
   renderRankingCarousel();
+  refreshMenuLayoutState();
   const mode = (RANKING_MODES[rankingModeIdx] || RANKING_MODES[0]).id;
   const listEl = document.getElementById('ranking-list');
   const data = getRankingData(mode);
@@ -480,103 +1322,6 @@ function showRankingMenu() {
       return `<div><span style="display:inline-block; width:25px; color:#ff007f;">${i+1}.</span> ${scoreText} <span style="font-size:0.75rem; color:#aaa;">(HD:${d.handicap})</span></div>`;
     }).join('');
   }
-}
-
-function onLocalCountChange() {
-  const count = parseInt(document.getElementById('local-player-count').value) || 2;
-  if (activeLocalTab >= count) activeLocalTab = 0;
-  renderLocalMenuUI();
-}
-
-function renderLocalMenuUI() {
-  const count = parseInt(document.getElementById('local-player-count')?.value) || 2;
-  const tabsEl = document.getElementById('local-player-tabs');
-  const cfgEl = document.getElementById('local-slot-config');
-  if (!tabsEl || !cfgEl) return;
-
-  tabsEl.innerHTML = '';
-  for (let i = 0; i < count; i++) {
-    const slot = localSlotsConfig[i];
-    const chName = getCharacterById(slot.charId).name;
-    const roleTag = (i === 0 || !slot.isCom) ? '人' : 'COM';
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'small-btn' + (i === activeLocalTab ? ' active' : '');
-    btn.innerText = `${i + 1}P: ${chName}(${roleTag})`;
-    btn.onclick = () => { activeLocalTab = i; renderLocalMenuUI(); };
-    tabsEl.appendChild(btn);
-  }
-
-  const slot = localSlotsConfig[activeLocalTab];
-  const padSlot = playerConfigs[activeLocalTab].padSlot;
-  cfgEl.innerHTML = '';
-
-  if (activeLocalTab === 0) {
-    const lbl = document.createElement('span');
-    lbl.innerHTML = `<b>1P</b>（人間）`;
-    cfgEl.appendChild(lbl);
-  } else {
-    const typeWrap = document.createElement('label');
-    typeWrap.style.display = 'flex'; typeWrap.style.alignItems = 'center'; typeWrap.style.gap = '4px';
-    const sel = document.createElement('select');
-    sel.className = 'input-box'; sel.style.width = 'auto'; sel.style.padding = '3px 8px'; sel.style.fontSize = '0.78rem';
-    sel.innerHTML = `<option value="human">人間</option><option value="com">COM</option>`;
-    sel.value = slot.isCom ? 'com' : 'human';
-    sel.onchange = () => { slot.isCom = (sel.value === 'com'); renderLocalMenuUI(); };
-    typeWrap.append(`${activeLocalTab + 1}P:`, sel);
-    cfgEl.appendChild(typeWrap);
-
-    if (slot.isCom) {
-      const lvWrap = document.createElement('div');
-      lvWrap.style.display = 'flex'; lvWrap.style.alignItems = 'center'; lvWrap.style.gap = '6px';
-      lvWrap.innerHTML = `<span>強さ Lv.<b id="local-com-lv-disp">${slot.comLevel}</b></span>`;
-      const rng = document.createElement('input');
-      rng.type = 'range'; rng.min = '1'; rng.max = '99'; rng.step = '1'; rng.value = String(slot.comLevel);
-      rng.style.width = '90px';
-      rng.oninput = () => {
-        slot.comLevel = parseInt(rng.value, 10) || 3;
-        document.getElementById('local-com-lv-disp').innerText = slot.comLevel;
-      };
-      lvWrap.appendChild(rng);
-      cfgEl.appendChild(lvWrap);
-      if (typeof enhanceRangeSlider === 'function') enhanceRangeSlider(rng);
-    }
-  }
-
-  if (activeLocalTab === 0 || !slot.isCom) {
-    const padWrap = document.createElement('label');
-    padWrap.style.display = 'flex'; padWrap.style.alignItems = 'center'; padWrap.style.gap = '4px';
-    const pSel = document.createElement('select');
-    pSel.className = 'input-box'; pSel.style.width = 'auto'; pSel.style.padding = '3px 8px'; pSel.style.fontSize = '0.78rem';
-    pSel.innerHTML = `<option value="0">Pad 0</option><option value="1">Pad 1</option><option value="2">Pad 2</option><option value="3">Pad 3</option><option value="-1">キーのみ</option>`;
-    pSel.value = String(padSlot);
-    pSel.onchange = () => { playerConfigs[activeLocalTab].padSlot = parseInt(pSel.value, 10); };
-    padWrap.append('パッド:', pSel);
-    cfgEl.appendChild(padWrap);
-
-    const skWrap = document.createElement('label');
-    skWrap.style.display = 'flex'; skWrap.style.alignItems = 'center'; skWrap.style.gap = '4px';
-    const skSel = document.createElement('select');
-    skSel.className = 'input-box'; skSel.style.width = 'auto'; skSel.style.padding = '3px 8px'; skSel.style.fontSize = '0.78rem';
-    skSel.innerHTML = `<option value="erase_color">マーク全消し</option><option value="erase_rows">1・5・9段消し</option><option value="purify_garbage">お邪魔浄化</option><option value="corrupt_enemy_row">お邪魔侵食</option>`;
-    skSel.value = slot.skillId || 'erase_color';
-    skSel.onchange = () => { slot.skillId = skSel.value; };
-    skWrap.append('スキル:', skSel);
-    cfgEl.appendChild(skWrap);
-  }
-
-  renderCharPicker('local-char-picker', {
-    storyOnly: false,
-    title: `${activeLocalTab + 1}P キャラ選択`,
-    currentId: slot.charId,
-    onSelect: (cid) => { slot.charId = cid; renderLocalMenuUI(); }
-  });
-}
-
-function startLocalGame() {
-  const count = parseInt(document.getElementById('local-player-count')?.value) || 2;
-  const skillEnabled = !!document.getElementById('local-skill-toggle')?.checked;
-  startGame('local', 3, count, skillEnabled);
 }
 
 function updateSingleMenu() {
@@ -622,6 +1367,7 @@ function selectTarget(index) {
   if (myTargetIndex === index) myTargetIndex = -1;
   else if (opponents[index] && !opponents[index].engine.gameOver) myTargetIndex = index;
   updateTargetUI();
+  refreshBattleSidePanels();
   SE.play('cursorMove');
 }
 
@@ -636,6 +1382,7 @@ function cycleTarget(dir = 1) {
   if (currentPos === -1) currentPos = 0;
   myTargetIndex = validTargets[(currentPos + dir + validTargets.length) % validTargets.length];
   updateTargetUI();
+  refreshBattleSidePanels();
   SE.play('cursorMove');
 }
 
@@ -784,9 +1531,14 @@ function distributeGarbageOnline(senderId, totalBlocks, isHard) {
 }
 
 function sendBlocksToOpponent(opp, count, isHard) {
-  let fullRows = Math.floor(count / 6), remainder = count % 6;
-  if (fullRows > 0) opp.engine.addGarbage(6, fullRows, isHard);
-  if (remainder >= 3 || (remainder > 0 && fullRows === 0)) opp.engine.addGarbage(remainder, 1, isHard);
+  if (!opp || !opp.engine) return;
+  let finalCount = count;
+  if (opp.engine.isSacrifice) {
+    finalCount = Math.ceil(finalCount * 1.2);
+  }
+  let fullRows = Math.floor(finalCount / 6), remainder = finalCount % 6;
+  if (fullRows > 0) opp.engine.addGarbage(6, fullRows, isHard, true);
+  if (remainder >= 3 || (remainder > 0 && fullRows === 0)) opp.engine.addGarbage(remainder, 1, isHard, true);
 }
 
 let battleEndState = { active: false, canDismissAt: 0, onContinue: null, prevAnyPadPressed: false };
@@ -800,10 +1552,7 @@ function buildBattleEndPortraitDom(wrapEl, theme, isWin) {
     wrapEl.innerHTML = `<div class="story-fallback-card" style="background:${theme?.color || '#334155'};">${theme?.name || ''}</div>`;
   };
 
-  if (!theme) {
-    showFallbackCard();
-    return;
-  }
+  if (!theme) { showFallbackCard(); return; }
 
   const img = document.createElement('img');
   img.className = 'battle-end-portrait-img';
@@ -818,18 +1567,13 @@ function buildBattleEndPortraitDom(wrapEl, theme, isWin) {
       img.onerror = showFallbackCard;
       img.src = theme.charSrc;
       wrapEl.appendChild(img);
-    } else {
-      showFallbackCard();
-    }
+    } else showFallbackCard();
     return;
   }
 
   if (theme.charId && typeof applyCharacterImageToElement === 'function') {
-    const variant = isWin ? 'normal' : 'lose';
-    applyCharacterImageToElement(img, theme.charId, variant, {
-      fallbackToNormal: true,
-      onLoad: handleLoad,
-      onError: showFallbackCard
+    applyCharacterImageToElement(img, theme.charId, isWin ? 'normal' : 'lose', {
+      fallbackToNormal: true, onLoad: handleLoad, onError: showFallbackCard
     });
     wrapEl.appendChild(img);
     return;
@@ -840,9 +1584,7 @@ function buildBattleEndPortraitDom(wrapEl, theme, isWin) {
     img.onerror = showFallbackCard;
     img.src = theme.charSrc;
     wrapEl.appendChild(img);
-  } else {
-    showFallbackCard();
-  }
+  } else showFallbackCard();
 }
 
 function showBattleEndOverlay(options) {
@@ -899,7 +1641,7 @@ function tryDismissBattleEndOverlay() {
   if (performance.now() < battleEndState.canDismissAt) return true;
   const cb = battleEndState.onContinue;
   hideBattleEndOverlay();
-  SE.play('cursorMove');
+  SE.play('select');
   if (cb) cb();
   return true;
 }
@@ -919,7 +1661,8 @@ function showResultModal(titleMsg) {
 }
 
 function requestRematch() {
-  if (hostDisconnected) { exitGame(); return; }
+  SE.play('select');
+  if (hostDisconnected) { exitGame(true); return; }
   if (currentMode === 'story') startGame('story', currentComLevel, 2, currentSkillEnabled);
   else if (currentMode === 'single_survival') startSingleMode();
   else if (currentMode === 'single' || currentMode.startsWith('single_') || currentMode === 'com' || currentMode === 'local' || currentMode === 'share') {
@@ -1036,7 +1779,7 @@ function checkMatchEnd() {
         const ttl = isRankIn ? 'NEW RECORD!' : 'GAME OVER';
         showBattleEndOverlay({ mode: 'single', isWin: false, theme: myRenderer.theme, titleOverride: ttl, onContinue: () => showResultModal(ttl) });
       } else {
-        const ttl = isRankIn ? 'NEW RECORD! (LOSE)' : 'LOSE...';
+        const ttl = isRankIn ? 'LOSE...\n(NEW RECORD)' : 'LOSE...';
         showBattleEndOverlay({ mode: 'single', isWin: false, theme: myRenderer.theme, titleOverride: ttl, onContinue: () => showResultModal(ttl) });
       }
     });
@@ -1070,7 +1813,7 @@ function checkMatchEnd() {
         if (currentMode === 'story') {
           showBattleEndOverlay({ mode: 'single', isWin: true, theme: myRenderer.theme, onContinue: () => StoryManager.onBattleEnd(true) });
         } else {
-          const winTitle = isRankIn ? 'WIN!! (NEW RECORD)' : 'WIN!!';
+          const winTitle = isRankIn ? 'WIN!!\n(NEW RECORD)' : 'WIN!!';
           showBattleEndOverlay({ mode: 'single', isWin: true, theme: myRenderer.theme, titleOverride: winTitle, onContinue: () => showResultModal(winTitle) });
         }
       });
@@ -1079,7 +1822,7 @@ function checkMatchEnd() {
 
   if (isMatchOver && aliveCount <= 1) {
     matchState = 'gameover';
-    if (hostDisconnected) setTimeout(() => { showToast("ホストが退出済みのため解散します。"); exitGame(); }, 3000);
+    if (hostDisconnected) setTimeout(() => { showToast("ホストが退出済みのため解散します。"); exitGame(true); }, 3000);
     else if (myOnlineId === 'host') checkRematchCondition();
   }
 }
@@ -1201,7 +1944,16 @@ function switchBgmToPanic(toPanic) {
 let currentSkillEnabled = false;
 const PLAYER_SKILL_MAX = 3;
 const PLAYER_SKILL_SCORE_STEP = 300;
-let playerSkillState = { enabled: false, usesLeft: 0, maxUses: PLAYER_SKILL_MAX, nextRequiredScore: 0 };
+let playerSkillState = {
+  enabled: false,
+  skillId: 'erase_color',
+  isNoSkill: false,
+  isSacrifice: false,
+  usesLeft: 0,
+  maxUses: PLAYER_SKILL_MAX,
+  nextRequiredScore: 0,
+  prevReady: false
+};
 
 const headerCutinTimers = {};
 function showHeaderCutinById(boxId, theme, text, accentColor = '#ffd700') {
@@ -1242,19 +1994,80 @@ function hidePlayerHeaderCutin() {
   document.querySelectorAll('.header-cutin').forEach(el => el.classList.remove('show'));
 }
 
-function initPlayerSkillState(enabled) {
+function isSkillStateCurrentlyReady(skillState, engine, skillId) {
+  if (!skillState || !skillState.enabled || !engine || engine.gameOver || isPracticeMode) return false;
+  if (skillId === 'no_skill' || skillId === 'sacrifice') return false;
+  if (skillState.usesLeft <= 0) return false;
+  return engine.score >= skillState.nextRequiredScore;
+}
+
+function checkSkillFilledSound(skillState, engine, skillId) {
+  if (!skillState) return;
+  const nowReady = isSkillStateCurrentlyReady(skillState, engine, skillId);
+  if (matchState === 'playing' && !isMatchOver && nowReady && !skillState.prevReady) {
+    SE.play('skillFilled');
+  }
+  skillState.prevReady = nowReady;
+}
+
+function initPlayerSkillState(enabled, skillId = selectedPlayerSkill) {
+  const skId = skillId || 'erase_color';
+  const isNoSkill = (skId === 'no_skill');
+  const isSacrifice = !!enabled && (skId === 'sacrifice');
+
   playerSkillState.enabled = !!enabled;
-  playerSkillState.usesLeft = enabled ? PLAYER_SKILL_MAX : 0;
+  playerSkillState.skillId = skId;
+  playerSkillState.isNoSkill = isNoSkill;
+  playerSkillState.isSacrifice = isSacrifice;
+  playerSkillState.usesLeft = (enabled && !isNoSkill && !isSacrifice) ? PLAYER_SKILL_MAX : 0;
   playerSkillState.nextRequiredScore = 0;
+  playerSkillState.prevReady = !!enabled && !isNoSkill && !isSacrifice;
+
+  const myWrapper = document.getElementById('my-wrapper');
+  if (myWrapper) myWrapper.classList.toggle('sacrifice-aura', isSacrifice);
+  if (myEngine && typeof myEngine.setSacrifice === 'function') {
+    myEngine.setSacrifice(isSacrifice);
+  }
   updateSkillButtonUI();
 }
 
-function renderLocalSkillBarElement(barId, skillState, curScore, skillId) {
+function applySkillSealToMainPlayer(amount = 300) {
+  if (!myEngine || myEngine.gameOver || isPracticeMode) return;
+  if (playerSkillState.enabled && !playerSkillState.isNoSkill && !playerSkillState.isSacrifice && playerSkillState.usesLeft > 0) {
+    playerSkillState.nextRequiredScore = Math.max(playerSkillState.nextRequiredScore, myEngine.score) + amount;
+    playerSkillState.prevReady = false;
+  }
+  showPlayerHeaderCutin(myRenderer.theme, `SEALED +${amount}!`, '#a855f7');
+  showToast(`スキル封印を受けた！必要スコア +${amount}`);
+  updateSkillButtonUI();
+}
+
+function formatSacrificeRemainText(engine) {
+  const elapsed = engine ? engine.timeElapsed : 0;
+  const remSec = Math.max(0, Math.ceil((300000 - elapsed) / 1000));
+  const m = String(Math.floor(remSec / 60)).padStart(2, '0');
+  const s = String(remSec % 60).padStart(2, '0');
+  return `${m}:${s}`;
+}
+
+function renderLocalSkillBarElement(barId, skillState, engine, skillId) {
   const bar = document.getElementById(barId);
   if (!bar) return;
   if (!skillState || !skillState.enabled || currentMode !== 'local') { bar.style.display = 'none'; return; }
   bar.style.display = 'flex';
+  const curScore = engine ? engine.score : 0;
   const skName = (typeof SKILL_LABELS !== 'undefined' && SKILL_LABELS[skillId]) ? SKILL_LABELS[skillId] : 'スキル';
+
+  if (skillId === 'no_skill') {
+    bar.classList.remove('ready');
+    bar.innerHTML = `<div class="local-skill-bar-fill" style="width:0%"></div><span class="local-skill-bar-text">ノースキル (不可)</span>`;
+    return;
+  }
+  if (skillId === 'sacrifice') {
+    bar.classList.remove('ready');
+    bar.innerHTML = `<div class="local-skill-bar-fill" style="width:100%;background:rgba(220,38,38,0.5);"></div><span class="local-skill-bar-text">💀代償 残り${formatSacrificeRemainText(engine)}</span>`;
+    return;
+  }
   if (skillState.usesLeft <= 0) {
     bar.classList.remove('ready');
     bar.innerHTML = `<div class="local-skill-bar-fill" style="width:0%"></div><span class="local-skill-bar-text">${skName} 終了 (0/${PLAYER_SKILL_MAX})</span>`;
@@ -1271,11 +2084,25 @@ function renderLocalSkillBarElement(barId, skillState, curScore, skillId) {
   }
 }
 
-function updateSkillButtonVisual(btn, label, prog, skillState, curScore, skillId) {
+function updateSkillButtonVisual(btn, label, prog, skillState, engine, skillId) {
   if (!btn || !label || !prog) return;
   if (!skillState || !skillState.enabled || isPracticeMode) { btn.style.display = 'none'; return; }
   btn.style.display = 'flex';
+  btn.classList.remove('sacrifice-active');
+  const curScore = engine ? engine.score : 0;
   const skName = (typeof SKILL_LABELS !== 'undefined' && SKILL_LABELS[skillId]) ? SKILL_LABELS[skillId] : 'スキル';
+
+  if (skillId === 'no_skill') {
+    btn.disabled = true; btn.classList.remove('ready'); prog.style.width = '0%';
+    label.innerText = 'ノースキル\n使用不可';
+    return;
+  }
+  if (skillId === 'sacrifice') {
+    btn.disabled = true; btn.classList.remove('ready'); btn.classList.add('sacrifice-active');
+    prog.style.width = '100%';
+    label.innerText = `💀 代償発動中\n残 ${formatSacrificeRemainText(engine)}`;
+    return;
+  }
   if (skillState.usesLeft <= 0) {
     btn.disabled = true; btn.classList.remove('ready'); prog.style.width = '0%';
     label.innerText = `${skName}\n終了 (0/${PLAYER_SKILL_MAX})`;
@@ -1294,28 +2121,35 @@ function updateSkillButtonVisual(btn, label, prog, skillState, curScore, skillId
 }
 
 function updateSkillButtonUI() {
+  checkSkillFilledSound(playerSkillState, myEngine, playerSkillState.skillId || selectedPlayerSkill);
+
   const btn = document.getElementById('skill-btn'), label = document.getElementById('skill-btn-label'), prog = document.getElementById('skill-btn-progress');
   const p2Btn = document.getElementById('p2-skill-btn'), p2Label = document.getElementById('p2-skill-btn-label'), p2Prog = document.getElementById('p2-skill-btn-progress');
   if (currentMode === 'local') {
     if (btn) btn.style.display = 'none';
     if (p2Btn) p2Btn.style.display = 'none';
-    renderLocalSkillBarElement('my-local-skill-bar', playerSkillState, myEngine ? myEngine.score : 0, localSlotsConfig[0].skillId);
+    renderLocalSkillBarElement('my-local-skill-bar', playerSkillState, myEngine, localSlotsConfig[0].skillId);
     opponents.forEach((opp, i) => {
-      if (opp.type === 'local_human' && opp.skillState) renderLocalSkillBarElement(`rival-local-skill-bar-${i}`, opp.skillState, opp.engine ? opp.engine.score : 0, opp.skillId);
+      if (opp.type === 'local_human' && opp.skillState) {
+        checkSkillFilledSound(opp.skillState, opp.engine, opp.skillId);
+        renderLocalSkillBarElement(`rival-local-skill-bar-${i}`, opp.skillState, opp.engine, opp.skillId);
+      }
     });
     return;
   }
   const myBar = document.getElementById('my-local-skill-bar');
   if (myBar) myBar.style.display = 'none';
   if (currentMode === 'share') {
-    updateSkillButtonVisual(btn, label, prog, playerSkillState, myEngine ? myEngine.score : 0, sharePrepConfig.p1.skillId);
+    updateSkillButtonVisual(btn, label, prog, playerSkillState, myEngine, sharePrepConfig.p1.skillId);
     const p2Opp = opponents[0];
-    if (p2Opp && p2Opp.skillState) updateSkillButtonVisual(p2Btn, p2Label, p2Prog, p2Opp.skillState, p2Opp.engine ? p2Opp.engine.score : 0, p2Opp.skillId);
-    else if (p2Btn) p2Btn.style.display = 'none';
+    if (p2Opp && p2Opp.skillState) {
+      checkSkillFilledSound(p2Opp.skillState, p2Opp.engine, p2Opp.skillId);
+      updateSkillButtonVisual(p2Btn, p2Label, p2Prog, p2Opp.skillState, p2Opp.engine, p2Opp.skillId);
+    } else if (p2Btn) p2Btn.style.display = 'none';
     return;
   }
   if (p2Btn) p2Btn.style.display = 'none';
-  updateSkillButtonVisual(btn, label, prog, playerSkillState, myEngine ? myEngine.score : 0, selectedPlayerSkill);
+  updateSkillButtonVisual(btn, label, prog, playerSkillState, myEngine, playerSkillState.skillId || selectedPlayerSkill);
 }
 
 function updateRivalSkillBadge(opp, index) {
@@ -1334,11 +2168,12 @@ function updateRivalSkillBadge(opp, index) {
 
 function activatePlayerSkill() {
   if (!playerSkillState.enabled || !myEngine || myEngine.gameOver || isPracticeMode) return;
+  if (playerSkillState.isNoSkill || playerSkillState.isSacrifice) return;
   if (matchState !== 'playing' || isMatchOver) return;
   if (playerSkillState.usesLeft <= 0 || myEngine.score < playerSkillState.nextRequiredScore) return;
   if (typeof executePlayerCheatSkill !== 'function') return;
 
-  let chosenSkill = selectedPlayerSkill;
+  let chosenSkill = playerSkillState.skillId || selectedPlayerSkill;
   if (currentMode === 'local') chosenSkill = localSlotsConfig[0].skillId || 'erase_color';
   else if (currentMode === 'share') chosenSkill = sharePrepConfig.p1.skillId || 'erase_color';
 
@@ -1352,6 +2187,7 @@ function activatePlayerSkill() {
   playAttackVoiceForSender(senderId);
   playerSkillState.usesLeft--;
   playerSkillState.nextRequiredScore = myEngine.score + PLAYER_SKILL_SCORE_STEP;
+  playerSkillState.prevReady = false;
   updateSkillButtonUI();
 
   if (currentMode === 'local') {
@@ -1364,6 +2200,7 @@ function activatePlayerSkill() {
 
 function activateLocalOpponentSkill(opp) {
   if (!opp || !opp.skillState || !opp.skillState.enabled || !opp.engine || opp.engine.gameOver) return;
+  if (opp.skillId === 'no_skill' || opp.skillId === 'sacrifice') return;
   if (matchState !== 'playing' || isMatchOver) return;
   if (opp.skillState.usesLeft <= 0 || opp.engine.score < opp.skillState.nextRequiredScore) return;
   if (typeof executePlayerCheatSkill !== 'function') return;
@@ -1374,6 +2211,7 @@ function activateLocalOpponentSkill(opp) {
   playAttackVoiceForSender(opp.id);
   opp.skillState.usesLeft--;
   opp.skillState.nextRequiredScore = opp.engine.score + PLAYER_SKILL_SCORE_STEP;
+  opp.skillState.prevReady = false;
   updateSkillButtonUI();
 
   if (currentMode === 'share') showHeaderCutinById(`rival-header-cutin-${opp.index}`, opp.renderer.theme, res.text, '#ff007f');
@@ -1385,37 +2223,147 @@ function activateShareP2Skill() {
   activateLocalOpponentSkill(opponents[0]);
 }
 
+// ==========================================
+// バトル中サイド演出枠 & 縦画面最下部閲覧専用ステータスバー
+// ==========================================
+function setSidePortraitElement(imgEl, theme) {
+  if (!imgEl || !theme) return;
+  imgEl.classList.remove('square-or-wide');
+  const onLoad = (el) => {
+    if (el.naturalHeight <= el.naturalWidth * 1.05) el.classList.add('square-or-wide');
+  };
+  if (theme.charId === 'custom') {
+    if (theme.charSrc) { imgEl.onload = () => onLoad(imgEl); imgEl.src = theme.charSrc; }
+    return;
+  }
+  if (typeof applyCharacterImageToElement === 'function') {
+    applyCharacterImageToElement(imgEl, theme.charId || 'main00', 'normal', { onLoad });
+  } else if (theme.charSrc) {
+    imgEl.onload = () => onLoad(imgEl); imgEl.src = theme.charSrc;
+  }
+}
+
+function refreshBattleSidePanels() {
+  const p1Card = document.getElementById('battle-side-p1');
+  const p2Card = document.getElementById('battle-side-p2');
+  if (!p1Card || !p2Card) return;
+
+  const isPortrait = window.innerHeight > window.innerWidth;
+  const isLandscapeLarge = !isPortrait && !useMobileLayoutInLandscape;
+  const isGameShown = document.getElementById('game-area')?.style.display !== 'none';
+  const showSideCards = isGameShown && isLandscapeLarge && currentMode !== 'local' && currentMode !== 'share' && window.innerWidth >= 920;
+
+  if (!showSideCards || !myRenderer || !myRenderer.theme) {
+    p1Card.style.display = 'none';
+    p2Card.style.display = 'none';
+    return;
+  }
+
+  p1Card.style.display = 'flex';
+  p1Card.style.borderColor = myRenderer.theme.color || '#10b981';
+  document.getElementById('battle-side-p1-name').innerText = myRenderer.theme.name || 'YOU';
+  document.getElementById('battle-side-p1-tag').innerText = 'PLAYER';
+  setSidePortraitElement(document.getElementById('battle-side-p1-img'), myRenderer.theme);
+
+  const oppTarget = (myTargetIndex >= 0 && opponents[myTargetIndex])
+    ? opponents[myTargetIndex]
+    : (opponents.find(o => o.engine && !o.engine.gameOver) || opponents[0]);
+
+  if (oppTarget && oppTarget.renderer && oppTarget.renderer.theme) {
+    p2Card.style.display = 'flex';
+    p2Card.style.borderColor = oppTarget.renderer.theme.color || '#f43f5e';
+    document.getElementById('battle-side-p2-name').innerText = oppTarget.renderer.theme.name || oppTarget.name || 'RIVAL';
+    document.getElementById('battle-side-p2-tag').innerText = (myTargetIndex >= 0 && opponents[myTargetIndex]) ? '🎯 TARGET' : 'RIVAL';
+    setSidePortraitElement(document.getElementById('battle-side-p2-img'), oppTarget.renderer.theme);
+  } else {
+    p2Card.style.display = 'none';
+  }
+}
+
+function getModeLabelForBottomBar() {
+  if (currentMode === 'story') return 'STORY';
+  if (currentMode === 'com') return `COM戦 Lv.${currentComLevel}`;
+  if (currentMode === 'online') return 'ONLINE P2P';
+  if (currentMode === 'single_ta') return 'TIME ATTACK';
+  if (currentMode === 'single_sa') return 'SCORE ATTACK';
+  if (currentMode === 'single_survival') return `勝ち抜き ${currentSurvivalWins}勝`;
+  return 'PRACTICE';
+}
+
+function updateBottomStatusBar() {
+  const bar = document.getElementById('battle-bottom-status-bar');
+  if (!bar) return;
+  if (bar.style.display === 'none' || !myEngine || !myRenderer || !myRenderer.theme) return;
+
+  const nameEl = document.getElementById('bottom-status-name');
+  const modeEl = document.getElementById('bottom-status-mode');
+  const statsEl = document.getElementById('bottom-status-stats');
+  const avatarEl = document.getElementById('bottom-status-avatar');
+
+  if (nameEl) nameEl.innerText = myRenderer.theme.name || 'YOU';
+  if (modeEl) modeEl.innerText = getModeLabelForBottomBar();
+  if (avatarEl && avatarEl.dataset.charLoaded !== (myRenderer.theme.charSrc || myRenderer.theme.charId)) {
+    avatarEl.dataset.charLoaded = myRenderer.theme.charSrc || myRenderer.theme.charId || '';
+    setSidePortraitElement(avatarEl, myRenderer.theme);
+  }
+  if (statsEl) {
+    if (myEngine.chain > maxChainInMatch) maxChainInMatch = myEngine.chain;
+    const text = currentMode === 'single_survival'
+      ? `🏆 ${currentSurvivalWins}WIN  |  MAX ${maxChainInMatch}連鎖`
+      : `MAX ${maxChainInMatch}連鎖  |  SCORE ${myEngine.score}`;
+    if (statsEl.dataset.lastText !== text) {
+      statsEl.dataset.lastText = text;
+      statsEl.innerText = text;
+    }
+  }
+}
+
 function startGame(mode, level = 1, totalPlayers = 2, skillEnabled = false) {
+  cancelLocalAutoStart();
   if (typeof closeRangeDigitEdit === 'function') closeRangeDigitEdit();
   document.getElementById('result-overlay').style.display = 'none';
   hideBattleEndOverlay();
   currentMode = mode; currentComLevel = level; currentTotalPlayers = totalPlayers; currentSkillEnabled = !!skillEnabled;
   matchState = 'ready'; isPracticeMode = false;
-  document.getElementById('menu-overlay').style.display = 'none';
-  document.getElementById('game-area').style.display = 'flex';
 
-  if (currentMode === 'local') {
-    document.body.classList.remove('share-force-portrait');
-    try { screen.orientation?.lock?.('landscape')?.catch(() => {}); } catch (e) {}
-  } else if (currentMode === 'share') {
-    document.body.classList.remove('local-force-landscape');
-    try { screen.orientation?.lock?.('portrait')?.catch(() => {}); } catch (e) {}
-    updateShareForcePortraitClass();
+  const runInit = () => {
+    const storyOverlay = document.getElementById('story-overlay');
+    if (storyOverlay) storyOverlay.style.display = 'none';
+    document.getElementById('menu-overlay').style.display = 'none';
+    document.getElementById('game-area').style.display = 'flex';
+
+    if (currentMode === 'local') {
+      document.body.classList.remove('share-force-portrait');
+      try { screen.orientation?.lock?.('landscape')?.catch(() => {}); } catch (e) {}
+    } else if (currentMode === 'share') {
+      document.body.classList.remove('local-force-landscape');
+      try { screen.orientation?.lock?.('portrait')?.catch(() => {}); } catch (e) {}
+      updateShareForcePortraitClass();
+    }
+    setupInput();
+    resetGameLogic();
+    readyBgm();
+    showReadyGo();
+    if (loopId) cancelAnimationFrame(loopId);
+    lastTime = performance.now(); accumulator = 0;
+    loopId = requestAnimationFrame(gameLoop);
+  };
+
+  if (typeof SceneTransition !== 'undefined' && typeof SceneTransition.run === 'function') {
+    SceneTransition.run('LOADING...', runInit, () => adjustLayout());
+  } else {
+    runInit();
   }
-  setupInput();
-  resetGameLogic();
-  readyBgm();
-  showReadyGo();
-  if (loopId) cancelAnimationFrame(loopId);
-  lastTime = performance.now(); accumulator = 0;
-  loopId = requestAnimationFrame(gameLoop);
 }
 
 function resetGameLogic() {
   isMatchOver = false; isDeadInMatch = false; isPracticeMode = false; endSequenceTriggered = false;
-  myTargetIndex = -1; currentMatchId = Date.now(); currentSurvivalWins = 0;
+  myTargetIndex = -1; currentMatchId = Date.now(); currentSurvivalWins = 0; maxChainInMatch = 0;
   hidePlayerHeaderCutin();
   resetAllLocalInputStates();
+
+  const myWrapper = document.getElementById('my-wrapper');
+  if (myWrapper) myWrapper.classList.remove('sacrifice-aura');
 
   const handicap = currentMode === 'share'
     ? (sharePrepConfig.p1.handicap || 3)
@@ -1434,9 +2382,15 @@ function resetGameLogic() {
   if (currentMode === 'single_survival' && document.getElementById('survival-keep-speed').checked) myEngine.keepSpeed = true;
 
   let rawCharId = selectedCharId;
+  let mySkillId = selectedPlayerSkill;
   if (currentMode === 'story') rawCharId = StoryManager.getSelectedCharId();
-  else if (currentMode === 'local') rawCharId = localSlotsConfig[0].charId;
-  else if (currentMode === 'share') rawCharId = sharePrepConfig.p1.charId;
+  else if (currentMode === 'local') {
+    rawCharId = localSlotsConfig[0].charId;
+    mySkillId = localSlotsConfig[0].skillId || 'erase_color';
+  } else if (currentMode === 'share') {
+    rawCharId = sharePrepConfig.p1.charId;
+    mySkillId = sharePrepConfig.p1.skillId || 'erase_color';
+  }
 
   const resolvedCharId = resolvePlayableCharId(rawCharId);
   myRenderer.theme = buildThemeForCharacter(
@@ -1449,9 +2403,12 @@ function resetGameLogic() {
   if (typeof applyGlobalFrameTheme === 'function') applyGlobalFrameTheme(CustomAssets.frame ? CustomAssets.frame.dataUrl : null);
   document.getElementById('player-label').innerText = (currentMode === 'local' || currentMode === 'share') ? `1P: ${myRenderer.theme.name}` : myRenderer.theme.name;
 
-  myEngine.onChainEnd = (chain) => showPlayerHeaderCutin(myRenderer.theme, `${chain} CHAIN!!`, '#ffd700');
+  myEngine.onChainEnd = (chain) => {
+    if (chain > maxChainInMatch) maxChainInMatch = chain;
+    showPlayerHeaderCutin(myRenderer.theme, `${chain} CHAIN!!`, '#ffd700');
+  };
   myEngine.onSimultaneousMatch = (size) => showPlayerHeaderCutin(myRenderer.theme, `${size}個消し！`, '#00d4ff');
-  initPlayerSkillState(currentSkillEnabled);
+  initPlayerSkillState(currentSkillEnabled, mySkillId);
 
   const rivalsArea = document.getElementById('rivals-area');
   const rivalsTopArea = document.getElementById('rivals-top-area');
@@ -1527,6 +2484,10 @@ function resetGameLogic() {
       rEngine.onSimultaneousMatch = (size) => { rEngine.cutinMax = 50; rEngine.cutinTimer = 50; rEngine.cutinText = `${size}個消し！`; };
     }
 
+    const oppSkillId = isShareMode
+      ? (sharePrepConfig.p2.skillId || 'erase_color')
+      : ((slotCfg && slotCfg.skillId) ? slotCfg.skillId : 'erase_color');
+
     let rAI = null;
     if (isComMode) {
       if (currentMode === 'story' && StoryManager.activeStage) {
@@ -1538,16 +2499,35 @@ function resetGameLogic() {
         const comLv = (currentMode === 'local' && slotCfg) ? slotCfg.comLevel : currentComLevel;
         const useCheat = ((currentMode === 'com' || currentMode === 'single_survival' || currentMode === 'local') && currentSkillEnabled);
         const maxUses = (currentMode === 'single_survival' || currentMode === 'local') ? 3 : 10;
-        rAI = (useCheat && typeof cheat === 'function') ? new cheat(rEngine, comLv, oppId, { maxSkillUses: maxUses }) : new ComAI(rEngine, comLv, oppId);
+        const aiOpts = { maxSkillUses: maxUses };
+        if (currentMode === 'local' && slotCfg) {
+          aiOpts.skillType = 'single';
+          aiOpts.fixedSkill = oppSkillId;
+        }
+        rAI = (useCheat && typeof cheat === 'function') ? new cheat(rEngine, comLv, oppId, aiOpts) : new ComAI(rEngine, comLv, oppId);
       }
     }
 
-    const oppSkillId = isShareMode ? (sharePrepConfig.p2.skillId || 'erase_color') : ((isLocalHuman && slotCfg) ? (slotCfg.skillId || 'erase_color') : 'erase_color');
+    const oppIsSacrifice = !!currentSkillEnabled && (
+      (isLocalHuman && oppSkillId === 'sacrifice') ||
+      (isComMode && rEngine.isSacrifice)
+    );
+    if (oppIsSacrifice) {
+      rEngine.setSacrifice(true);
+      wrapper.classList.add('sacrifice-aura');
+    }
+
+    const oppIsNoSkill = (oppSkillId === 'no_skill' || oppSkillId === 'sacrifice');
     const oppObj = {
       id: oppId, name: oppName, type: isLocalHuman ? 'local_human' : 'com',
       playerSlotIndex: i + 1, skillId: oppSkillId, engine: rEngine, renderer: rRenderer, ai: rAI,
       index: i, targetId: null, inputState: oppInputState,
-      skillState: isLocalHuman ? { enabled: currentSkillEnabled, usesLeft: currentSkillEnabled ? PLAYER_SKILL_MAX : 0, nextRequiredScore: 0 } : null
+      skillState: isLocalHuman ? {
+        enabled: currentSkillEnabled,
+        usesLeft: (currentSkillEnabled && !oppIsNoSkill) ? PLAYER_SKILL_MAX : 0,
+        nextRequiredScore: 0,
+        prevReady: !!currentSkillEnabled && !oppIsNoSkill
+      } : null
     };
     opponents.push(oppObj);
     updateRivalSkillBadge(oppObj, i);
@@ -1591,20 +2571,26 @@ function cleanupShareDomZones() {
   if (p2Zone && p2Zone.parentNode) p2Zone.parentNode.removeChild(p2Zone);
 }
 
-function exitGame() {
+function exitGame(silent = false) {
   if (myEngine && !currentMode.startsWith('single')) {
     if (!isMatchOver && !isPracticeMode && !myEngine.gameOver) {
-      if (!confirm("退出してメニューに戻りますか？\n（対戦時は負けになります）")) return;
+      if (!confirm("退出してメニューに戻りますか？\n（対戦時は負けになります）")) {
+        if (!silent) SE.play('cancel');
+        return;
+      }
     }
     onlineConnections.forEach(c => { if(c && c.open) c.send({ type: 'leave', senderId: myOnlineId }); });
   }
+  if (!silent) SE.play('cancel');
   isMatchOver = true; isDeadInMatch = true; matchState = 'gameover'; isPracticeMode = false;
   hostDisconnected = false; endSequenceTriggered = false;
   clearReadyGoTimers(); hideBattleEndOverlay(); stopAllEngines(); stopBgm(); hidePlayerHeaderCutin();
+  if (typeof hideOnlineSyncOverlay === 'function') hideOnlineSyncOverlay();
   if (typeof closeRangeDigitEdit === 'function') closeRangeDigitEdit();
   if (typeof SE !== 'undefined' && SE.clearRemoteSounds) SE.clearRemoteSounds();
   if (typeof VOICE !== 'undefined' && VOICE.clearRemoteVoices) VOICE.clearRemoteVoices();
   cleanupShareDomZones();
+  document.getElementById('my-wrapper')?.classList.remove('sacrifice-aura');
   document.body.classList.remove('local-force-landscape', 'share-force-portrait');
   try { screen.orientation?.unlock?.(); } catch (e) {}
   myEngine = null; opponents = [];
@@ -1613,6 +2599,12 @@ function exitGame() {
   if (syncIntervalId) { clearInterval(syncIntervalId); syncIntervalId = null; }
   if (loopId) { cancelAnimationFrame(loopId); loopId = null; }
   if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+
+  const p1Card = document.getElementById('battle-side-p1'), p2Card = document.getElementById('battle-side-p2');
+  if (p1Card) p1Card.style.display = 'none';
+  if (p2Card) p2Card.style.display = 'none';
+  const bottomBar = document.getElementById('battle-bottom-status-bar');
+  if (bottomBar) bottomBar.style.display = 'none';
 
   document.getElementById('countdown-overlay').style.display = 'none';
   document.getElementById('result-overlay').style.display = 'none';
@@ -1623,8 +2615,7 @@ function exitGame() {
   document.getElementById('room-waiting').style.display = 'none';
   document.getElementById('story-overlay').style.display = 'none';
   document.getElementById('share-prep-overlay').style.display = 'none';
-  hideAllMenuSubViews();
-  document.getElementById('main-menu-actions').style.display = 'flex';
+  backToMainMenu(false);
 }
 
 function toggleContinuousSwipe() {
@@ -1871,6 +2862,7 @@ function gameLoop(time) {
     document.getElementById('score-label').innerText = `SCORE: ${myEngine.score} | CHAIN: ${myEngine.chain}`;
     updateGarbagePreview(myEngine, 'my-garbage-preview');
     updateSkillButtonUI();
+    updateBottomStatusBar();
     if (currentMode === 'single_ta' && myEngine.timeElapsed >= 180000 && !myEngine.gameOver && !isMatchOver) {
       myEngine.gameOver = true; checkMatchEnd();
     }
@@ -1931,6 +2923,34 @@ function handleKeyboardActionForPlayer(engine, cfgKey, stateObj, code, isRepeat,
   }
   if (handled) e.preventDefault();
   return handled;
+}
+
+function handleLocalMenuKeyInput(code, e) {
+  const count = getLocalPlayerCount();
+  for (let slotIdx = 0; slotIdx < count; slotIdx++) {
+    const slot = localSlotsConfig[slotIdx];
+    if (slot.isCom) continue;
+    const cfg = playerConfigs[slotIdx].key;
+    if (!cfg) continue;
+
+    if (code === cfg.Left)  { e.preventDefault(); moveLocalTileCursor(slotIdx, -1, 0); return true; }
+    if (code === cfg.Right) { e.preventDefault(); moveLocalTileCursor(slotIdx, 1, 0);  return true; }
+    if (code === cfg.Up)    { e.preventDefault(); moveLocalTileCursor(slotIdx, 0, -1); return true; }
+    if (code === cfg.Down)  { e.preventDefault(); moveLocalTileCursor(slotIdx, 0, 1);  return true; }
+    if (code === cfg.Swap || code === cfg.GrabRight || (slotIdx === 0 && code === 'Enter')) {
+      e.preventDefault();
+      if (slot.phase === 'char') confirmLocalCharForSlot(slotIdx, slot.charCursorIdx);
+      else if (slot.phase === 'skill') confirmLocalSkillForSlot(slotIdx, slot.skillCursorIdx);
+      return true;
+    }
+    if (code === cfg.Skill || code === cfg.GrabLeft) {
+      e.preventDefault();
+      if (slot.phase !== 'char') cancelLocalStepForSlot(slotIdx);
+      else if (slotIdx === 0) handleMenuCancelAction();
+      return true;
+    }
+  }
+  return false;
 }
 
 function getCanvasCoordsFromPointer(cvs, e, isSelf180Rotated = false) {
@@ -2066,20 +3086,34 @@ function setupInput() {
     if (assigningAction && assignType === 'key') {
       e.preventDefault();
       playerConfigs[settingsPlayerIdx].key[assigningAction] = (e.code === 'Delete' || e.code === 'Backspace') ? '' : e.code;
-      assigningAction = null; renderConfigUI(); return;
+      assigningAction = null; renderConfigUI(); SE.play('select'); return;
     }
     const code = e.code;
     const isGameVisible = document.getElementById('game-area').style.display === 'flex';
-    if (!isGameVisible) {
+    const isResultVisible = document.getElementById('result-overlay')?.style.display === 'flex';
+    const isSettingsVisible = document.getElementById('settings-overlay')?.style.display === 'block';
+    const isSkillModalVisible = document.getElementById('skill-select-modal')?.style.display === 'flex';
+    const isConfirmModalVisible = document.getElementById('confirm-match-modal')?.style.display === 'flex';
+    const isStoryOverlayVisible = document.getElementById('story-overlay')?.style.display === 'flex';
+
+    if (isStoryOverlayVisible) return;
+
+    if (!isGameVisible || isResultVisible || isSettingsVisible || isSkillModalVisible || isConfirmModalVisible) {
       const tag = document.activeElement?.tagName;
       const isTextInput = tag === 'INPUT' && document.activeElement?.type === 'text';
-      if (!isTextInput && !e.repeat) {
-        if (code === keyConfig.Skill || code === 'Escape') {
-          if (handleMenuCancelAction()) { e.preventDefault(); return; }
-        }
-        if (code === keyConfig.Swap && tag !== 'BUTTON' && document.activeElement?.click) {
-          e.preventDefault(); document.activeElement.click(); SE.play('cursorMove'); return;
-        }
+      const isLocalMenuOpen = document.getElementById('local-menu')?.style.display === 'flex';
+      const isModalOpen = isSkillModalVisible
+                       || isConfirmModalVisible
+                       || isSettingsVisible
+                       || isResultVisible
+                       || document.getElementById('share-prep-overlay')?.style.display === 'flex';
+
+      if (!isGameVisible && isLocalMenuOpen && !isModalOpen && !isTextInput && tag !== 'SELECT' && !e.repeat) {
+        if (handleLocalMenuKeyInput(code, e)) return;
+      }
+
+      if (typeof handleMenuKeyDown === 'function' && handleMenuKeyDown(e)) {
+        return;
       }
       return;
     }
@@ -2118,6 +3152,7 @@ let useMobileLayoutInLandscape = localStorage.getItem('pdw_mobile_layout') === '
 function toggleLandscapeLayout() {
   useMobileLayoutInLandscape = !useMobileLayoutInLandscape;
   localStorage.setItem('pdw_mobile_layout', useMobileLayoutInLandscape);
+  SE.play('select');
   updateLayoutToggleBtnText();
   adjustLayout();
 }
@@ -2125,6 +3160,18 @@ function toggleLandscapeLayout() {
 function updateLayoutToggleBtnText() {
   const btn = document.getElementById('layout-toggle-btn');
   if (btn) btn.innerText = useMobileLayoutInLandscape ? 'UI: 縦型' : 'UI: 横並び';
+}
+
+function updateMyZoneFrameLayout(rect) {
+  const el = document.getElementById('my-zone-frame-bg');
+  if (!el) return;
+  if (!rect) {
+    el.style.top = '0'; el.style.left = '0'; el.style.width = '100%'; el.style.height = '100%'; el.style.borderRadius = '0';
+  } else {
+    el.style.top = `${rect.top}px`; el.style.left = `${rect.left}px`;
+    el.style.width = `${rect.width}px`; el.style.height = `${rect.height}px`;
+    el.style.borderRadius = rect.radius || '0';
+  }
 }
 
 function adjustLayout() {
@@ -2146,7 +3193,15 @@ function adjustLayout() {
   const p2Controls = document.getElementById('p2-controls-container'), exitBtn = document.getElementById('exit-btn');
   const gameArea = document.getElementById('game-area'), gameContainer = document.getElementById('game-container');
   const handednessWrapper = document.getElementById('handedness-wrapper'), zoneBgEl = document.getElementById('my-zone-frame-bg');
+  const bottomBar = document.getElementById('battle-bottom-status-bar');
   if (!myWrapper || !controls || !exitBtn || !gameArea || !gameContainer) return;
+
+  const isGameShown = gameArea.style.display !== 'none';
+
+  if (bottomBar) {
+    bottomBar.style.display = (isGameShown && isPortrait && currentMode !== 'local' && currentMode !== 'share') ? 'flex' : 'none';
+  }
+  refreshBattleSidePanels();
 
   if (currentMode === 'share') {
     if (zoneBgEl) zoneBgEl.style.opacity = '0';
@@ -2191,8 +3246,7 @@ function adjustLayout() {
 
   if (currentMode === 'local') {
     if (zoneBgEl) zoneBgEl.style.opacity = '0';
-    const isGameVisible = gameArea.style.display !== 'none';
-    document.body.classList.toggle('local-force-landscape', isPortrait && isGameVisible);
+    document.body.classList.toggle('local-force-landscape', isPortrait && isGameShown);
     const effW = isPortrait ? H : W, effH = isPortrait ? W : H;
     rivalsTopArea.style.display = 'none'; controls.style.display = 'none'; rivalsArea.style.display = 'contents';
     if (exitBtn.parentNode !== gameArea) gameArea.appendChild(exitBtn);
@@ -2232,36 +3286,56 @@ function adjustLayout() {
     rivalsArea.style.flexDirection = 'row'; rivalsArea.style.gap = '10px';
     controls.style.height = ''; controls.style.justifyContent = 'flex-end';
     if (handednessWrapper) handednessWrapper.style.marginTop = '0';
-    gameContainer.style.cssText = 'position:relative;width:100%;height:100%;display:flex;flex-direction:row;align-items:center;justify-content:center;padding:10px;';
+
+    const sideMargin = (W >= 920) ? 168 : 10;
+    gameContainer.style.cssText = `position:relative;width:100%;height:100%;display:flex;flex-direction:row;align-items:center;justify-content:center;padding:10px ${sideMargin}px 34px ${sideMargin}px;`;
     if (isLeft) { controls.style.order = 1; myWrapper.style.order = 2; rivalsArea.style.order = 3; }
     else { rivalsArea.style.order = 1; myWrapper.style.order = 2; controls.style.order = 3; }
 
-    const totalBoards = 1 + oppCount, availableW = W - 140, baseBoardW = 224;
-    let scale = Math.min(1.0, (H - 80) / 515);
-    if ((baseBoardW * totalBoards + 20 * totalBoards) * scale > availableW) scale = availableW / (baseBoardW * totalBoards + 20 * totalBoards);
-    scale = Math.max(0.4, scale);
-    myWrapper.style.transform = `scale(${scale})`; myWrapper.style.margin = `0 ${(baseBoardW - baseBoardW * scale) / -2}px`;
-    opponents.forEach((_, i) => {
-      const el = document.getElementById(`rival-wrapper-${i}`);
-      if (el) { el.style.transform = `scale(${scale})`; el.style.margin = `0 ${(baseBoardW - baseBoardW * scale) / -2}px`; }
-    });
-    controls.style.transform = `scale(${scale})`;
+    const availableW = Math.max(300, W - sideMargin * 2 - 140);
+    const baseBoardW = 224;
+    let myScale = Math.min(1.0, (H - 84) / 515);
 
-    if (typeof updateMyZoneFrameLayout === 'function') {
-      if (oppCount === 0) updateMyZoneFrameLayout(null);
-      else requestAnimationFrame(() => {
-        const areaRect = gameArea.getBoundingClientRect(), myRect = myWrapper.getBoundingClientRect(), ctrlRect = controls.getBoundingClientRect();
-        if (myRect.width === 0) return;
-        if (isLeft) updateMyZoneFrameLayout({ top: 0, left: 0, width: Math.min(W, Math.max(myRect.right, ctrlRect.right) - areaRect.left + 16), height: H, radius: '0 16px 16px 0' });
-        else { const leftEdge = Math.max(0, Math.min(myRect.left, ctrlRect.left) - areaRect.left - 16); updateMyZoneFrameLayout({ top: 0, left: leftEdge, width: W - leftEdge, height: H, radius: '16px 0 0 16px' }); }
+    if (oppCount >= 2) {
+      const oppScale = Math.max(0.42, Math.min(myScale * 0.78, (availableW - baseBoardW * myScale - 40) / (oppCount * baseBoardW + oppCount * 12)));
+      if ((baseBoardW * myScale + oppCount * baseBoardW * oppScale + 36) > availableW) {
+        myScale = Math.max(0.55, (availableW - oppCount * baseBoardW * oppScale - 36) / baseBoardW);
+      }
+      myWrapper.style.transform = `scale(${myScale})`;
+      myWrapper.style.margin = `0 ${(baseBoardW - baseBoardW * myScale) / -2}px`;
+      opponents.forEach((_, i) => {
+        const el = document.getElementById(`rival-wrapper-${i}`);
+        if (el) { el.style.transform = `scale(${oppScale})`; el.style.margin = `0 ${(baseBoardW - baseBoardW * oppScale) / -2}px`; }
       });
+      controls.style.transform = `scale(${Math.max(0.6, myScale)})`;
+    } else {
+      const totalBoards = 1 + oppCount;
+      if ((baseBoardW * totalBoards + 20 * totalBoards) * myScale > availableW) {
+        myScale = availableW / (baseBoardW * totalBoards + 20 * totalBoards);
+      }
+      myScale = Math.max(0.4, myScale);
+      myWrapper.style.transform = `scale(${myScale})`; myWrapper.style.margin = `0 ${(baseBoardW - baseBoardW * myScale) / -2}px`;
+      opponents.forEach((_, i) => {
+        const el = document.getElementById(`rival-wrapper-${i}`);
+        if (el) { el.style.transform = `scale(${myScale})`; el.style.margin = `0 ${(baseBoardW - baseBoardW * myScale) / -2}px`; }
+      });
+      controls.style.transform = `scale(${myScale})`;
     }
+
+    if (oppCount === 0) updateMyZoneFrameLayout(null);
+    else requestAnimationFrame(() => {
+      const areaRect = gameArea.getBoundingClientRect(), myRect = myWrapper.getBoundingClientRect(), ctrlRect = controls.getBoundingClientRect();
+      if (myRect.width === 0) return;
+      if (isLeft) updateMyZoneFrameLayout({ top: 0, left: 0, width: Math.min(W, Math.max(myRect.right, ctrlRect.right) - areaRect.left + 16), height: H, radius: '0 16px 16px 0' });
+      else { const leftEdge = Math.max(0, Math.min(myRect.left, ctrlRect.left) - areaRect.left - 16); updateMyZoneFrameLayout({ top: 0, left: leftEdge, width: W - leftEdge, height: H, radius: '16px 0 0 16px' }); }
+    });
   } else if (oppCount <= 1) {
+    const bottomReserve = isPortrait ? 56 : 0;
     rivalsTopArea.style.display = 'none'; rivalsArea.style.display = 'none';
     if (exitBtn.parentNode !== gameArea) gameArea.appendChild(exitBtn);
     exitBtn.className = 'action-btn retire-btn absolute-top'; exitBtn.style.position = ''; exitBtn.style.top = ''; exitBtn.style.width = ''; exitBtn.style.margin = '';
     if (isLeft) { exitBtn.style.right = '12px'; exitBtn.style.left = 'auto'; } else { exitBtn.style.left = '12px'; exitBtn.style.right = 'auto'; }
-    gameContainer.style.cssText = `position:relative;width:100%;height:100%;display:flex;flex-direction:${isLeft ? 'row' : 'row-reverse'};align-items:center;justify-content:center;padding:0px;`;
+    gameContainer.style.cssText = `position:relative;width:100%;height:100%;display:flex;flex-direction:${isLeft ? 'row' : 'row-reverse'};align-items:center;justify-content:center;padding:0 0 ${bottomReserve}px 0;`;
     controls.style.order = ''; myWrapper.style.order = '';
 
     if (oppCount === 1) {
@@ -2279,7 +3353,7 @@ function adjustLayout() {
       if (handednessWrapper) handednessWrapper.style.marginTop = '0';
     }
 
-    const baseBoardH = 515, availH = H - 80, contentW = 344;
+    const baseBoardH = 515, availH = H - 72 - bottomReserve, contentW = 344;
     let myScale = Math.min(1.0, availH / baseBoardH);
     if (contentW * myScale > W - 10) myScale = (W - 10) / contentW;
     myScale = Math.max(0.4, myScale);
@@ -2288,10 +3362,11 @@ function adjustLayout() {
     const boardMx = (224 - 224 * myScale) / -2, ctrlMx = (110 - 110 * myScale) / -2, scaleMy = (baseBoardH - baseBoardH * myScale) / -2;
     myWrapper.style.margin = `${scaleMy}px ${boardMx}px`; controls.style.margin = `${scaleMy}px ${ctrlMx}px`;
     controls.style.position = 'relative'; controls.style.bottom = 'auto'; controls.style.left = 'auto'; controls.style.right = 'auto'; controls.style.width = '110px';
-    if (typeof updateMyZoneFrameLayout === 'function') updateMyZoneFrameLayout(null);
+    updateMyZoneFrameLayout(null);
   } else {
+    const bottomReserve = isPortrait ? 54 : 0;
     rivalsArea.style.display = 'none';
-    const maxTopH = H * 0.24;
+    const maxTopH = H * 0.22;
     rivalsTopArea.style.cssText = `display:flex;position:absolute;top:4px;left:0;width:100vw;height:${maxTopH}px;flex-direction:row;align-items:center;justify-content:center;gap:6px;z-index:30;overflow:hidden;`;
     const availW = W - 12, scaleH = (maxTopH - 6) / 510, scaleW = availW / (oppCount * 224 + (oppCount - 1) * 6);
     const miniScale = Math.min(scaleH, scaleW, 0.42);
@@ -2312,18 +3387,16 @@ function adjustLayout() {
     controls.style.order = ''; myWrapper.style.order = '';
     if (handednessWrapper) handednessWrapper.style.marginTop = '0';
 
-    gameContainer.style.cssText = `display:flex;flex-direction:${isLeft ? 'row' : 'row-reverse'};align-items:center;justify-content:center;position:absolute;top:${maxTopH + 8}px;left:0;width:100vw;height:${H - maxTopH - 8}px;padding:0;`;
-    const maxCenterH = H - maxTopH - 24, contentW = 344;
+    gameContainer.style.cssText = `display:flex;flex-direction:${isLeft ? 'row' : 'row-reverse'};align-items:center;justify-content:center;position:absolute;top:${maxTopH + 6}px;left:0;width:100vw;height:${H - maxTopH - 6 - bottomReserve}px;padding:0;`;
+    const maxCenterH = H - maxTopH - 18 - bottomReserve, contentW = 344;
     let myScale = Math.min(1.0, maxCenterH / 515);
     if (contentW * myScale > W - 10) myScale = (W - 10) / contentW;
     myScale = Math.max(0.32, myScale);
     myWrapper.style.transform = `scale(${myScale})`; controls.style.transform = `scale(${myScale})`;
     myWrapper.style.transformOrigin = 'center'; controls.style.transformOrigin = 'center';
     myWrapper.style.margin = `0 ${(224 - 224 * myScale) / -2}px`; controls.style.margin = `0 ${(110 - 110 * myScale) / -2}px`;
-    if (typeof updateMyZoneFrameLayout === 'function') {
-      const topStart = maxTopH + 4;
-      updateMyZoneFrameLayout({ top: topStart, left: 0, width: W, height: H - topStart, radius: '16px 16px 0 0' });
-    }
+    const topStart = maxTopH + 4;
+    updateMyZoneFrameLayout({ top: topStart, left: 0, width: W, height: H - topStart - bottomReserve, radius: '16px 16px 0 0' });
   }
 }
 
@@ -2340,8 +3413,13 @@ function toggleHandedness() {
   adjustLayout();
 }
 
-window.addEventListener('resize', adjustLayout);
-window.addEventListener('orientationchange', () => setTimeout(adjustLayout, 100));
+function handleWindowLayoutChange() {
+  adjustLayout();
+  refreshMenuLayoutState(false);
+}
+
+window.addEventListener('resize', handleWindowLayoutChange);
+window.addEventListener('orientationchange', () => setTimeout(handleWindowLayoutChange, 100));
 
 window.addEventListener('DOMContentLoaded', () => {
   if (localStorage.getItem('pdw_handedness') === 'left') document.getElementById('handedness-toggle').checked = true;
@@ -2359,6 +3437,9 @@ window.addEventListener('DOMContentLoaded', () => {
     lastTouchEnd = now;
   }, { passive: false });
 
+  bindSwitchMenuHoverEvents();
+  bindMenuHoverCursorSE();
+  refreshMenuLayoutState(true);
   if (typeof syncPlayerSkillSelects === 'function') syncPlayerSkillSelects();
   if (typeof syncHandicapFromSlider === 'function') syncHandicapFromSlider(3);
   if (typeof enhanceAllRangeSliders === 'function') enhanceAllRangeSliders();

@@ -12,6 +12,117 @@ const COLORS = [
 ];
 
 // ==========================================
+// ロードアニメーション & 画面遷移トランジション管理
+// ==========================================
+const AppLoader = {
+  _hidden: false,
+  show(text = 'アセットを読み込み中...') {
+    const el = document.getElementById('app-loader-overlay');
+    if (!el) return;
+    this._hidden = false;
+    el.classList.remove('fade-out');
+    el.style.display = 'flex';
+    this.setProgress(8, text);
+  },
+  setProgress(pct, text = null) {
+    const fill = document.getElementById('app-loader-bar-fill');
+    const txt = document.getElementById('app-loader-text');
+    if (fill) fill.style.width = `${Math.max(5, Math.min(100, pct))}%`;
+    if (txt && text) txt.innerText = text;
+  },
+  hide() {
+    if (this._hidden) return;
+    this._hidden = true;
+    const el = document.getElementById('app-loader-overlay');
+    if (!el) return;
+    this.setProgress(100, '準備完了！');
+    setTimeout(() => {
+      el.classList.add('fade-out');
+      setTimeout(() => {
+        if (this._hidden) el.style.display = 'none';
+      }, 360);
+    }, 160);
+  }
+};
+
+const BusyLoader = {
+  show(title = '処理中...', sub = 'しばらくお待ちください') {
+    const el = document.getElementById('busy-loader-overlay');
+    if (!el) return;
+    const t = document.getElementById('busy-loader-title');
+    const s = document.getElementById('busy-loader-sub');
+    if (t) t.innerText = title;
+    if (s) s.innerText = sub;
+    el.style.display = 'flex';
+  },
+  hide() {
+    const el = document.getElementById('busy-loader-overlay');
+    if (el) el.style.display = 'none';
+  }
+};
+
+const SceneTransition = {
+  _runToken: 0,
+  _timer: null,
+  async run(labelText, prepareFn, resumeFn) {
+    const token = ++this._runToken;
+    const el = document.getElementById('scene-transition-overlay');
+    const txt = document.getElementById('scene-transition-text');
+
+    if (!el) {
+      if (typeof prepareFn === 'function') await prepareFn();
+      if (typeof resumeFn === 'function') resumeFn();
+      return;
+    }
+
+    if (this._timer) {
+      clearTimeout(this._timer);
+      this._timer = null;
+    }
+
+    if (txt) txt.innerText = labelText || 'LOADING...';
+    el.style.display = 'flex';
+    el.classList.remove('active');
+
+    await new Promise(resolve => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          el.classList.add('active');
+          setTimeout(resolve, 180);
+        });
+      });
+    });
+    if (token !== this._runToken) return;
+
+    const minWait = new Promise(resolve => setTimeout(resolve, 200));
+    try {
+      if (typeof prepareFn === 'function') {
+        await Promise.all([Promise.resolve(prepareFn()), minWait]);
+      } else {
+        await minWait;
+      }
+    } catch (e) {
+      console.error('SceneTransition prepare error:', e);
+    }
+    if (token !== this._runToken) return;
+
+    await new Promise(resolve => requestAnimationFrame(() => resolve()));
+    if (token !== this._runToken) return;
+
+    el.classList.remove('active');
+    this._timer = setTimeout(() => {
+      if (token !== this._runToken) return;
+      el.style.display = 'none';
+      this._timer = null;
+      if (typeof resumeFn === 'function') resumeFn();
+    }, 180);
+  },
+  play(midCallback) {
+    return this.run('LOADING...', midCallback, null);
+  }
+};
+
+// ==========================================
 // SE & BGM 制御 (Web Audio API & HTML5 Audio フォールバック)
 // ==========================================
 const AudioContext = window.AudioContext || window.webkitAudioContext;
@@ -31,6 +142,9 @@ document.addEventListener('keydown', ensureAudioCtxResumed, { passive: true });
 const SE = {
   files: {
     cursorMove: 'assets/se/cursor_move.m4a',
+    select: 'assets/se/select.m4a',
+    cancel: 'assets/se/cancel.m4a',
+    skillFilled: 'assets/se/skill_filled.m4a',
     falledBlock: 'assets/se/falled_block.m4a',
     garbageErase: 'assets/se/garbage_block_erase.m4a',
     normalErase: 'assets/se/nomal_block_erase.m4a',
@@ -43,9 +157,10 @@ const SE = {
   fallbackAudios: {},
   _fallbackUnlocked: false,
   customBuffers: {},
-  customRawMap: {},   // { key: { dataUrl, name, size } }
-  remoteBuffers: {},  // { senderId: { key: AudioBuffer } }
+  customRawMap: {},
+  remoteBuffers: {},
   volume: 0.5,
+  readyPromise: null,
   prepareFallbackAudio(key, path) {
     this.fallbackPaths[key] = path;
     if (!this.fallbackAudios[key]) {
@@ -231,7 +346,7 @@ const SE = {
     }
   }
 };
-SE.load();
+SE.readyPromise = SE.load();
 
 // ==========================================
 // VOICE 制御（attack / win / lose 拡張子非依存 & カスタムボイス対応）
@@ -244,11 +359,11 @@ const VOICE = {
     lose: 'lose'
   },
   volume: 0.7,
-  resolvedCache: {},   // { key: { type: 'buffer'|'url'|'none', data } }
-  resolvingMap: {},    // { key: Promise }
-  customBuffers: {},   // { attack?: AudioBuffer, win?: AudioBuffer, lose?: AudioBuffer }
-  customRawMap: {},    // { attack?: { dataUrl, name, size }, ... }
-  remoteBuffers: {},   // { [senderId]: { attack?: AudioBuffer, ... } }
+  resolvedCache: {},
+  resolvingMap: {},
+  customBuffers: {},
+  customRawMap: {},
+  remoteBuffers: {},
   lastPlayedMap: {},
 
   async setCustomVoice(category, arrayBuffer, meta = null) {
@@ -350,9 +465,7 @@ const VOICE = {
           const entry = { type: 'buffer', data: decoded };
           this.resolvedCache[cacheKey] = entry;
           return entry;
-        } catch (_) {
-          // 存在しない・デコード不可時はエラー出力せず次拡張子へ
-        }
+        } catch (_) {}
       }
       const noneEntry = { type: 'none' };
       this.resolvedCache[cacheKey] = noneEntry;
@@ -412,7 +525,6 @@ const VOICE = {
   }
 };
 
-// iOS等(WebKit)での音量調整不具合解消＆file://環境フォールバック付き BGMラッパー
 class WebAudioBGMPlayer {
   constructor(ctx, src = '') {
     this.ctx = ctx;
@@ -721,7 +833,6 @@ if (voiceVolEl && voiceVolValEl) {
   voiceVolEl.addEventListener('input', (e) => {
     VOICE.volume = parseFloat(e.target.value);
     voiceVolValEl.innerText = Math.round(VOICE.volume * 100);
-    localStorage.setItem('pdw_voice_vol', VOICE.volume);
   });
 }
 document.getElementById('bgm-volume').value = initBgmVol;
@@ -730,7 +841,6 @@ document.getElementById('bgm-volume-val').innerText = Math.round(initBgmVol * 10
 document.getElementById('se-volume').addEventListener('input', (e) => {
   SE.volume = parseFloat(e.target.value);
   document.getElementById('se-volume-val').innerText = Math.round(SE.volume * 100);
-  localStorage.setItem('pdw_se_vol', SE.volume);
 });
 
 document.getElementById('bgm-volume').addEventListener('input', (e) => {
@@ -746,7 +856,6 @@ document.getElementById('bgm-volume').addEventListener('input', (e) => {
     panicBgmAudio.muted = true;
   }
   document.getElementById('bgm-volume-val').innerText = Math.round(vol * 100);
-  localStorage.setItem('pdw_bgm_vol', vol);
 });
 
 function isAudioFileCandidate(file) {
@@ -764,7 +873,7 @@ function handleBgmFiles(files) {
     bgmAudio.src = URL.createObjectURL(expectedFile);
     bgmAudio._currentFile = expectedFile;
     bgmNeedsPlay = true;
-    showToast(`BGMを${arr.length}曲セットしました。「設定を保存して閉じる」を押すと再生されます`);
+    showToast(`BGMを${arr.length}曲セットしました。「保存して閉じる」を押すと再生されます`);
   } else {
     showToast('対応する音声ファイルが見つかりませんでした');
   }
@@ -898,7 +1007,7 @@ function setRangeValueWithEvents(rangeEl, newVal) {
 }
 
 function enhanceRangeSlider(rangeEl) {
-  if (!rangeEl || rangeEl.dataset.enhanced === '1') return;
+  if (!rangeEl || rangeEl.dataset.enhanced === '1' || rangeEl.classList.contains('cf-slider')) return;
   rangeEl.dataset.enhanced = '1';
 
   let draggingFromBar = false;
@@ -1049,7 +1158,7 @@ function updateRangeDigitHUD() {
   doneBtn.type = 'button';
   doneBtn.className = 'small-btn';
   doneBtn.innerText = '確定';
-  doneBtn.onclick = () => closeRangeDigitEdit();
+  doneBtn.onclick = () => { closeRangeDigitEdit(); SE.play('select'); };
   row.appendChild(doneBtn);
 
   const hint = document.createElement('div');
@@ -1113,7 +1222,6 @@ function createEmptyKeyConfig() {
   return obj;
 }
 
-// 2Pデフォルトキー（1Pと重複しないWASD側）
 function createDefaultP2KeyConfig() {
   return {
     Up: 'KeyW', Down: 'KeyS', Left: 'KeyA', Right: 'KeyD',
@@ -1183,6 +1291,7 @@ try {
 let settingsPlayerIdx = 0;
 let currentSettingsTab = 'audio';
 let assigningAction = null, assignType = null;
+let settingsSnapshot = null;
 
 function selectSettingsTab(tabKey) {
   currentSettingsTab = tabKey || 'audio';
@@ -1217,16 +1326,167 @@ function onSettingsPadSlotChange(val) {
   playerConfigs[settingsPlayerIdx].padSlot = parseInt(val, 10);
 }
 
-function openSettings() { 
-  document.getElementById('settings-overlay').style.display = 'block'; 
+function openSettings() {
+  SE.play('select');
+  // 変更前スナップショットを保存（「保存せずに戻る」での復元用）
+  settingsSnapshot = {
+    bgmVol: parseFloat(document.getElementById('bgm-volume')?.value ?? bgmAudio.volume),
+    seVol: SE.volume,
+    voiceVol: VOICE.volume,
+    playerCustomName: typeof playerCustomName !== 'undefined' ? playerCustomName : '',
+    hubPortraitMode: typeof hubPortraitMode !== 'undefined' ? hubPortraitMode : 'random',
+    selectedCharId: typeof selectedCharId !== 'undefined' ? selectedCharId : 'main00',
+    storySelectedCharId: typeof storySelectedCharId !== 'undefined' ? storySelectedCharId : 'main00',
+    playerConfigs: JSON.parse(JSON.stringify(playerConfigs)),
+    customAssets: typeof CustomAssets !== 'undefined' ? {
+      chara: CustomAssets.chara ? { ...CustomAssets.chara } : null,
+      bg: CustomAssets.bg ? { ...CustomAssets.bg } : null,
+      frame: CustomAssets.frame ? { ...CustomAssets.frame } : null
+    } : null,
+    customVoices: {
+      buffers: { ...VOICE.customBuffers },
+      raw: JSON.parse(JSON.stringify(VOICE.customRawMap))
+    },
+    customSE: {
+      buffers: { ...SE.customBuffers },
+      raw: JSON.parse(JSON.stringify(SE.customRawMap))
+    },
+    bgmPlaylist: [...bgmPlaylist],
+    currentBgmIndex,
+    bgmNeedsPlay
+  };
+
+  if (typeof refreshHubCharSelectOptions === 'function') {
+    refreshHubCharSelectOptions();
+  }
+  document.getElementById('settings-overlay').style.display = 'block';
   selectSettingsTab(currentSettingsTab || 'audio');
   enhanceAllRangeSliders();
 }
 
-function closeSettings() { 
+async function cancelSettings() {
   closeRangeDigitEdit();
-  document.getElementById('settings-overlay').style.display = 'none'; 
   assigningAction = null;
+  if (settingsSnapshot) {
+    const snap = settingsSnapshot;
+    SE.volume = snap.seVol;
+    VOICE.volume = snap.voiceVol;
+    bgmAudio.volume = snap.bgmVol;
+    panicBgmAudio.volume = snap.bgmVol;
+
+    const seEl = document.getElementById('se-volume');
+    const seVal = document.getElementById('se-volume-val');
+    if (seEl) seEl.value = snap.seVol;
+    if (seVal) seVal.innerText = Math.round(snap.seVol * 100);
+
+    const vEl = document.getElementById('voice-volume');
+    const vVal = document.getElementById('voice-volume-val');
+    if (vEl) vEl.value = snap.voiceVol;
+    if (vVal) vVal.innerText = Math.round(snap.voiceVol * 100);
+
+    const bEl = document.getElementById('bgm-volume');
+    const bVal = document.getElementById('bgm-volume-val');
+    if (bEl) bEl.value = snap.bgmVol;
+    if (bVal) bVal.innerText = Math.round(snap.bgmVol * 100);
+
+    // キー・パッド設定復元
+    snap.playerConfigs.forEach((sc, idx) => {
+      playerConfigs[idx].padSlot = sc.padSlot;
+      Object.assign(playerConfigs[idx].key, sc.key);
+      Object.assign(playerConfigs[idx].pad, sc.pad);
+    });
+
+    // 名前・ハブ立ち絵設定復元
+    if (typeof playerCustomName !== 'undefined') {
+      playerCustomName = snap.playerCustomName;
+      const nameInput = document.getElementById('settings-player-name');
+      if (nameInput) nameInput.value = playerCustomName;
+    }
+    if (typeof hubPortraitMode !== 'undefined') {
+      hubPortraitMode = snap.hubPortraitMode;
+      const hubSel = document.getElementById('settings-hub-char');
+      if (hubSel) hubSel.value = hubPortraitMode;
+    }
+    if (typeof selectedCharId !== 'undefined') selectedCharId = snap.selectedCharId;
+    if (typeof storySelectedCharId !== 'undefined') storySelectedCharId = snap.storySelectedCharId;
+
+    // カスタム画像復元
+    if (snap.customAssets && typeof CustomAssets !== 'undefined') {
+      for (const k of ['chara', 'bg', 'frame']) {
+        CustomAssets[k] = snap.customAssets[k];
+        if (typeof saveCustomAssetDB === 'function' && typeof deleteCustomAssetDB === 'function') {
+          if (snap.customAssets[k]) await saveCustomAssetDB(k, snap.customAssets[k]).catch(() => {});
+          else await deleteCustomAssetDB(k).catch(() => {});
+        }
+      }
+      if (typeof applyGlobalFrameTheme === 'function') {
+        applyGlobalFrameTheme(CustomAssets.frame ? CustomAssets.frame.dataUrl : null);
+      }
+    }
+
+    // カスタムボイス復元
+    if (snap.customVoices) {
+      const prevCats = new Set(Object.keys(VOICE.customRawMap));
+      VOICE.customBuffers = { ...snap.customVoices.buffers };
+      VOICE.customRawMap = snap.customVoices.raw;
+      for (const cat of ['attack', 'win', 'lose']) {
+        if (typeof saveCustomAssetDB === 'function' && typeof deleteCustomAssetDB === 'function') {
+          if (VOICE.customRawMap[cat]) await saveCustomAssetDB(`voice_${cat}`, VOICE.customRawMap[cat]).catch(() => {});
+          else if (prevCats.has(cat)) await deleteCustomAssetDB(`voice_${cat}`).catch(() => {});
+        }
+      }
+    }
+
+    // カスタムSE復元
+    if (snap.customSE) {
+      const allKeys = new Set([...Object.keys(SE.customRawMap), ...Object.keys(snap.customSE.raw)]);
+      SE.customBuffers = { ...snap.customSE.buffers };
+      SE.customRawMap = snap.customSE.raw;
+      for (const k of allKeys) {
+        if (typeof saveCustomAssetDB === 'function' && typeof deleteCustomAssetDB === 'function') {
+          if (SE.customRawMap[k]) await saveCustomAssetDB(`se_${k}`, SE.customRawMap[k]).catch(() => {});
+          else await deleteCustomAssetDB(`se_${k}`).catch(() => {});
+        }
+      }
+    }
+
+    // BGMリスト復元
+    bgmPlaylist = [...snap.bgmPlaylist];
+    currentBgmIndex = snap.currentBgmIndex;
+    bgmNeedsPlay = snap.bgmNeedsPlay;
+
+    if (typeof refreshCustomAssetsUI === 'function') refreshCustomAssetsUI();
+    if (typeof refreshMenuHeaderAndPreview === 'function') refreshMenuHeaderAndPreview();
+  }
+
+  settingsSnapshot = null;
+  document.getElementById('settings-overlay').style.display = 'none';
+  SE.play('cancel');
+  showToast('変更を保存せずに戻りました');
+}
+
+function closeSettings() {
+  closeRangeDigitEdit();
+  document.getElementById('settings-overlay').style.display = 'none';
+  assigningAction = null;
+  settingsSnapshot = null;
+
+  localStorage.setItem('pdw_se_vol', SE.volume);
+  localStorage.setItem('pdw_voice_vol', VOICE.volume);
+  localStorage.setItem('pdw_bgm_vol', bgmAudio.volume);
+  if (typeof playerCustomName !== 'undefined') {
+    localStorage.setItem('pdw_player_name', playerCustomName);
+  }
+  if (typeof hubPortraitMode !== 'undefined') {
+    localStorage.setItem('pdw_hub_char', hubPortraitMode);
+  }
+  if (typeof selectedCharId !== 'undefined') {
+    localStorage.setItem('pdw_char_id', selectedCharId);
+  }
+  if (typeof storySelectedCharId !== 'undefined') {
+    localStorage.setItem('pdw_story_char_id', storySelectedCharId);
+  }
+
   localStorage.setItem('pdw_key', JSON.stringify(keyConfig));
   localStorage.setItem('pdw_pad', JSON.stringify(padConfig));
   localStorage.setItem('pdw_pad_slot_0', String(playerConfigs[0].padSlot));
@@ -1235,6 +1495,12 @@ function closeSettings() {
     2: playerConfigs[2],
     3: playerConfigs[3]
   }));
+
+  SE.play('select');
+
+  if (typeof refreshMenuHeaderAndPreview === 'function') {
+    refreshMenuHeaderAndPreview(true);
+  }
 
   if (bgmNeedsPlay && !isBgmPlaying && matchState !== 'playing') {
     const expectedFile = bgmPlaylist[currentBgmIndex];
@@ -1303,6 +1569,224 @@ function getConnectedPadsSummaryText() {
     : '検出済みパッド: なし（接続してどれかボタンを押すと認識されます）';
 }
 
+function getActiveMenuFocusScope() {
+  const modalIds = [
+    'confirm-match-modal',
+    'skill-select-modal',
+    'settings-overlay',
+    'result-overlay',
+    'countdown-overlay',
+    'room-waiting',
+    'share-prep-overlay',
+    'story-overlay'
+  ];
+  for (const id of modalIds) {
+    const el = document.getElementById(id);
+    if (el && window.getComputedStyle(el).display !== 'none') {
+      return el;
+    }
+  }
+  const menuOverlay = document.getElementById('menu-overlay');
+  if (menuOverlay && window.getComputedStyle(menuOverlay).display !== 'none') {
+    return menuOverlay;
+  }
+  return document;
+}
+
+function processMenuNavigationInput(input) {
+  const scope = getActiveMenuFocusScope();
+  let activeEl = document.activeElement;
+  if (activeEl && scope !== document && !scope.contains(activeEl)) {
+    activeEl = null;
+  }
+
+  const isSelect = activeEl && activeEl.tagName === 'SELECT';
+  const isRange = activeEl && activeEl.tagName === 'INPUT' && activeEl.type === 'range';
+  const isCoverFlowSlider = isRange && activeEl.classList.contains('cf-slider');
+  const isCheckbox = activeEl && activeEl.tagName === 'INPUT' && activeEl.type === 'checkbox';
+
+  if (rangeEditState.el && rangeEditState.el !== activeEl) {
+    closeRangeDigitEdit();
+  }
+
+  if (input.cancel) {
+    if (rangeEditState.el) {
+      closeRangeDigitEdit();
+      SE.play('cancel');
+      return true;
+    }
+    if (typeof handleMenuCancelAction === 'function') {
+      return !!handleMenuCancelAction();
+    }
+    return false;
+  }
+
+  if (isSelect) {
+    if (input.left) {
+      if (activeEl.selectedIndex > 0) {
+        activeEl.selectedIndex--;
+        activeEl.dispatchEvent(new Event('change', { bubbles: true }));
+        SE.play('cursorMove');
+      }
+      return true;
+    }
+    if (input.right) {
+      if (activeEl.selectedIndex < activeEl.options.length - 1) {
+        activeEl.selectedIndex++;
+        activeEl.dispatchEvent(new Event('change', { bubbles: true }));
+        SE.play('cursorMove');
+      }
+      return true;
+    }
+    if (input.up) { moveMenuFocus(-1); return true; }
+    if (input.down) { moveMenuFocus(1); return true; }
+    return false;
+  }
+
+  if (isCoverFlowSlider) {
+    if (input.left && typeof activeEl._cfStep === 'function') {
+      activeEl._cfStep(-1);
+      return true;
+    }
+    if (input.right && typeof activeEl._cfStep === 'function') {
+      activeEl._cfStep(1);
+      return true;
+    }
+    if (input.up) { moveMenuFocus(-1); return true; }
+    if (input.down) { moveMenuFocus(1); return true; }
+    if (input.confirm && typeof activeEl._cfConfirm === 'function') {
+      SE.play('select');
+      activeEl._cfConfirm();
+      return true;
+    }
+    return false;
+  }
+
+  if (isRange) {
+    const step = parseFloat(activeEl.step) || 1;
+    const min = parseFloat(activeEl.min) || 0;
+    const max = parseFloat(activeEl.max) || 100;
+
+    if (rangeEditState.el === activeEl) {
+      const meta = getRangeDisplayMeta(activeEl);
+      if (input.left) {
+        rangeEditState.digitIndex = Math.max(0, rangeEditState.digitIndex - 1);
+        updateRangeDigitHUD();
+        SE.play('cursorMove');
+        return true;
+      }
+      if (input.right) {
+        rangeEditState.digitIndex = Math.min(meta.digits - 1, rangeEditState.digitIndex + 1);
+        updateRangeDigitHUD();
+        SE.play('cursorMove');
+        return true;
+      }
+      if (input.up) {
+        adjustRangeDigit(activeEl, rangeEditState.digitIndex, 1);
+        return true;
+      }
+      if (input.down) {
+        adjustRangeDigit(activeEl, rangeEditState.digitIndex, -1);
+        return true;
+      }
+      if (input.confirm || input.altConfirm) {
+        closeRangeDigitEdit();
+        SE.play('select');
+        return true;
+      }
+      return false;
+    }
+
+    let val = parseFloat(activeEl.value);
+    if (input.left) {
+      setRangeValueWithEvents(activeEl, Math.max(min, val - step));
+      SE.play('cursorMove');
+      return true;
+    }
+    if (input.right) {
+      setRangeValueWithEvents(activeEl, Math.min(max, val + step));
+      SE.play('cursorMove');
+      return true;
+    }
+    if (input.up) { moveMenuFocus(-1); return true; }
+    if (input.down) { moveMenuFocus(1); return true; }
+    if (input.confirm) {
+      rangeEditState.el = activeEl;
+      rangeEditState.digitIndex = 0;
+      updateRangeDigitHUD();
+      SE.play('select');
+      return true;
+    }
+    return false;
+  }
+
+  if (input.up || input.left) {
+    moveMenuFocus(-1);
+    return true;
+  }
+  if (input.down || input.right) {
+    moveMenuFocus(1);
+    return true;
+  }
+  if (input.confirm) {
+    if (!activeEl || activeEl === document.body) {
+      moveMenuFocus(1);
+      return true;
+    }
+    if (isCheckbox) {
+      activeEl.checked = !activeEl.checked;
+      activeEl.dispatchEvent(new Event('change', { bubbles: true }));
+      SE.play('select');
+      return true;
+    }
+    if (typeof activeEl.click === 'function') {
+      activeEl.click();
+      return true;
+    }
+  }
+  return false;
+}
+
+function handleMenuKeyDown(e) {
+  const code = e.code;
+  const tag = document.activeElement?.tagName;
+  const inputType = document.activeElement?.type;
+  const isTextInput = tag === 'INPUT' && inputType === 'text';
+
+  if (isTextInput) {
+    if (!e.repeat && (code === 'Escape' || code === keyConfig.Pause)) {
+      document.activeElement.blur();
+      e.preventDefault();
+      return true;
+    }
+    return false;
+  }
+
+  const isUp = (code === 'ArrowUp' || code === keyConfig.Up);
+  const isDown = (code === 'ArrowDown' || code === keyConfig.Down);
+  const isLeft = (code === 'ArrowLeft' || code === keyConfig.Left);
+  const isRight = (code === 'ArrowRight' || code === keyConfig.Right);
+  const isConfirm = !e.repeat && (code === keyConfig.Swap || code === 'Enter');
+  const isAltConfirm = !e.repeat && (code === keyConfig.GrabRight);
+  const isCancel = !e.repeat && (code === keyConfig.Skill || code === 'Escape');
+
+  if (!isUp && !isDown && !isLeft && !isRight && !isConfirm && !isAltConfirm && !isCancel) {
+    return false;
+  }
+
+  const handled = processMenuNavigationInput({
+    up: isUp,
+    down: isDown,
+    left: isLeft,
+    right: isRight,
+    confirm: isConfirm,
+    altConfirm: isAltConfirm,
+    cancel: isCancel
+  });
+  if (handled) e.preventDefault();
+  return handled;
+}
+
 // ゲームパッドによるメニュー操作 & 設定画面のボタン割り当て用グローバルループ
 let globalPadPrevState = {};
 let globalPadHold = { Up: 0, Down: 0, Left: 0, Right: 0 };
@@ -1317,7 +1801,8 @@ setInterval(() => {
     settingsPadStatus.innerText = getConnectedPadsSummaryText();
   }
   const localPadStatus = document.getElementById('local-pad-status');
-  if (localPadStatus && document.getElementById('local-menu')?.style.display === 'flex') {
+  const isLocalMenuOpen = document.getElementById('local-menu')?.style.display === 'flex';
+  if (localPadStatus && isLocalMenuOpen) {
     localPadStatus.innerText = getConnectedPadsSummaryText();
   }
 
@@ -1333,8 +1818,23 @@ setInterval(() => {
         playerConfigs[settingsPlayerIdx].pad[assigningAction] = pressedIdx;
         assigningAction = null;
         renderConfigUI();
+        SE.play('select');
         return;
       }
+    }
+    return;
+  }
+
+  const isGameAreaShown = document.getElementById('game-area')?.style.display === 'flex';
+  const isResultShown = document.getElementById('result-overlay')?.style.display === 'flex';
+  const isSettingsShown = document.getElementById('settings-overlay')?.style.display === 'block';
+  const isSkillModalShown = document.getElementById('skill-select-modal')?.style.display === 'flex';
+  const isConfirmModalShown = document.getElementById('confirm-match-modal')?.style.display === 'flex';
+  const isSharePrepShown = document.getElementById('share-prep-overlay')?.style.display === 'flex';
+
+  if (!isGameAreaShown && !isSettingsShown && !isSkillModalShown && !isConfirmModalShown && !isSharePrepShown && isLocalMenuOpen) {
+    if (typeof pollLocalMenuGamepads === 'function') {
+      pollLocalMenuGamepads(pads);
     }
     return;
   }
@@ -1359,108 +1859,21 @@ setInterval(() => {
   };
 
   const isBattleEndShown = document.getElementById('battle-end-overlay')?.style.display === 'flex';
-  const isSharePrepShown = document.getElementById('share-prep-overlay')?.style.display === 'flex';
-  const isGameAreaShown = document.getElementById('game-area')?.style.display === 'flex';
-  
-  if (!isGameAreaShown && !isBattleEndShown && !isSharePrepShown && typeof matchState !== 'undefined' && matchState !== 'playing') {
-    const activeEl = document.activeElement;
-    const isSelect = activeEl && activeEl.tagName === 'SELECT';
-    const isRange = activeEl && activeEl.tagName === 'INPUT' && activeEl.type === 'range';
-    const isCheckbox = activeEl && activeEl.tagName === 'INPUT' && activeEl.type === 'checkbox';
+  const canMenuPadControl = (!isGameAreaShown || isResultShown || isSettingsShown || isSkillModalShown || isConfirmModalShown)
+    && !isBattleEndShown
+    && !isSharePrepShown
+    && (isResultShown || isSettingsShown || (typeof matchState !== 'undefined' && matchState !== 'playing'));
 
-    if (rangeEditState.el && rangeEditState.el !== activeEl) {
-      closeRangeDigitEdit();
-    }
-
-    if (justPressed(padConfig.Skill)) {
-      if (rangeEditState.el) {
-        closeRangeDigitEdit();
-        SE.play('cursorMove');
-      } else if (typeof handleMenuCancelAction === 'function') {
-        handleMenuCancelAction();
-      }
-    } else if (isSelect) {
-      if (isDirRepeat('Left', padConfig.Left)) {
-        if (activeEl.selectedIndex > 0) {
-          activeEl.selectedIndex--;
-          activeEl.dispatchEvent(new Event('change', { bubbles: true }));
-          SE.play('cursorMove');
-        }
-      } else if (isDirRepeat('Right', padConfig.Right)) {
-        if (activeEl.selectedIndex < activeEl.options.length - 1) {
-          activeEl.selectedIndex++;
-          activeEl.dispatchEvent(new Event('change', { bubbles: true }));
-          SE.play('cursorMove');
-        }
-      } else if (isDirRepeat('Up', padConfig.Up)) {
-        moveMenuFocus(-1);
-      } else if (isDirRepeat('Down', padConfig.Down)) {
-        moveMenuFocus(1);
-      }
-    } else if (isRange) {
-      const step = parseFloat(activeEl.step) || 1;
-      const min = parseFloat(activeEl.min) || 0;
-      const max = parseFloat(activeEl.max) || 100;
-
-      if (rangeEditState.el === activeEl) {
-        const meta = getRangeDisplayMeta(activeEl);
-        if (isDirRepeat('Left', padConfig.Left)) {
-          rangeEditState.digitIndex = Math.max(0, rangeEditState.digitIndex - 1);
-          updateRangeDigitHUD();
-          SE.play('cursorMove');
-        } else if (isDirRepeat('Right', padConfig.Right)) {
-          rangeEditState.digitIndex = Math.min(meta.digits - 1, rangeEditState.digitIndex + 1);
-          updateRangeDigitHUD();
-          SE.play('cursorMove');
-        } else if (isDirRepeat('Up', padConfig.Up)) {
-          adjustRangeDigit(activeEl, rangeEditState.digitIndex, 1);
-        } else if (isDirRepeat('Down', padConfig.Down)) {
-          adjustRangeDigit(activeEl, rangeEditState.digitIndex, -1);
-        }
-        if (justPressed(padConfig.Swap) || justPressed(padConfig.GrabRight)) {
-          closeRangeDigitEdit();
-          SE.play('cursorMove');
-        }
-      } else {
-        let val = parseFloat(activeEl.value);
-        if (isDirRepeat('Left', padConfig.Left)) {
-          setRangeValueWithEvents(activeEl, Math.max(min, val - step));
-          SE.play('cursorMove');
-        } else if (isDirRepeat('Right', padConfig.Right)) {
-          setRangeValueWithEvents(activeEl, Math.min(max, val + step));
-          SE.play('cursorMove');
-        } else if (isDirRepeat('Up', padConfig.Up)) {
-          moveMenuFocus(-1);
-        } else if (isDirRepeat('Down', padConfig.Down)) {
-          moveMenuFocus(1);
-        }
-        if (justPressed(padConfig.Swap)) {
-          rangeEditState.el = activeEl;
-          rangeEditState.digitIndex = 0;
-          updateRangeDigitHUD();
-          SE.play('cursorMove');
-        }
-      }
-    } else {
-      if (isDirRepeat('Up', padConfig.Up) || isDirRepeat('Left', padConfig.Left)) {
-        moveMenuFocus(-1);
-      }
-      if (isDirRepeat('Down', padConfig.Down) || isDirRepeat('Right', padConfig.Right)) {
-        moveMenuFocus(1);
-      }
-      if (justPressed(padConfig.Swap)) {
-        if (activeEl) {
-          if (isCheckbox) {
-            activeEl.checked = !activeEl.checked;
-            activeEl.dispatchEvent(new Event('change', { bubbles: true }));
-            SE.play('cursorMove');
-          } else if (activeEl.click) {
-            activeEl.click();
-            SE.play('cursorMove');
-          }
-        }
-      }
-    }
+  if (canMenuPadControl) {
+    processMenuNavigationInput({
+      up: isDirRepeat('Up', padConfig.Up),
+      down: isDirRepeat('Down', padConfig.Down),
+      left: isDirRepeat('Left', padConfig.Left),
+      right: isDirRepeat('Right', padConfig.Right),
+      confirm: justPressed(padConfig.Swap),
+      altConfirm: justPressed(padConfig.GrabRight),
+      cancel: justPressed(padConfig.Skill)
+    });
   } else {
     globalPadHold = { Up: 0, Down: 0, Left: 0, Right: 0 };
     if (rangeEditState.el) closeRangeDigitEdit();
@@ -1469,7 +1882,8 @@ setInterval(() => {
 }, 1000 / 30);
 
 function moveMenuFocus(dir) {
-  const focusables = Array.from(document.querySelectorAll('button, select, input, [tabindex]:not([tabindex="-1"])'))
+  const scope = getActiveMenuFocusScope();
+  const focusables = Array.from(scope.querySelectorAll('button, select, input, [tabindex]:not([tabindex="-1"])'))
     .filter(el => {
       if (el.disabled) return false;
       if (el.closest('#slider-digit-hud')) return false;
@@ -1485,7 +1899,7 @@ function moveMenuFocus(dir) {
     });
   if (focusables.length === 0) return;
   let idx = focusables.indexOf(document.activeElement);
-  if (idx === -1) idx = 0;
+  if (idx === -1) idx = dir < 0 ? focusables.length - 1 : 0;
   else {
     idx += dir;
     if (idx < 0) idx = focusables.length - 1;

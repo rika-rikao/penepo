@@ -7,6 +7,10 @@ let localAppearanceSent = false;
 let localBoardReadyEmitted = false;
 let incomingAssetChunks = {};
 let appearanceTimeoutId = null;
+let joinTimeoutId = null;
+let joinCountdownIntervalId = null;
+let joinRetryTimeoutId = null;
+let currentCreatedRoomCode = '';
 
 function generateShortRoomCode() {
   const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
@@ -15,12 +19,81 @@ function generateShortRoomCode() {
   return res;
 }
 
+// iOS / Android / PC すべてで動作するクリップボードコピー（ユーザー操作の同期タイミング対応）
+function copyTextToClipboardSync(text) {
+  if (!text) return false;
+  let copied = false;
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '0';
+    ta.style.left = '-9999px';
+    ta.style.fontSize = '16px';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    if (isIOS) {
+      const range = document.createRange();
+      range.selectNodeContents(ta);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      ta.setSelectionRange(0, text.length);
+    } else {
+      ta.select();
+      ta.setSelectionRange(0, text.length);
+    }
+    copied = document.execCommand('copy');
+    document.body.removeChild(ta);
+  } catch (e) {
+    copied = false;
+  }
+
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+    navigator.clipboard.writeText(text).catch(() => {});
+  }
+  return copied;
+}
+
+function copyRoomCodeManual() {
+  const code = document.getElementById('waiting-code')?.innerText?.trim() || currentCreatedRoomCode;
+  if (!code) return;
+  const ok = copyTextToClipboardSync(code);
+  if (typeof SE !== 'undefined') SE.play('select');
+  showToast(ok ? `部屋コード [${code}] をコピーしました！` : `部屋コード: ${code}`);
+}
+
+function broadcastRoomStatus(codeUpper, maxPlayers) {
+  const count = 1 + onlineConnections.length;
+  onlineConnections.forEach(c => {
+    if (c && c.open) {
+      c.send({ type: 'room_status', code: codeUpper, count, max: maxPlayers });
+    }
+  });
+}
+
+function clearJoinTimers() {
+  if (joinTimeoutId) { clearTimeout(joinTimeoutId); joinTimeoutId = null; }
+  if (joinCountdownIntervalId) { clearInterval(joinCountdownIntervalId); joinCountdownIntervalId = null; }
+  if (joinRetryTimeoutId) { clearTimeout(joinRetryTimeoutId); joinRetryTimeoutId = null; }
+}
+
 function createRoom() {
   let code = document.getElementById('peer-room-id').value.trim();
   if (!code) { code = generateShortRoomCode(); document.getElementById('peer-room-id').value = code; }
-  const fullPeerId = PEER_PREFIX + code.toUpperCase();
-  
+  const codeUpper = code.toUpperCase();
+  currentCreatedRoomCode = codeUpper;
+  const fullPeerId = PEER_PREFIX + codeUpper;
+
+  // スマホ（iOS / Android）はユーザー操作直後の同期コンテキスト内でコピーを実行する必要がある
+  const preCopied = copyTextToClipboardSync(codeUpper);
+
   if (peer) { try { peer.destroy(); } catch(e){} }
+  clearJoinTimers();
+  if (typeof BusyLoader !== 'undefined') BusyLoader.show('部屋を作成中...', `部屋コード: ${codeUpper}`);
   peer = new Peer(fullPeerId);
   
   const maxPlayers = parseInt(document.getElementById('online-max-players').value) || 2;
@@ -28,18 +101,28 @@ function createRoom() {
   onlineConnections = [];
 
   peer.on('open', () => {
-    document.getElementById('main-menu-actions').style.display = 'none';
-    document.getElementById('online-menu').style.display = 'none';
+    if (typeof BusyLoader !== 'undefined') BusyLoader.hide();
+    if (typeof hideAllMenuSubViews === 'function') hideAllMenuSubViews();
+    const mainMenu = document.getElementById('main-menu');
+    if (mainMenu) mainMenu.style.display = 'none';
+
     const waiting = document.getElementById('room-waiting');
     waiting.style.display = 'flex';
-    document.getElementById('waiting-code-container').style.display = 'block';
-    document.getElementById('waiting-code').innerText = code.toUpperCase();
+    document.getElementById('waiting-code-container').style.display = 'flex';
+    document.getElementById('waiting-code').innerText = codeUpper;
     document.getElementById('waiting-max').innerText = maxPlayers;
     document.getElementById('waiting-count').innerText = 1;
     document.getElementById('waiting-status-text').innerText = '参加者を待っています...';
     document.getElementById('force-start-btn').style.display = 'inline-block';
-    navigator.clipboard?.writeText(code.toUpperCase()); 
-    showToast(`部屋コード [${code.toUpperCase()}] をコピーしました！`);
+    if (typeof refreshMenuLayoutState === 'function') refreshMenuLayoutState();
+
+    showToast(preCopied ? `部屋コード [${codeUpper}] をコピーしました！` : `部屋 [${codeUpper}] を作成しました！`);
+  });
+
+  peer.on('error', () => {
+    if (typeof BusyLoader !== 'undefined') BusyLoader.hide();
+    showToast('部屋の作成に失敗しました（別のコードをお試しください）');
+    cancelRoom(true);
   });
 
   peer.on('connection', (c) => {
@@ -50,6 +133,7 @@ function createRoom() {
       onlineConnections.push(c);
       bindConnEvents(c, true); 
       document.getElementById('waiting-count').innerText = 1 + onlineConnections.length;
+      broadcastRoomStatus(codeUpper, maxPlayers);
       
       if (onlineConnections.length >= maxPlayers - 1) {
         startCountdown();
@@ -58,39 +142,114 @@ function createRoom() {
   });
 }
 
-function cancelRoom() {
-  onlineConnections.forEach(c => c.close());
+function cancelRoom(silent = false) {
+  clearJoinTimers();
+  if (typeof BusyLoader !== 'undefined') BusyLoader.hide();
+  onlineConnections.forEach(c => { try { c.close(); } catch (_) {} });
   onlineConnections = [];
-  if (peer) { peer.destroy(); peer = null; }
-  document.getElementById('room-waiting').style.display = 'none';
-  document.getElementById('main-menu-actions').style.display = 'flex';
+  if (peer) { try { peer.destroy(); } catch (_) {} peer = null; }
+  currentMode = 'online';
+  const waiting = document.getElementById('room-waiting');
+  if (waiting) waiting.style.display = 'none';
+  hideOnlineSyncOverlay();
+
+  if (!silent && typeof SE !== 'undefined') SE.play('cancel');
+
+  const mainMenu = document.getElementById('main-menu');
+  if (mainMenu) mainMenu.style.display = 'flex';
+  if (typeof showOnlineMenu === 'function') {
+    showOnlineMenu();
+  } else if (typeof backToMainMenu === 'function') {
+    backToMainMenu();
+  }
 }
 
 function joinRoom() {
   const code = document.getElementById('peer-room-id').value.trim();
   if (!code) { showToast('部屋コードを入力してください'); return; }
-  const targetPeerId = PEER_PREFIX + code.toUpperCase();
+  const codeUpper = code.toUpperCase();
+  const targetPeerId = PEER_PREFIX + codeUpper;
 
   if (peer) { try { peer.destroy(); } catch(e){} }
+  clearJoinTimers();
   peer = new Peer();
   currentMode = 'online_client';
 
-  peer.on('open', () => {
+  if (typeof hideAllMenuSubViews === 'function') hideAllMenuSubViews();
+  const mainMenu = document.getElementById('main-menu');
+  if (mainMenu) mainMenu.style.display = 'none';
+
+  let remainingSec = 30;
+  let connectedSuccess = false;
+  const waiting = document.getElementById('room-waiting');
+  const statusEl = document.getElementById('waiting-status-text');
+  waiting.style.display = 'flex';
+  document.getElementById('waiting-code-container').style.display = 'flex';
+  document.getElementById('waiting-code').innerText = codeUpper;
+  if (statusEl) statusEl.innerText = `部屋を探しています...（残り ${remainingSec}秒）`;
+  document.getElementById('waiting-count').innerText = '-';
+  document.getElementById('waiting-max').innerText = '-';
+  document.getElementById('force-start-btn').style.display = 'none';
+  if (typeof refreshMenuLayoutState === 'function') refreshMenuLayoutState();
+
+  joinCountdownIntervalId = setInterval(() => {
+    if (connectedSuccess || currentMode !== 'online_client') {
+      clearInterval(joinCountdownIntervalId);
+      joinCountdownIntervalId = null;
+      return;
+    }
+    remainingSec = Math.max(0, remainingSec - 1);
+    if (statusEl) {
+      statusEl.innerText = `部屋を探しています...（残り ${remainingSec}秒）`;
+    }
+  }, 1000);
+
+  joinTimeoutId = setTimeout(() => {
+    joinTimeoutId = null;
+    if (!connectedSuccess && onlineConnections.length === 0 && currentMode === 'online_client') {
+      showToast('部屋が見つからないか接続がタイムアウトしました');
+      cancelRoom(true);
+    }
+  }, 30000);
+
+  const attemptConnect = () => {
+    if (!peer || peer.destroyed || connectedSuccess || currentMode !== 'online_client') return;
     const c = peer.connect(targetPeerId);
-    c.on('open', () => { 
+    c.on('open', () => {
+      if (connectedSuccess) { try { c.close(); } catch (_) {} return; }
+      connectedSuccess = true;
+      clearJoinTimers();
       onlineConnections = [c];
-      bindConnEvents(c, false); 
-      document.getElementById('main-menu-actions').style.display = 'none';
-      document.getElementById('online-menu').style.display = 'none';
-      const waiting = document.getElementById('room-waiting');
-      waiting.style.display = 'flex';
-      document.getElementById('waiting-code-container').style.display = 'none';
-      document.getElementById('waiting-status-text').innerText = '部屋に参加しました。ホストの開始を待機中...';
-      document.getElementById('waiting-count').innerText = '-';
-      document.getElementById('waiting-max').innerText = '-';
-      document.getElementById('force-start-btn').style.display = 'none';
+      bindConnEvents(c, false);
+      if (statusEl) statusEl.innerText = '部屋に参加しました！ホストの開始を待機中...';
     });
-    c.on('error', () => { showToast('部屋への接続に失敗しました'); });
+    c.on('error', () => {
+      if (!connectedSuccess && currentMode === 'online_client' && !joinRetryTimeoutId) {
+        joinRetryTimeoutId = setTimeout(() => {
+          joinRetryTimeoutId = null;
+          attemptConnect();
+        }, 2000);
+      }
+    });
+  };
+
+  peer.on('open', () => {
+    attemptConnect();
+  });
+
+  peer.on('error', (err) => {
+    if (connectedSuccess || currentMode !== 'online_client') return;
+    if (err && err.type === 'peer-unavailable') {
+      if (!joinRetryTimeoutId) {
+        joinRetryTimeoutId = setTimeout(() => {
+          joinRetryTimeoutId = null;
+          attemptConnect();
+        }, 2000);
+      }
+      return;
+    }
+    showToast('部屋への接続に失敗しました');
+    cancelRoom(true);
   });
 }
 
@@ -100,6 +259,7 @@ function startCountdown() {
   document.getElementById('countdown-text').innerText = '10';
 
   if (myOnlineId === 'host' || currentMode === 'online_host') {
+    if (typeof SE !== 'undefined') SE.play('select');
     document.getElementById('countdown-start-btn').style.display = 'inline-block';
     document.getElementById('countdown-start-btn').focus();
     onlineConnections.forEach(c => {
@@ -124,8 +284,10 @@ function startCountdown() {
 }
 
 function forceStartRoom() {
+  if (typeof SE !== 'undefined') SE.play('select');
   if (countdownTimer) clearInterval(countdownTimer);
   document.getElementById('countdown-overlay').style.display = 'none';
+  document.getElementById('room-waiting').style.display = 'none';
 
   const maxPlayers = parseInt(document.getElementById('online-max-players').value);
   const comLvl = parseInt(document.getElementById('online-com-level')?.value) || 3;
@@ -168,24 +330,55 @@ function startPrepareMatchFromHost() {
   prepareMatchLocal(hostConfig);
 }
 
-function showOnlineTransferStatus(msg) {
-  const overlay = document.getElementById('ready-go-overlay');
-  const text = document.getElementById('ready-go-text');
-  const countEl = document.getElementById('ready-countdown-text');
-  if (!overlay || !text) return;
-  overlay.style.display = 'flex';
-  text.style.transition = 'none';
-  text.style.opacity = '1';
-  text.style.transform = 'scale(0.55)';
-  text.style.color = '#00d4ff';
-  text.innerText = msg;
-  if (countEl) {
-    countEl.style.display = 'none';
-    countEl.innerText = '';
+function updateOnlineSyncOverlay() {
+  const overlay = document.getElementById('online-sync-overlay');
+  const listEl = document.getElementById('online-sync-list');
+  if (!overlay || !listEl) return;
+
+  listEl.innerHTML = '';
+  (matchPlayersConfig || []).forEach(p => {
+    const row = document.createElement('div');
+    row.className = 'online-sync-row';
+
+    const nameSpan = document.createElement('span');
+    nameSpan.innerText = p.id === myOnlineId ? `${p.name} (YOU)` : p.name;
+
+    const badge = document.createElement('span');
+    let isReady = false;
+    let statusText = '待機中';
+    if (p.type === 'com') {
+      isReady = true;
+      statusText = 'COM準備OK';
+    } else if (p.id === myOnlineId) {
+      isReady = localAppearanceSent;
+      statusText = localAppearanceSent ? '送信完了 ✓' : '送信中...';
+    } else {
+      isReady = !!receivedAppearanceIds[p.id];
+      statusText = isReady ? '準備OK ✓' : 'データ受信中...';
+    }
+    badge.className = 'online-sync-badge ' + (isReady ? 'ok' : 'pending');
+    badge.innerText = statusText;
+
+    row.append(nameSpan, badge);
+    listEl.appendChild(row);
+  });
+}
+
+function showOnlineTransferStatus() {
+  const overlay = document.getElementById('online-sync-overlay');
+  if (overlay) {
+    updateOnlineSyncOverlay();
+    overlay.style.display = 'flex';
   }
 }
 
+function hideOnlineSyncOverlay() {
+  const overlay = document.getElementById('online-sync-overlay');
+  if (overlay) overlay.style.display = 'none';
+}
+
 function tryEmitBoardReady() {
+  updateOnlineSyncOverlay();
   if (localBoardReadyEmitted) return;
   if (!localAppearanceSent) return;
   const allReceived = expectedAppearanceIds.every(id => !!receivedAppearanceIds[id]);
@@ -208,9 +401,11 @@ function tryEmitBoardReady() {
 }
 
 function prepareMatchLocal(config) {
+  clearJoinTimers();
   if (countdownTimer) clearInterval(countdownTimer);
   if (appearanceTimeoutId) { clearTimeout(appearanceTimeoutId); appearanceTimeoutId = null; }
   document.getElementById('countdown-overlay').style.display = 'none';
+  document.getElementById('room-waiting').style.display = 'none';
   document.getElementById('result-overlay').style.display = 'none';
   if (typeof hideBattleEndOverlay === 'function') hideBattleEndOverlay();
 
@@ -246,7 +441,7 @@ function prepareMatchLocal(config) {
   startSyncInterval();
 
   if (expectedAppearanceIds.length > 0) {
-    showOnlineTransferStatus('DATA SYNC...');
+    showOnlineTransferStatus();
   }
 
   appearanceTimeoutId = setTimeout(() => {
@@ -286,6 +481,7 @@ function handleBoardReady(senderId) {
 
 function executeStartMatch() {
   if (appearanceTimeoutId) { clearTimeout(appearanceTimeoutId); appearanceTimeoutId = null; }
+  hideOnlineSyncOverlay();
   matchState = 'ready';
   
   readyBgm();
@@ -348,7 +544,7 @@ function resetGameLogicOnline(config) {
     showPlayerHeaderCutin(myRenderer.theme, `${size}個消し！`, '#00d4ff');
   };
 
-  initPlayerSkillState(!!config.skillEnabled);
+  initPlayerSkillState(!!config.skillEnabled, selectedPlayerSkill);
 
   const rivalsArea = document.getElementById('rivals-area');
   const rivalsTopArea = document.getElementById('rivals-top-area');
@@ -471,6 +667,7 @@ function startSyncInterval() {
          type: 'sync', senderId: myOnlineId, grid: myEngine.grid, nextRow: myEngine.nextRow, 
          riseOffset: myEngine.riseOffset, score: myEngine.score, 
          garbageQueue: myEngine.garbageQueue, gameOver: myEngine.gameOver,
+         isSacrifice: !!myEngine.isSacrifice,
          skillRemaining: playerSkillState.enabled ? playerSkillState.usesLeft : undefined
        };
        onlineConnections.forEach(c => { if (c && c.open) c.send(syncData); });
@@ -488,6 +685,7 @@ function startSyncInterval() {
             type: 'sync', senderId: opp.id, grid: opp.engine.grid, nextRow: opp.engine.nextRow, 
             riseOffset: opp.engine.riseOffset, score: opp.engine.score, 
             garbageQueue: opp.engine.garbageQueue, gameOver: opp.engine.gameOver,
+            isSacrifice: !!opp.engine.isSacrifice,
             skillRemaining: (opp.ai && typeof opp.ai.getRemainingSkills === 'function') ? opp.ai.getRemainingSkills() : undefined
           };
           onlineConnections.forEach(c => { if (c && c.open) c.send(comSyncData); });
@@ -608,13 +806,25 @@ async function applyReceivedAppearance(senderId, payload) {
     }
   }
 
+  if (typeof refreshBattleSidePanels === 'function') {
+    refreshBattleSidePanels();
+  }
+
   receivedAppearanceIds[senderId] = true;
   tryEmitBoardReady();
 }
 
 function bindConnEvents(c, isHostMode) {
   c.on('data', (data) => {
-    if (data.type === 'sync') {
+    if (data.type === 'room_status') {
+      const wCnt = document.getElementById('waiting-count');
+      const wMax = document.getElementById('waiting-max');
+      const wCode = document.getElementById('waiting-code');
+      if (wCnt && data.count !== undefined) wCnt.innerText = data.count;
+      if (wMax && data.max !== undefined) wMax.innerText = data.max;
+      if (wCode && data.code) wCode.innerText = data.code;
+    }
+    else if (data.type === 'sync') {
       const senderOpp = opponents.find(o => o.id === data.senderId);
       if (senderOpp && senderOpp.engine) {
         if (!senderOpp.engine.endAnim) {
@@ -624,6 +834,11 @@ function bindConnEvents(c, isHostMode) {
         }
         if (data.score !== undefined) senderOpp.engine.score = data.score;
         if (data.garbageQueue) senderOpp.engine.garbageQueue = data.garbageQueue;
+        if (data.isSacrifice !== undefined) {
+          senderOpp.engine.isSacrifice = !!data.isSacrifice;
+          const wrap = document.getElementById(`rival-wrapper-${senderOpp.index}`);
+          if (wrap) wrap.classList.toggle('sacrifice-aura', !!data.isSacrifice);
+        }
         if (data.skillRemaining !== undefined) {
           senderOpp.syncedSkillRemaining = data.skillRemaining;
           if (typeof updateRivalSkillBadge === 'function') updateRivalSkillBadge(senderOpp, senderOpp.index);
@@ -650,12 +865,8 @@ function bindConnEvents(c, isHostMode) {
         senderOpp.engine.cutinMax = 50;
         senderOpp.engine.cutinTimer = 50;
         senderOpp.engine.cutinText = data.text;
-        if (typeof SE !== 'undefined' && SE.playForSender) {
-          SE.playForSender(data.senderId, 'skill');
-        }
-        if (typeof playAttackVoiceForSender === 'function') {
-          playAttackVoiceForSender(data.senderId);
-        }
+        if (typeof SE !== 'undefined' && SE.playForSender) SE.playForSender(data.senderId, 'skill');
+        if (typeof playAttackVoiceForSender === 'function') playAttackVoiceForSender(data.senderId);
       }
       if (isHostMode) {
         onlineConnections.forEach(otherC => {
@@ -667,9 +878,7 @@ function bindConnEvents(c, isHostMode) {
       startCountdown();
     }
     else if (data.type === 'garbage_request' && isHostMode) {
-      if (typeof playAttackVoiceForSender === 'function') {
-        playAttackVoiceForSender(data.senderId);
-      }
+      if (typeof playAttackVoiceForSender === 'function') playAttackVoiceForSender(data.senderId);
       for (const [tId, count] of Object.entries(data.targets)) {
         playGarbageSendAnimation(data.senderId, tId, data.isHard);
         if (tId === 'host') {
@@ -688,9 +897,7 @@ function bindConnEvents(c, isHostMode) {
         playAttackVoiceForSender(data.senderId);
       }
       for (const tId of Object.keys(data.targets)) {
-         if (data.senderId !== myOnlineId) {
-           playGarbageSendAnimation(data.senderId, tId, data.isHard);
-         }
+         if (data.senderId !== myOnlineId) playGarbageSendAnimation(data.senderId, tId, data.isHard);
       }
       if (data.targets[myOnlineId] && !isPracticeMode) {
         sendBlocksToOpponent({ engine: myEngine }, data.targets[myOnlineId], data.isHard);
@@ -721,20 +928,14 @@ function bindConnEvents(c, isHostMode) {
     }
     else if (data.type === 'appearance_chunk') {
       if (isHostMode) {
-        onlineConnections.forEach(otherC => {
-          if (otherC !== c && otherC.open) otherC.send(data);
-        });
+        onlineConnections.forEach(otherC => { if (otherC !== c && otherC.open) otherC.send(data); });
       }
-      if (!incomingAssetChunks[data.transferId]) {
-        incomingAssetChunks[data.transferId] = new Array(data.total);
-      }
+      if (!incomingAssetChunks[data.transferId]) incomingAssetChunks[data.transferId] = new Array(data.total);
       incomingAssetChunks[data.transferId][data.index] = data.chunk;
     }
     else if (data.type === 'appearance_done') {
       if (isHostMode) {
-        onlineConnections.forEach(otherC => {
-          if (otherC !== c && otherC.open) otherC.send(data);
-        });
+        onlineConnections.forEach(otherC => { if (otherC !== c && otherC.open) otherC.send(data); });
       }
       const chunks = incomingAssetChunks[data.transferId];
       delete incomingAssetChunks[data.transferId];
@@ -753,9 +954,7 @@ function bindConnEvents(c, isHostMode) {
     }
     else if (data.type === 'appearance_sync') {
       if (isHostMode) {
-        onlineConnections.forEach(otherC => {
-          if (otherC !== c && otherC.open) otherC.send(data);
-        });
+        onlineConnections.forEach(otherC => { if (otherC !== c && otherC.open) otherC.send(data); });
       }
       applyReceivedAppearance(data.senderId, data);
     }
@@ -763,21 +962,26 @@ function bindConnEvents(c, isHostMode) {
       if (data.targetId === myOnlineId && myEngine && !myEngine.gameOver && !isPracticeMode) {
         if (typeof applyCorruptRowToEngine === 'function') applyCorruptRowToEngine(myEngine, data.row);
         myEngine.addGarbage(3, 1, false);
-        if (myEngine.garbageQueue.length > 0) {
-          myEngine.garbageQueue[myEngine.garbageQueue.length - 1].delay = 45;
+        if (myEngine.garbageQueue.length > 0) myEngine.garbageQueue[myEngine.garbageQueue.length - 1].delay = 45;
+      } else if (isHostMode) {
+        onlineConnections.forEach(otherC => { if (otherC !== c && otherC.open) otherC.send(data); });
+      }
+    }
+    else if (data.type === 'cheat_seal_skill') {
+      if (data.targetId === myOnlineId && myEngine && !myEngine.gameOver && !isPracticeMode) {
+        if (typeof applySkillSealToMainPlayer === 'function') {
+          applySkillSealToMainPlayer(data.amount || 300);
         }
+      } else if (isHostMode) {
+        onlineConnections.forEach(otherC => { if (otherC !== c && otherC.open) otherC.send(data); });
       }
     }
     else if (data.type === 'leave') {
       if (isHostMode) {
         handlePlayerLeftHost(data.senderId);
       } else {
-        if (data.senderId === 'host') {
-           handleHostDisconnected();
-        } else {
-           replaceClientWithCom(data.senderId);
-           checkMatchEnd();
-        }
+        if (data.senderId === 'host') handleHostDisconnected();
+        else { replaceClientWithCom(data.senderId); checkMatchEnd(); }
       }
     }
   });
@@ -839,30 +1043,13 @@ async function sendMyAppearanceOnline() {
 
     for (let i = 0; i < total; i++) {
       const chunk = jsonStr.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
-      const msg = {
-        type: 'appearance_chunk',
-        senderId: myOnlineId,
-        transferId,
-        index: i,
-        total,
-        chunk
-      };
-      onlineConnections.forEach(c => {
-        if (c && c.open) c.send(msg);
-      });
-      if (total > 1 && i < total - 1) {
-        await new Promise(r => setTimeout(r, 8));
-      }
+      const msg = { type: 'appearance_chunk', senderId: myOnlineId, transferId, index: i, total, chunk };
+      onlineConnections.forEach(c => { if (c && c.open) c.send(msg); });
+      if (total > 1 && i < total - 1) await new Promise(r => setTimeout(r, 8));
     }
 
-    const doneMsg = {
-      type: 'appearance_done',
-      senderId: myOnlineId,
-      transferId
-    };
-    onlineConnections.forEach(c => {
-      if (c && c.open) c.send(doneMsg);
-    });
+    const doneMsg = { type: 'appearance_done', senderId: myOnlineId, transferId };
+    onlineConnections.forEach(c => { if (c && c.open) c.send(doneMsg); });
   } catch (e) {
     console.warn('Appearance send error:', e);
   } finally {

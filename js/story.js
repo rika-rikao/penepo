@@ -1,5 +1,5 @@
 // ==========================================
-// ストーリーモード（全7話：難易度ボタン & ステージカルーセル & 最後の敵2人は適切スキル固定）
+// ストーリーモード（全7話：2段階UI・スキルモーダル＆確認連携・最終2話スキル固定）
 // ==========================================
 const STORY_DIFFICULTIES = {
   easy:   { label: 'やさしい',   levels: [1, 2, 4, 6, 8, 12, 16],     allUseCheat: false },
@@ -163,6 +163,7 @@ const StoryManager = {
   currentLines: [],
   lineIndex: 0,
   phase: 'idle',
+  currentStep: 'prep',
 
   getDifficultyKey() {
     return STORY_DIFFICULTIES[this.difficulty] ? this.difficulty : 'normal';
@@ -176,7 +177,11 @@ const StoryManager = {
     this.difficulty = STORY_DIFFICULTIES[val] ? val : 'normal';
     localStorage.setItem('pdw_story_diff', this.difficulty);
     this.syncDifficultyButtons();
-    this.renderStageList();
+    if (typeof SE !== 'undefined') SE.play('select');
+    if (this.currentStep === 'stage') {
+      this.renderPrepSummaryBar();
+      this.renderStageList();
+    }
   },
 
   syncDifficultyButtons() {
@@ -221,23 +226,89 @@ const StoryManager = {
   },
 
   openMenu() {
-    document.getElementById('main-menu-actions').style.display = 'none';
-    const soloHub = document.getElementById('solo-hub-menu');
-    if (soloHub) soloHub.style.display = 'none';
+    if (typeof SE !== 'undefined') SE.play('select');
+    if (typeof hideAllMenuSubViews === 'function') {
+      hideAllMenuSubViews();
+    } else {
+      document.getElementById('main-menu-actions').style.display = 'none';
+      const soloHub = document.getElementById('solo-hub-menu');
+      if (soloHub) soloHub.style.display = 'none';
+    }
     const menu = document.getElementById('story-menu');
     menu.style.display = 'flex';
-    this.syncDifficultyButtons();
+    this.currentStep = 'prep';
+    const prepStep = document.getElementById('story-prep-step');
+    const stageStep = document.getElementById('story-stage-step');
+    if (prepStep) prepStep.style.display = 'flex';
+    if (stageStep) stageStep.style.display = 'none';
 
+    this.syncDifficultyButtons();
     const latestIdx = Math.min(STORY_STAGES.length - 1, this.clearedStage);
     this.selectedStageIdx = Math.max(0, latestIdx);
 
-    if (typeof onSkillToggleUiChange === 'function') {
-      onSkillToggleUiChange('story');
-    }
     if (typeof renderCharPicker === 'function') {
       renderCharPicker('story-char-picker', { storyOnly: true });
     }
+    if (typeof refreshMenuLayoutState === 'function') {
+      refreshMenuLayoutState();
+    }
+  },
+
+  confirmPrepAndNext() {
+    if (typeof SE !== 'undefined') SE.play('select');
+    const skillOn = this.isPlayerSkillEnabled();
+    if (!skillOn) {
+      this.goToStageStep();
+      return;
+    }
+    if (typeof openSkillAndConfirmFlow === 'function') {
+      openSkillAndConfirmFlow({
+        charId: this.getSelectedCharId(),
+        extraText: `難易度: ${STORY_DIFFICULTIES[this.getDifficultyKey()].label}`,
+        okLabel: 'ステージ選択へ ▶',
+        onConfirm: () => {
+          this.goToStageStep();
+        }
+      });
+    } else {
+      this.goToStageStep();
+    }
+  },
+
+  goToStageStep() {
+    this.currentStep = 'stage';
+    const prepStep = document.getElementById('story-prep-step');
+    const stageStep = document.getElementById('story-stage-step');
+    if (prepStep) prepStep.style.display = 'none';
+    if (stageStep) stageStep.style.display = 'flex';
+    this.renderPrepSummaryBar();
     this.renderStageList();
+  },
+
+  backToPrepStep() {
+    if (typeof SE !== 'undefined') SE.play('cancel');
+    this.currentStep = 'prep';
+    const prepStep = document.getElementById('story-prep-step');
+    const stageStep = document.getElementById('story-stage-step');
+    if (stageStep) stageStep.style.display = 'none';
+    if (prepStep) prepStep.style.display = 'flex';
+  },
+
+  renderPrepSummaryBar() {
+    const bar = document.getElementById('story-prep-summary-bar');
+    if (!bar) return;
+    const diffLabel = STORY_DIFFICULTIES[this.getDifficultyKey()].label;
+    const ch = getCharacterById(this.getSelectedCharId());
+    let skillTxt = 'OFF';
+    if (this.isPlayerSkillEnabled()) {
+      const skId = typeof selectedPlayerSkill !== 'undefined' ? selectedPlayerSkill : 'erase_color';
+      skillTxt = (typeof SKILL_LABELS !== 'undefined' && SKILL_LABELS[skId]) ? SKILL_LABELS[skId] : skId;
+    }
+    bar.innerHTML = `
+      <span class="story-summary-chip">難易度: ${diffLabel}</span>
+      <span class="story-summary-chip">キャラ: ${ch.name}</span>
+      <span class="story-summary-chip">スキル: ${skillTxt}</span>
+    `;
   },
 
   moveStageCarousel(delta) {
@@ -257,79 +328,109 @@ const StoryManager = {
       this.selectedStageIdx = 0;
     }
 
-    const st = STORY_STAGES[this.selectedStageIdx];
-    const unlocked = st.id <= this.clearedStage + 1;
-    const isClearedThisDiff = st.id <= diffCleared;
-    const isClearedAny = st.id <= this.clearedStage;
-    const enemy = getCharacterById(st.enemyId);
-    const cfg = this.getStageConfig(st);
-
-    let badge = 'LOCKED';
-    if (unlocked) {
-      if (isClearedThisDiff) badge = 'CLEAR!';
-      else if (isClearedAny) badge = cfg.useCheat ? 'SKILL' : 'OPEN';
-      else badge = cfg.useCheat ? 'NEW / SKILL' : 'NEW!';
-    }
-    const skillNote = cfg.useCheat
-      ? (cfg.skillType === 'smart_all' ? ' / Skill(全)' : ' / Skill(1種)')
-      : '';
-
-    const row = document.createElement('div');
-    row.className = 'carousel-row';
-
-    const prevBtn = document.createElement('button');
-    prevBtn.type = 'button';
-    prevBtn.className = 'carousel-arrow-btn';
-    prevBtn.innerText = '◀';
-    prevBtn.onclick = () => this.moveStageCarousel(-1);
-
-    const body = document.createElement('div');
-    body.className = 'carousel-body clickable';
-    if (!unlocked) body.style.opacity = '0.5';
-
-    const title = document.createElement('div');
-    title.className = 'carousel-title';
-    title.style.color = enemy.color;
-    title.innerText = st.title;
-
-    const sub = document.createElement('div');
-    sub.className = 'carousel-sub';
-    sub.innerHTML = `VS ${enemy.name} (Lv.${cfg.level}${skillNote}) <span class="story-badge">${badge}</span>`;
-
-    body.append(title, sub);
-    if (unlocked) {
-      body.onclick = () => this.startStage(st.id);
-    }
-
-    const nextBtn = document.createElement('button');
-    nextBtn.type = 'button';
-    nextBtn.className = 'carousel-arrow-btn';
-    nextBtn.innerText = '▶';
-    nextBtn.onclick = () => this.moveStageCarousel(1);
-
-    row.append(prevBtn, body, nextBtn);
-
-    const dots = document.createElement('div');
-    dots.className = 'carousel-dots';
-    STORY_STAGES.forEach((item, i) => {
-      const d = document.createElement('span');
-      d.className = 'carousel-dot' + (i === this.selectedStageIdx ? ' active' : '');
-      dots.appendChild(d);
-    });
-
     const startBtn = document.createElement('button');
     startBtn.type = 'button';
     startBtn.className = 'btn';
-    startBtn.style.minWidth = '180px';
-    startBtn.style.padding = '8px 18px';
-    startBtn.style.fontSize = '0.95rem';
-    startBtn.disabled = !unlocked;
-    startBtn.innerText = unlocked ? 'このステージを開始' : '前のステージをクリアで解放';
-    if (unlocked) {
-      startBtn.onclick = () => this.startStage(st.id);
+    startBtn.style.marginTop = '4px';
+
+    const updateStartBtn = (idx) => {
+      const st = STORY_STAGES[idx];
+      const unlocked = st.id <= this.clearedStage + 1;
+      startBtn.disabled = !unlocked;
+      startBtn.innerText = unlocked ? 'このステージを開始' : '前のステージをクリアで解放';
+      startBtn.onclick = unlocked ? () => {
+        if (typeof SE !== 'undefined') SE.play('select');
+        this.startStage(st.id);
+      } : null;
+    };
+
+    if (typeof createCoverFlow === 'function') {
+      const items = STORY_STAGES.map(st => {
+        const unlocked = st.id <= this.clearedStage + 1;
+        const isClearedThisDiff = st.id <= diffCleared;
+        const isClearedAny = st.id <= this.clearedStage;
+        const enemy = getCharacterById(st.enemyId);
+        const cfg = this.getStageConfig(st);
+
+        let badge = 'LOCKED';
+        if (unlocked) {
+          if (isClearedThisDiff) badge = 'CLEAR!';
+          else if (isClearedAny) badge = cfg.useCheat ? 'SKILL' : 'OPEN';
+          else badge = 'NEW!';
+        }
+        const skillNote = cfg.useCheat
+          ? (cfg.skillType === 'smart_all' ? ' ⚡Skill(全)' : ' ⚡Skill(1種)')
+          : '';
+
+        return {
+          id: st.id,
+          stage: st,
+          unlocked,
+          badge,
+          enemy,
+          cfg,
+          label: `第${st.id}話: ${enemy.name}`,
+          desc: `${st.title} — VS ${enemy.name} (Lv.${cfg.level}${skillNote})`,
+          accentColor: enemy.color,
+          disabled: !unlocked
+        };
+      });
+
+      createCoverFlow(container, {
+        items,
+        initialIndex: this.selectedStageIdx,
+        title: 'ステージ選択（スワイプ・バーで選択）',
+        compact: false,
+        showDesc: true,
+        renderCard: (card, item) => {
+          const thumb = document.createElement('div');
+          thumb.className = 'cf-card-thumb';
+          const img = document.createElement('img');
+          img.className = 'cf-card-img';
+          img.alt = item.enemy.name;
+          if (typeof applyCharacterImageToElement === 'function') {
+            applyCharacterImageToElement(img, item.enemy.id, 'normal');
+          } else {
+            img.src = item.enemy.file;
+          }
+          thumb.appendChild(img);
+
+          const badge = document.createElement('span');
+          badge.className = 'cf-card-badge';
+          badge.innerText = item.badge;
+          thumb.appendChild(badge);
+
+          const lbl = document.createElement('div');
+          lbl.className = 'cf-card-label';
+          lbl.innerText = item.label;
+          card.append(thumb, lbl);
+        },
+        onSelect: (item, idx) => {
+          this.selectedStageIdx = idx;
+          updateStartBtn(idx);
+        },
+        onDisabledSelect: (item, idx) => {
+          this.selectedStageIdx = idx;
+          updateStartBtn(idx);
+          showToast('前のステージをクリアすると解放されます');
+        },
+        onCenterClick: (item) => {
+          if (item.unlocked) {
+            if (typeof SE !== 'undefined') SE.play('select');
+            this.startStage(item.id);
+          } else {
+            showToast('前のステージをクリアすると解放されます');
+          }
+        }
+      });
+
+      updateStartBtn(this.selectedStageIdx);
+      container.appendChild(startBtn);
+      return;
     }
 
-    container.append(row, dots, startBtn);
+    updateStartBtn(this.selectedStageIdx);
+    container.appendChild(startBtn);
   },
 
   startStage(stageId) {
@@ -337,10 +438,23 @@ const StoryManager = {
     if (!stage) return;
     this.activeStage = stage;
     this.activeStageConfig = this.getStageConfig(stage);
-    this.startDialogue('intro', stage.intro);
+
+    if (typeof SceneTransition !== 'undefined' && typeof SceneTransition.run === 'function') {
+      SceneTransition.run(
+        `第${stage.id}話 準備中...`,
+        () => {
+          this.prepareDialogueDom('intro', stage.intro);
+        },
+        () => {
+          this.renderCurrentLine();
+        }
+      );
+    } else {
+      this.startDialogue('intro', stage.intro);
+    }
   },
 
-  startDialogue(phase, lines) {
+  prepareDialogueDom(phase, lines) {
     this.phase = phase;
     this.currentLines = lines;
     this.lineIndex = 0;
@@ -350,7 +464,11 @@ const StoryManager = {
     if (bgEl) {
       bgEl.style.backgroundImage = CustomAssets.bg ? `url("${CustomAssets.bg.dataUrl}")` : 'none';
     }
-    overlay.style.display = 'flex';
+    if (overlay) overlay.style.display = 'flex';
+  },
+
+  startDialogue(phase, lines) {
+    this.prepareDialogueDom(phase, lines);
     this.renderCurrentLine();
   },
 
@@ -436,15 +554,16 @@ const StoryManager = {
 
   skip() {
     if (document.getElementById('story-overlay').style.display !== 'flex') return;
+    if (typeof SE !== 'undefined') SE.play('select');
     this.finishDialogue();
   },
 
   finishDialogue() {
-    document.getElementById('story-overlay').style.display = 'none';
     if (this.phase === 'intro') {
       const cfg = this.activeStageConfig || this.getStageConfig(this.activeStage);
       startGame('story', cfg.level, 2, this.isPlayerSkillEnabled());
     } else if (this.phase === 'win') {
+      document.getElementById('story-overlay').style.display = 'none';
       this.saveProgress(this.activeStage.id);
       if (this.activeStage.id >= STORY_STAGES.length) {
         showToast('🎉 全ステージ制覇！おめでとう！');
@@ -459,6 +578,7 @@ const StoryManager = {
         }
       }
     } else if (this.phase === 'lose') {
+      document.getElementById('story-overlay').style.display = 'none';
       showResultModal('DEFEAT...');
     }
   },

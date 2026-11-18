@@ -1,5 +1,5 @@
 /* ==========================================
-   追加UI・ロード演出・3Dカバーフロー・縦ハブ大型立ち絵・確認モーダル・スマブラ風ローカル選択・シェア対戦用CSS
+   追加UI・ロード演出・3Dカバーフロー・縦ハブ大型立ち絵・確認モーダル・スマブラ風ローカル選択・シェア対戦・横複数人立ち絵用CSS
    ========================================== */
 .char-select-bar {
   font-size: 0.85rem;
@@ -228,8 +228,10 @@
 }
 
 /* ==========================================
-   スキル選択モーダル & 確認モーダル
+   プルダウン選択モーダル & 退出確認モーダル & スキル/確認モーダル
    ========================================== */
+#select-picker-modal,
+#exit-confirm-modal,
 #skill-select-modal,
 #confirm-match-modal {
   position: fixed;
@@ -245,6 +247,80 @@
 #confirm-match-modal {
   z-index: 330;
 }
+#select-picker-modal {
+  z-index: 620;
+}
+#exit-confirm-modal {
+  z-index: 640;
+}
+
+.select-picker-box {
+  width: 100%;
+  max-width: 340px;
+  max-height: 76dvh;
+  background: rgba(15, 23, 42, 0.98);
+  border: 2px solid #00d4ff;
+  border-radius: 18px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.9), 0 0 22px rgba(0, 212, 255, 0.25);
+  animation: modalPopIn 0.16s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.select-picker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.select-picker-title {
+  font-size: 0.95rem;
+  font-weight: 900;
+  color: #00d4ff;
+}
+.select-picker-options {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  overflow-y: auto;
+  max-height: 56dvh;
+  padding: 2px;
+}
+.select-picker-opt-btn {
+  width: 100%;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1.5px solid rgba(148, 163, 184, 0.35);
+  background: rgba(22, 36, 71, 0.85);
+  color: #f8fafc;
+  font-size: 0.92rem;
+  font-weight: 800;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.select-picker-opt-btn.selected {
+  border-color: #4ecca3;
+  background: rgba(16, 185, 129, 0.22);
+  color: #a7f3d0;
+}
+
+.exit-confirm-box {
+  max-width: 350px !important;
+  border-color: #ff4081 !important;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.92), 0 0 26px rgba(255, 64, 129, 0.3) !important;
+}
+.exit-confirm-message {
+  font-size: 0.92rem;
+  line-height: 1.5;
+  color: #e2e8f0;
+  text-align: center;
+  padding: 6px 4px;
+}
+
 .skill-modal-box,
 .confirm-modal-box {
   width: 100%;
@@ -509,6 +585,18 @@
   justify-content: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+.local-gamepad-hint {
+  font-size: 0.7rem;
+  color: #94a3b8;
+  font-weight: 700;
+  text-align: center;
+}
+.local-gp-focus {
+  outline: 2.5px solid #ffd700 !important;
+  box-shadow: 0 0 14px rgba(255, 215, 0, 0.95) !important;
+  position: relative;
+  z-index: 10;
 }
 .local-touch-actor-bar {
   display: flex;
@@ -872,6 +960,16 @@
   touch-action: pan-y;
   cursor: grab;
   overflow: hidden;
+  border-radius: 12px;
+  border: 1.5px solid transparent;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
+}
+.cf-stage-wrap:focus,
+.cf-stage-wrap:focus-visible {
+  outline: none !important;
+  border-color: #ffd700;
+  background: rgba(255, 215, 0, 0.07);
+  box-shadow: 0 0 16px rgba(255, 215, 0, 0.35), inset 0 0 12px rgba(255, 215, 0, 0.14) !important;
 }
 .cf-stage-wrap.compact {
   height: 124px;
@@ -1050,7 +1148,7 @@
 }
 
 /* ==========================================
-   縦UIハブ専用：画面約1/3サイズ大型ランダム立ち絵エリア（深い階層では非表示）
+   縦UIハブ専用：画面約1/3サイズ大型ランダム立ち絵エリア（深い階層・横画面では非表示）
    ========================================== */
 .vertical-hub-hero {
   width: 100%;
@@ -1175,15 +1273,15 @@
   color: #cbd5e1;
 }
 
-@media (orientation: landscape) and (min-width: 700px) {
+@media (orientation: landscape) and (min-width: 560px) {
   #menu-overlay.switch-hub-active {
     display: grid !important;
-    grid-template-columns: minmax(260px, 370px) minmax(260px, 380px);
+    grid-template-columns: minmax(230px, 370px) minmax(230px, 380px);
     align-items: center;
     justify-content: center;
     align-content: center;
-    column-gap: 24px;
-    padding: 20px 28px;
+    column-gap: 20px;
+    padding: 16px 24px;
   }
   #menu-overlay.switch-hub-active #main-menu,
   #menu-overlay.switch-hub-active #solo-hub-menu,
@@ -1218,7 +1316,196 @@
 }
 
 /* ==========================================
-   バトル画面：縦最下部閲覧専用バー & 横7インチ超サイドキャラ演出枠
+   横画面複数人対戦用：盤面隣接インライン立ち絵カード
+   2人: 1P盤面・1P立ち絵・2P立ち絵・2P盤面
+   3人: 1P盤面・1P細長立ち絵・2P盤面・2P細長立ち絵・3P盤面・3P細長立ち絵
+   4人: 1P盤面・1P細長立ち絵・2P盤面・2P細長立ち絵・3P盤面・3P細長立ち絵・4P盤面・4P細長立ち絵
+   ========================================== */
+.inline-player-portrait {
+  position: relative;
+  flex-shrink: 0;
+  height: 468px;
+  border-radius: 12px;
+  overflow: hidden;
+  background: radial-gradient(circle at 50% 25%, rgba(255, 255, 255, 0.14), rgba(7, 11, 20, 0.92));
+  border: 2px solid rgba(148, 163, 184, 0.45);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.65);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  pointer-events: auto;
+  z-index: 9;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+}
+.inline-player-portrait.p-count-2 {
+  width: 150px;
+}
+.inline-player-portrait.p-count-3 {
+  width: 104px;
+}
+.inline-player-portrait.p-count-4 {
+  width: 74px;
+}
+.inline-player-portrait.is-p1 {
+  border-color: rgba(16, 185, 129, 0.78);
+}
+.inline-player-portrait.is-rival {
+  cursor: pointer;
+}
+.inline-player-portrait.targeted {
+  border-color: #ff007f !important;
+  box-shadow: 0 0 20px rgba(255, 0, 127, 0.8) !important;
+}
+.inline-player-portrait.is-dead {
+  filter: grayscale(0.85) brightness(0.55);
+}
+.inline-portrait-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: 50% 10%;
+}
+.inline-portrait-footer {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  padding: 18px 5px 5px 5px;
+  background: linear-gradient(180deg, rgba(7, 11, 20, 0) 0%, rgba(7, 11, 20, 0.88) 38%, rgba(7, 11, 20, 0.97) 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.inline-player-portrait.p-count-4 .inline-portrait-footer {
+  padding: 14px 3px 4px 3px;
+  gap: 3px;
+}
+.inline-portrait-name {
+  width: 100%;
+  color: #f8fafc;
+  font-size: 0.74rem;
+  font-weight: 900;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-shadow: 0 1px 3px #000;
+}
+.inline-player-portrait.p-count-4 .inline-portrait-name {
+  font-size: 0.62rem;
+}
+.inline-portrait-tag {
+  position: absolute;
+  top: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3;
+  font-size: 0.6rem;
+  font-weight: 900;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(7, 11, 20, 0.82);
+  color: #ffd700;
+  border: 1px solid rgba(255, 215, 0, 0.55);
+  white-space: nowrap;
+}
+.inline-player-portrait.targeted .inline-portrait-tag {
+  background: #ff007f;
+  color: #fff;
+  border-color: #fff;
+}
+
+/* 立ち絵内の連勝数バッジ & スキル発動ゲージ */
+.portrait-wins-badge {
+  position: absolute;
+  top: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3;
+  font-size: 0.66rem;
+  font-weight: 900;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(255, 193, 7, 0.95), rgba(255, 111, 0, 0.95));
+  color: #070b14;
+  border: 1px solid #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.7);
+  white-space: nowrap;
+}
+.battle-side-portrait-wrap .portrait-wins-badge {
+  top: 6px;
+}
+.inline-player-portrait.p-count-4 .portrait-wins-badge {
+  font-size: 0.56rem;
+  padding: 1px 5px;
+}
+
+.portrait-skill-meter {
+  position: relative;
+  width: 100%;
+  height: 20px;
+  border-radius: 7px;
+  background: rgba(15, 23, 42, 0.92);
+  border: 1px solid rgba(255, 0, 127, 0.72);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.75);
+}
+.portrait-skill-meter.ready {
+  border-color: #ffd700;
+  box-shadow: 0 0 10px rgba(255, 215, 0, 0.75);
+}
+.portrait-skill-meter.sacrifice {
+  border-color: #ef4444;
+  box-shadow: 0 0 8px rgba(220, 38, 38, 0.65);
+}
+.portrait-skill-meter.empty {
+  border-color: rgba(100, 116, 139, 0.55);
+  opacity: 0.75;
+}
+.portrait-skill-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 0%;
+  background: linear-gradient(90deg, rgba(255, 0, 127, 0.72), rgba(255, 140, 0, 0.85));
+  transition: width 0.16s ease-out;
+  pointer-events: none;
+}
+.portrait-skill-meter.ready .portrait-skill-fill {
+  background: linear-gradient(90deg, #ff007f, #ff8c00, #ffd700);
+}
+.portrait-skill-meter.sacrifice .portrait-skill-fill {
+  background: linear-gradient(90deg, #7f1d1d, #dc2626);
+}
+.portrait-skill-text {
+  position: relative;
+  z-index: 2;
+  font-size: 0.62rem;
+  font-weight: 900;
+  color: #fff;
+  text-shadow: 0 1px 2px #000;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 3px;
+}
+.inline-player-portrait.p-count-4 .portrait-skill-meter {
+  height: 17px;
+  border-radius: 5px;
+}
+.inline-player-portrait.p-count-4 .portrait-skill-text {
+  font-size: 0.52rem;
+  padding: 0 2px;
+}
+
+/* ==========================================
+   バトル画面：縦最下部閲覧専用バー & 1人時横サイドキャラ演出枠
    ========================================== */
 .battle-bottom-status-bar {
   position: fixed;
@@ -1312,6 +1599,7 @@
   border-color: rgba(244, 63, 94, 0.65);
 }
 .battle-side-portrait-wrap {
+  position: relative;
   width: 100%;
   height: 170px;
   border-radius: 10px;
@@ -1849,7 +2137,8 @@ input[type="range"] {
 body.local-force-landscape #game-area,
 body.local-force-landscape #ready-go-overlay,
 body.local-force-landscape #battle-end-overlay,
-body.local-force-landscape #result-overlay {
+body.local-force-landscape #result-overlay,
+body.local-force-landscape #exit-confirm-modal {
   position: fixed !important;
   inset: auto !important;
   top: 50% !important;
@@ -2089,7 +2378,8 @@ body.share-force-portrait #share-prep-overlay,
 body.share-force-portrait #game-area,
 body.share-force-portrait #ready-go-overlay,
 body.share-force-portrait #battle-end-overlay,
-body.share-force-portrait #result-overlay {
+body.share-force-portrait #result-overlay,
+body.share-force-portrait #exit-confirm-modal {
   position: fixed !important;
   inset: auto !important;
   top: 50% !important;

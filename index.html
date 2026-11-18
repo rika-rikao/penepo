@@ -64,6 +64,29 @@
     </div>
   </div>
 
+  <!-- プルダウン選択モーダル（決定ボタンで一覧から選択） -->
+  <div id="select-picker-modal" style="display:none;" aria-hidden="true">
+    <div class="select-picker-box">
+      <div class="select-picker-header">
+        <span id="select-picker-title" class="select-picker-title">選択してください</span>
+        <button type="button" class="small-btn" onclick="closeSelectPickerModal()">✕ 戻る</button>
+      </div>
+      <div id="select-picker-options" class="select-picker-options"></div>
+    </div>
+  </div>
+
+  <!-- 退出確認モーダル -->
+  <div id="exit-confirm-modal" style="display:none;" aria-hidden="true">
+    <div class="confirm-modal-box exit-confirm-box">
+      <div class="confirm-modal-title" style="color:#ff4081;">退出確認</div>
+      <div id="exit-confirm-message" class="exit-confirm-message">退出してメニューに戻りますか？<br>（対戦時は負けになります）</div>
+      <div class="confirm-modal-actions">
+        <button type="button" id="exit-confirm-cancel-btn" class="small-btn" style="flex:1; padding:10px 14px;" onclick="closeExitConfirmModal()">続ける</button>
+        <button type="button" id="exit-confirm-ok-btn" class="btn retire-btn" style="flex:1; min-width:130px; padding:10px 14px;" onclick="confirmExitFromModal()">退出する</button>
+      </div>
+    </div>
+  </div>
+
   <!-- スキル選択モーダル（キャラ選択を覆うように中央表示） -->
   <div id="skill-select-modal" style="display:none;" aria-hidden="true">
     <div class="skill-modal-box">
@@ -153,7 +176,7 @@
   <div id="story-overlay">
     <div id="story-stage-bg" class="story-stage-bg"></div>
     <div class="story-top-controls">
-      <button class="small-btn" onclick="StoryManager.skip()">スキップ ▶▶</button>
+      <button type="button" class="small-btn" tabindex="-1" onclick="StoryManager.skip()">スキップ ▶▶</button>
     </div>
     <div class="story-portraits-area">
       <div id="story-slot-left" class="story-portrait-slot"></div>
@@ -162,7 +185,7 @@
     <div class="story-dialog-box" onclick="StoryManager.advance()">
       <div id="story-speaker-name" class="story-speaker-name">フレア</div>
       <div id="story-text" class="story-text"></div>
-      <div class="story-next-hint">▼ タップ / 決定で次へ</div>
+      <div class="story-next-hint">▼ タップ / 決定で次へ（STARTでスキップ）</div>
     </div>
   </div>
 
@@ -395,25 +418,24 @@
 
     <!-- ひとりで ハブ -->
     <div id="solo-hub-menu" style="display:none; flex-direction:column; gap:12px; align-items:center; width:100%; max-width:380px;">
-      <button class="btn menu-back-top-btn" onclick="backToMainMenu()">← 戻る</button>
       <h2 style="color:#ffd700">ひとりで</h2>
       <button class="btn menu-card-btn" data-desc="4段階の難易度で魔王マーオに挑むストーリー！" onclick="StoryManager.openMenu()" style="border-color:#ffd700;">すとーりー</button>
       <button class="btn menu-card-btn" data-desc="最大4人でCOMと真剣勝負！Lv.1〜99設定可能" onclick="showComMenu()">COMとたいせん</button>
       <button class="btn menu-card-btn" data-desc="フリー・タイムアタック・スコアアタック・勝ち抜き" onclick="showSingleMenu()" style="border-color:#4ecca3;">れんしゅう</button>
+      <button class="btn menu-back-top-btn" onclick="backToMainMenu()">← 戻る</button>
     </div>
 
     <!-- みんなで ハブ -->
     <div id="multi-hub-menu" style="display:none; flex-direction:column; gap:12px; align-items:center; width:100%; max-width:380px;">
-      <button class="btn menu-back-top-btn" onclick="backToMainMenu()">← 戻る</button>
       <h2 style="color:#00d4ff">みんなで</h2>
       <button class="btn menu-card-btn" data-desc="1台の画面で2〜4人同時対戦！対面シェアにも対応" onclick="showLocalMenu()" style="border-color:#ff9100;">いちだいでたいせん (ローカル)</button>
       <button class="btn menu-card-btn" data-desc="部屋コードを使って離れていても最大4人でP2P対戦" onclick="showOnlineMenu()" style="border-color:#00d4ff;">それぞれでたいせん (オンライン)</button>
+      <button class="btn menu-back-top-btn" onclick="backToMainMenu()">← 戻る</button>
     </div>
 
     <!-- すとーりー -->
     <div id="story-menu" style="display:none;">
       <div id="story-prep-step" class="story-step-panel">
-        <button class="btn menu-back-top-btn" onclick="backToSoloHubMenu()">← 戻る</button>
         <h2 style="color:#ffd700">すとーりー：じゅんび</h2>
         <div class="mode-two-col-grid">
           <div class="mode-left-col">
@@ -438,19 +460,19 @@
             <button type="button" class="btn mode-start-btn" onclick="StoryManager.confirmPrepAndNext()" style="border-color:#ffd700;">キャラ確定して次へ ▶</button>
           </div>
         </div>
+        <button class="btn menu-back-top-btn" onclick="backToSoloHubMenu()">← 戻る</button>
       </div>
 
       <div id="story-stage-step" class="story-step-panel" style="display:none;">
-        <button class="btn menu-back-top-btn" onclick="StoryManager.backToPrepStep()">← 準備に戻る</button>
         <h2 style="color:#ffd700">すとーりー：ステージ選択</h2>
         <div id="story-prep-summary-bar" class="story-prep-summary-bar"></div>
         <div id="story-stage-carousel" class="carousel-panel"></div>
+        <button class="btn menu-back-top-btn" onclick="StoryManager.backToPrepStep()">← 準備に戻る</button>
       </div>
     </div>
 
     <!-- れんしゅう -->
     <div id="single-menu" class="mode-panel" style="display:none;">
-      <button class="btn menu-back-top-btn" onclick="backToSoloHubMenu()">← 戻る</button>
       <div class="mode-top-header">
         <h2 style="color:#4ecca3">れんしゅう</h2>
         <div id="single-mode-buttons" class="pill-btn-group">
@@ -490,19 +512,19 @@
           <button class="btn mode-start-btn" onclick="beginSingleStartFlow()">キャラ確定 / スタート</button>
         </div>
       </div>
+      <button class="btn menu-back-top-btn" onclick="backToSoloHubMenu()">← 戻る</button>
     </div>
 
     <!-- らんきんぐ -->
     <div id="ranking-menu" style="display:none; flex-direction:column; gap:12px; align-items:center; width:100%; max-width:380px;">
-      <button class="btn menu-back-top-btn" onclick="backToMainMenu()">← 戻る</button>
       <h2 style="color:#ffd700">らんきんぐ</h2>
       <div id="ranking-mode-carousel" class="carousel-panel"></div>
       <div id="ranking-list" style="width:100%; max-width: 320px; background:rgba(0,0,0,0.5); border-radius:8px; padding:10px; font-size:0.9rem; line-height:1.8;"></div>
+      <button class="btn menu-back-top-btn" onclick="backToMainMenu()">← 戻る</button>
     </div>
 
     <!-- COMとたいせん -->
     <div id="com-menu" class="mode-panel" style="display:none;">
-      <button class="btn menu-back-top-btn" onclick="backToSoloHubMenu()">← 戻る</button>
       <div class="mode-top-header">
         <h2 style="color:#4ecca3">COMとたいせん</h2>
         <div id="com-player-count-buttons" class="pill-btn-group">
@@ -544,18 +566,18 @@
           <button class="btn mode-start-btn" onclick="beginComStartFlow()">キャラ確定 / スタート</button>
         </div>
       </div>
+      <button class="btn menu-back-top-btn" onclick="backToSoloHubMenu()">← 戻る</button>
     </div>
 
     <!-- いちだいでたいせん (ローカル：格闘ゲーム風 上半分タイル選択＆下半分4等分立ち絵ドック) -->
     <div id="local-menu" class="local-smash-panel" style="display:none;">
-      <button class="btn menu-back-top-btn" onclick="backToMultiHubMenu()">← 戻る</button>
       <div class="local-top-bar">
         <div class="local-top-title-row">
           <h2 style="color:#ff9100">いちだいでたいせん</h2>
           <span id="local-pad-status" class="local-pad-badge">接続パッド確認中...</span>
         </div>
         <div class="local-top-controls">
-          <button type="button" class="small-btn" onclick="openSharePrepMenu()" style="border-color:#00d4ff; background:linear-gradient(135deg,#0f3460,#1d4ed8);">📱 シェア対戦 (2人縦)</button>
+          <button type="button" id="local-share-btn" class="small-btn" onclick="openSharePrepMenu()" style="border-color:#00d4ff; background:linear-gradient(135deg,#0f3460,#1d4ed8);">📱 シェア対戦 (2人縦)</button>
           <div style="font-size:0.8rem; color:#4ecca3; display:flex; align-items:center; gap:4px;">
             <span>人数:</span>
             <select id="local-player-count" class="input-box" style="width:auto; padding:3px 8px; font-size:0.8rem; border-radius:10px;" onchange="onLocalCountChange()">
@@ -564,12 +586,13 @@
               <option value="4">4人</option>
             </select>
           </div>
-          <label class="switch-wrapper skill-rule-box" style="padding:3px 10px;">
+          <label id="local-skill-label" class="switch-wrapper skill-rule-box" style="padding:3px 10px;">
             <input type="checkbox" id="local-skill-toggle" class="ui-toggle-input text" data-text-off="OFF" data-text-on="ON" onchange="onLocalSkillRuleToggle()">
             <span>スキル</span>
           </label>
           <div id="local-touch-actor-bar" class="local-touch-actor-bar"></div>
         </div>
+        <div class="local-gamepad-hint">🎮 パッド: 最上段で↑ または L/Rで人数・スキル・COM設定へ移動 / STARTで一括開始</div>
       </div>
 
       <!-- 画面上半分：キャラタイル一覧 ＋ スキルタイル一覧（各パッド/キーのカーソルが独立移動） -->
@@ -586,11 +609,11 @@
 
       <!-- 画面下半分：最初から水平方向に4等分された各プレイヤー枠 -->
       <div id="local-slots-dock" class="local-slots-dock"></div>
+      <button type="button" id="local-back-btn" class="btn menu-back-top-btn" onclick="backToMultiHubMenu()">← 戻る</button>
     </div>
 
     <!-- それぞれでたいせん (オンライン) -->
     <div id="online-menu" class="mode-panel" style="display:none;">
-      <button class="btn menu-back-top-btn" onclick="backToMultiHubMenu()">← 戻る</button>
       <div class="mode-top-header">
         <h2 style="color:#00d4ff">それぞれでたいせん (P2P)</h2>
       </div>
@@ -633,6 +656,7 @@
           </div>
         </div>
       </div>
+      <button class="btn menu-back-top-btn" onclick="backToMultiHubMenu()">← 戻る</button>
     </div>
   </div>
 
@@ -641,12 +665,17 @@
     <button id="exit-btn" class="action-btn retire-btn absolute-top" onclick="exitGame()">退出 (リタイア)</button>
     <div id="rivals-top-area" style="display:none;"></div>
 
-    <!-- 横画面Switch風：左右キャラ演出パネル（7インチ超のみ・利き手に完全連動・ローカル時は非表示） -->
+    <!-- 横画面：1人練習時のサイド演出パネル（複数人時はインライン立ち絵を使用） -->
     <div id="battle-side-p1" class="battle-side-card p1-side" style="display:none;" aria-hidden="true">
       <div class="battle-side-portrait-wrap">
         <img id="battle-side-p1-img" class="battle-side-img" alt="">
+        <div id="battle-side-p1-wins" class="portrait-wins-badge" style="display:none;"></div>
       </div>
       <div id="battle-side-p1-name" class="battle-side-name">1P</div>
+      <div id="battle-side-p1-skill" class="portrait-skill-meter" style="display:none;">
+        <div id="battle-side-p1-skill-fill" class="portrait-skill-fill"></div>
+        <span id="battle-side-p1-skill-text" class="portrait-skill-text"></span>
+      </div>
       <div id="battle-side-p1-tag" class="battle-side-tag">PLAYER</div>
     </div>
 

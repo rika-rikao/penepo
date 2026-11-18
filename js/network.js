@@ -524,14 +524,14 @@ function resetGameLogicOnline(config) {
     applyBoardFrame('my-wrapper', null);
   }
   if (typeof applyGlobalFrameTheme === 'function') {
-    applyGlobalFrameTheme(myRenderer.theme.frameSrc);
+    applyGlobalFrameTheme(null);
   }
   if (!myRenderer.theme.frameSrc && myRenderer.theme.charId !== 'custom' && myRenderer.theme.voiceName && typeof resolveCharacterImage === 'function') {
     const targetTheme = myRenderer.theme;
     resolveCharacterImage('frame', targetTheme.voiceName).then((url) => {
       if (url && myRenderer && myRenderer.theme === targetTheme && document.getElementById('game-area')?.style.display !== 'none') {
         targetTheme.frameSrc = url;
-        if (!CustomAssets.frame && typeof applyGlobalFrameTheme === 'function') applyGlobalFrameTheme(url);
+        if (typeof refreshOnlineSplitFrames === 'function') refreshOnlineSplitFrames();
       }
     });
   }
@@ -636,7 +636,7 @@ function resetGameLogicOnline(config) {
     const fallbackCharId = p.type === 'com' ? CHARACTERS[(index + 1) % CHARACTERS.length].id : 'main00';
     rRenderer.theme = buildThemeForCharacter(p.charId || fallbackCharId, null, false);
     if (typeof applyBoardFrame === 'function') {
-      applyBoardFrame(`rival-wrapper-${index}`, rRenderer.theme.frameSrc);
+      applyBoardFrame(`rival-wrapper-${index}`, null);
     }
     if (!rRenderer.theme.frameSrc && rRenderer.theme.charId !== 'custom' && rRenderer.theme.voiceName && typeof resolveCharacterImage === 'function') {
       const targetRTheme = rRenderer.theme;
@@ -644,7 +644,7 @@ function resetGameLogicOnline(config) {
       resolveCharacterImage('frame', targetRTheme.voiceName).then((url) => {
         if (url && document.getElementById(rivalWrapId)) {
           targetRTheme.frameSrc = url;
-          applyBoardFrame(rivalWrapId, url);
+          if (typeof refreshOnlineSplitFrames === 'function') refreshOnlineSplitFrames();
         }
       });
     }
@@ -672,6 +672,7 @@ function resetGameLogicOnline(config) {
   opponents.forEach((opp, i) => updateGarbagePreview(opp.engine, `rival-garbage-preview-${i}`));
   updateTargetUI();
   adjustLayout();
+  if (typeof refreshOnlineSplitFrames === 'function') refreshOnlineSplitFrames();
 }
 
 function sendOnlineCutin(senderId, text) {
@@ -796,7 +797,7 @@ async function applyReceivedAppearance(senderId, payload) {
       customFrameUrl
     );
     if (typeof applyBoardFrame === 'function') {
-      applyBoardFrame(`rival-wrapper-${targetOpp.index}`, targetOpp.renderer.theme.frameSrc);
+      applyBoardFrame(`rival-wrapper-${targetOpp.index}`, null);
     }
     if (!targetOpp.renderer.theme.frameSrc && targetOpp.renderer.theme.charId !== 'custom' && targetOpp.renderer.theme.voiceName && typeof resolveCharacterImage === 'function') {
       const targetRTheme = targetOpp.renderer.theme;
@@ -804,7 +805,7 @@ async function applyReceivedAppearance(senderId, payload) {
       resolveCharacterImage('frame', targetRTheme.voiceName).then((url) => {
         if (url && document.getElementById(rivalWrapId)) {
           targetRTheme.frameSrc = url;
-          applyBoardFrame(rivalWrapId, url);
+          if (typeof refreshOnlineSplitFrames === 'function') refreshOnlineSplitFrames();
         }
       });
     }
@@ -841,6 +842,9 @@ async function applyReceivedAppearance(senderId, payload) {
 
   if (typeof refreshBattleSidePanels === 'function') {
     refreshBattleSidePanels();
+  }
+  if (typeof refreshOnlineSplitFrames === 'function') {
+    refreshOnlineSplitFrames();
   }
 
   receivedAppearanceIds[senderId] = true;

@@ -1041,6 +1041,7 @@ function openSelectPickerModal(selectEl, titleText = null) {
   modal.style.display = 'flex';
   const focusTarget = selectedBtn || optionsEl.querySelector('button');
   if (focusTarget) focusTarget.focus();
+  if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(180);
 }
 
 function closeSelectPickerModal(silent = false) {
@@ -1055,6 +1056,7 @@ function closeSelectPickerModal(silent = false) {
       target.focus();
     }
   }
+  if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(180);
 }
 
 // ==========================================
@@ -1310,7 +1312,7 @@ try {
     const parsedKey = JSON.parse(sKey);
     if (parsedKey.Rise && !parsedKey.Rise1) parsedKey.Rise1 = parsedKey.Rise;
     if (parsedKey.Target && !parsedKey.TargetRight) parsedKey.TargetRight = parsedKey.Target;
-    Object.keys(keyConfig).forEach(k => {
+    Object.keys(ACTION_LABELS).forEach(k => {
       if (parsedKey[k] !== undefined) keyConfig[k] = parsedKey[k];
     });
   }
@@ -1318,7 +1320,7 @@ try {
     const parsedPad = JSON.parse(sPad);
     if (parsedPad.Rise !== undefined && parsedPad.Rise1 === undefined) parsedPad.Rise1 = parsedPad.Rise;
     if (parsedPad.Target !== undefined && parsedPad.TargetRight === undefined) parsedPad.TargetRight = parsedPad.Target;
-    Object.keys(padConfig).forEach(k => {
+    Object.keys(ACTION_LABELS).forEach(k => {
       if (parsedPad[k] !== undefined) padConfig[k] = parsedPad[k];
     });
   }
@@ -1333,7 +1335,10 @@ let playerConfigs = [
 
 try {
   const savedSlot0 = localStorage.getItem('pdw_pad_slot_0');
-  if (savedSlot0 !== null) playerConfigs[0].padSlot = parseInt(savedSlot0, 10);
+  if (savedSlot0 !== null) {
+    const slotNum = parseInt(savedSlot0, 10);
+    if (!Number.isNaN(slotNum)) playerConfigs[0].padSlot = slotNum;
+  }
   const savedMulti = localStorage.getItem('pdw_multi_configs');
   if (savedMulti) {
     const parsed = JSON.parse(savedMulti);
@@ -1350,7 +1355,8 @@ try {
           });
         }
         if (parsed[idx].padSlot !== undefined) {
-          playerConfigs[idx].padSlot = parsed[idx].padSlot;
+          const slotNum = parseInt(parsed[idx].padSlot, 10);
+          if (!Number.isNaN(slotNum)) playerConfigs[idx].padSlot = slotNum;
         }
       }
     });
@@ -1360,8 +1366,24 @@ try {
 let settingsPlayerIdx = 0;
 let currentSettingsTab = 'audio';
 let assigningAction = null, assignType = null;
+let assignStartedAt = 0;
+let assignPadSnapshot = {};
 let pendingConfigFocus = null;
 let settingsSnapshot = null;
+
+function capturePadAssignmentSnapshot() {
+  const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()) : [];
+  const snap = {};
+  for (let i = 0; i < 4; i++) {
+    snap[i] = {};
+    const p = pads[i];
+    if (p && p.buttons) {
+      p.buttons.forEach((b, idx) => { snap[i][idx] = !!b.pressed; });
+    }
+  }
+  assignPadSnapshot = snap;
+  assignStartedAt = performance.now();
+}
 
 function selectSettingsTab(tabKey) {
   currentSettingsTab = tabKey || 'audio';
@@ -1395,7 +1417,21 @@ function selectSettingsPlayer(idx) {
 }
 
 function onSettingsPadSlotChange(val) {
-  playerConfigs[settingsPlayerIdx].padSlot = parseInt(val, 10);
+  const parsed = parseInt(val, 10);
+  if (!Number.isNaN(parsed)) {
+    playerConfigs[settingsPlayerIdx].padSlot = parsed;
+  }
+}
+
+function persistPlayerConfigsToStorage() {
+  localStorage.setItem('pdw_key', JSON.stringify(keyConfig));
+  localStorage.setItem('pdw_pad', JSON.stringify(padConfig));
+  localStorage.setItem('pdw_pad_slot_0', String(playerConfigs[0].padSlot));
+  localStorage.setItem('pdw_multi_configs', JSON.stringify({
+    1: playerConfigs[1],
+    2: playerConfigs[2],
+    3: playerConfigs[3]
+  }));
 }
 
 function openSettings() {
@@ -1435,6 +1471,7 @@ function openSettings() {
   enhanceAllRangeSliders();
   const firstTabBtn = document.querySelector('#settings-category-tabs button');
   if (firstTabBtn) firstTabBtn.focus();
+  if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(180);
 }
 
 async function cancelSettings() {
@@ -1466,8 +1503,10 @@ async function cancelSettings() {
 
     snap.playerConfigs.forEach((sc, idx) => {
       playerConfigs[idx].padSlot = sc.padSlot;
-      Object.assign(playerConfigs[idx].key, sc.key);
-      Object.assign(playerConfigs[idx].pad, sc.pad);
+      Object.keys(ACTION_LABELS).forEach(k => {
+        playerConfigs[idx].key[k] = sc.key[k] !== undefined ? sc.key[k] : '';
+        playerConfigs[idx].pad[k] = sc.pad[k] !== undefined ? sc.pad[k] : null;
+      });
     });
 
     if (typeof playerCustomName !== 'undefined') {
@@ -1532,6 +1571,7 @@ async function cancelSettings() {
   document.getElementById('settings-overlay').style.display = 'none';
   SE.play('cancel');
   showToast('変更を保存せずに戻りました');
+  if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(200);
 }
 
 function closeSettings() {
@@ -1558,14 +1598,7 @@ function closeSettings() {
     localStorage.setItem('pdw_story_char_id', storySelectedCharId);
   }
 
-  localStorage.setItem('pdw_key', JSON.stringify(keyConfig));
-  localStorage.setItem('pdw_pad', JSON.stringify(padConfig));
-  localStorage.setItem('pdw_pad_slot_0', String(playerConfigs[0].padSlot));
-  localStorage.setItem('pdw_multi_configs', JSON.stringify({
-    1: playerConfigs[1],
-    2: playerConfigs[2],
-    3: playerConfigs[3]
-  }));
+  persistPlayerConfigsToStorage();
 
   SE.play('select');
 
@@ -1596,6 +1629,7 @@ function closeSettings() {
       bgmNeedsPlay = false; 
     }).catch(e => console.warn(e));
   }
+  if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(200);
 }
 
 function renderConfigUI() {
@@ -1647,6 +1681,7 @@ function renderConfigUI() {
       assigningAction = action;
       assignType = 'pad';
       pendingConfigFocus = { action, type: 'pad' };
+      capturePadAssignmentSnapshot();
       pBtn.innerText = '押してください';
       pBtn.focus({ preventScroll: true });
     };
@@ -1750,9 +1785,9 @@ function moveMenuFocus(dir) {
   SE.play('cursorMove');
 }
 
-function moveMenuFocus2D(dx, dy) {
+function moveMenuFocus2D(dx, dy, focusablesOverride = null) {
   const scope = getActiveMenuFocusScope();
-  const focusables = getMenuFocusables(scope);
+  const focusables = focusablesOverride || getMenuFocusables(scope);
   if (focusables.length === 0) return false;
 
   const activeEl = document.activeElement;
@@ -1821,7 +1856,6 @@ function moveMenuFocus2D(dx, dy) {
       }
     }
 
-    // 同じ行に重なる候補がない場合、少し広い縦ズレで左右の隣接要素（例：横2カラム間）を拾う
     if (!bestEl) {
       for (const el of focusables) {
         if (el === activeEl) continue;
@@ -1882,7 +1916,6 @@ function advanceFromCoverFlow(cfEl) {
 }
 
 function processMenuNavigationInput(input) {
-  // ストーリー表示中は汎用メニュー移動を行わず、決定=次へ / START=スキップ に専用化
   const storyOverlay = document.getElementById('story-overlay');
   if (storyOverlay && window.getComputedStyle(storyOverlay).display !== 'none') {
     if (input.start || input.cancel) {
@@ -1929,7 +1962,6 @@ function processMenuNavigationInput(input) {
     }
   }
 
-  // プルダウンは決定ボタンで選択肢モーダルを開き、上下左右は見た目通りに移動
   if (isSelect) {
     if (input.up) { moveMenuFocus2D(0, -1); return true; }
     if (input.down) { moveMenuFocus2D(0, 1); return true; }
@@ -2051,6 +2083,14 @@ function processMenuNavigationInput(input) {
       SE.play('select');
       return true;
     }
+    if (activeEl.tagName === 'LABEL') {
+      const fileInput = activeEl.querySelector('input[type="file"]');
+      if (fileInput) {
+        SE.play('select');
+        fileInput.click();
+        return true;
+      }
+    }
     if (typeof activeEl.click === 'function') {
       activeEl.click();
       return true;
@@ -2060,6 +2100,11 @@ function processMenuNavigationInput(input) {
 }
 
 function handleMenuKeyDown(e) {
+  if (assigningAction) {
+    e.preventDefault();
+    e.stopPropagation();
+    return true;
+  }
   const code = e.code;
   const tag = document.activeElement?.tagName;
   const inputType = document.activeElement?.type;
@@ -2114,7 +2159,13 @@ const GLOBAL_PAD_ARR = 2;
 
 function getPad0Object(pads) {
   const slot0 = playerConfigs[0].padSlot;
-  return (slot0 >= 0 && pads[slot0]) ? pads[slot0] : pads.find(p => p && p.connected);
+  if (slot0 < 0) return null;
+  if (pads[slot0]) return pads[slot0];
+  const usedByOthers = [1, 2, 3].some(i => playerConfigs[i].padSlot === 0);
+  if (slot0 === 0 && !usedByOthers) {
+    return pads.find(p => p && p.connected) || null;
+  }
+  return null;
 }
 
 function readPadButtonsMap(pad) {
@@ -2163,13 +2214,15 @@ function syncPadSnapshotsAll(lockMs = 150) {
   }
   if (typeof localMenuPadPrev !== 'undefined' && Array.isArray(localMenuPadPrev)) {
     for (let i = 0; i < 4; i++) {
-      const slot = playerConfigs[i]?.padSlot ?? i;
-      const pObj = (slot >= 0 && pads[slot]) ? pads[slot] : null;
-      localMenuPadPrev[i] = readPadButtonsMap(pObj);
+      localMenuPadPrev[i] = readPadButtonsMap(pads[i] || null);
     }
   }
   lastPadContextKey = getCurrentPadContextKey();
 }
+
+window.addEventListener('focus', () => {
+  syncPadSnapshotsAll(220);
+});
 
 setInterval(() => {
   const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()) : [];
@@ -2187,32 +2240,56 @@ setInterval(() => {
     localPadStatus.innerText = getConnectedPadsSummaryText();
   }
 
-  // キーコンフィグ（ゲームパッド割り当て待機中）
-  if (assigningAction && assignType === 'pad') {
-    const targetSlot = playerConfigs[settingsPlayerIdx].padSlot;
-    const scanOrder = [];
-    if (targetSlot >= 0 && pads[targetSlot]) scanOrder.push(pads[targetSlot]);
-    pads.forEach(p => { if (p && !scanOrder.includes(p)) scanOrder.push(p); });
+  // キー割り当て中はゲームパッドの誤操作を完全抑止
+  if (assigningAction && assignType === 'key') {
+    globalPadPrevState = { ...pressed };
+    return;
+  }
 
-    for (const p of scanOrder) {
-      const pressedIdx = p.buttons.findIndex(b => b.pressed);
-      if (pressedIdx !== -1) {
-        const doneAction = assigningAction;
-        pendingConfigFocus = { action: doneAction, type: 'pad' };
-        playerConfigs[settingsPlayerIdx].pad[doneAction] = pressedIdx;
-        assigningAction = null;
-        renderConfigUI();
-        SE.play('select');
-        // 割り当てボタンを押したままの状態をそのままprevに焼き付けて誤決定を完全防止
-        syncPadSnapshotsAll(220);
-        return;
+  // ゲームパッド割り当て待機中（初期押下ボタンを離した後の新規押下のみ受付）
+  if (assigningAction && assignType === 'pad') {
+    const nowAssign = performance.now();
+    for (let i = 0; i < 4; i++) {
+      const p = pads[i];
+      if (!assignPadSnapshot[i]) assignPadSnapshot[i] = {};
+      if (p && p.buttons) {
+        p.buttons.forEach((b, idx) => {
+          if (!b.pressed) assignPadSnapshot[i][idx] = false;
+        });
+      }
+    }
+
+    if (nowAssign - assignStartedAt >= 80) {
+      const targetSlot = playerConfigs[settingsPlayerIdx].padSlot;
+      const scanIndices = [];
+      if (targetSlot >= 0 && pads[targetSlot] && pads[targetSlot].connected) {
+        scanIndices.push(targetSlot);
+      } else {
+        for (let i = 0; i < 4; i++) {
+          if (pads[i] && pads[i].connected) scanIndices.push(i);
+        }
+      }
+
+      for (const pIdx of scanIndices) {
+        const p = pads[pIdx];
+        if (!p || !p.buttons) continue;
+        const pressedIdx = p.buttons.findIndex((b, bIdx) => b.pressed && !assignPadSnapshot[pIdx][bIdx]);
+        if (pressedIdx !== -1) {
+          const doneAction = assigningAction;
+          pendingConfigFocus = { action: doneAction, type: 'pad' };
+          playerConfigs[settingsPlayerIdx].pad[doneAction] = pressedIdx;
+          assigningAction = null;
+          renderConfigUI();
+          SE.play('select');
+          syncPadSnapshotsAll(260);
+          return;
+        }
       }
     }
     globalPadPrevState = { ...pressed };
     return;
   }
 
-  // 画面コンテキスト切替時は必ずスナップショット同期してそのフレームの発火を抑止
   if (ctxKey !== lastPadContextKey) {
     lastPadContextKey = ctxKey;
     globalPadPrevState = { ...pressed };
@@ -2221,7 +2298,7 @@ setInterval(() => {
     return;
   }
 
-  if (ctxKey === 'local-menu') {
+  if (ctxKey === 'local-menu' && !rangeEditState.el) {
     if (typeof pollLocalMenuGamepads === 'function') {
       pollLocalMenuGamepads(pads);
     }
@@ -2229,7 +2306,6 @@ setInterval(() => {
     return;
   }
 
-  // ゲーム画面中（かつモーダル等なし）・対戦終了画面・シェア準備画面は各自のハンドラに委譲し、ここではprevのみ同期
   if (ctxKey === 'game' || ctxKey === 'battle-end' || ctxKey === 'share-prep') {
     globalPadHold = { Up: 0, Down: 0, Left: 0, Right: 0 };
     if (rangeEditState.el) closeRangeDigitEdit();
@@ -2268,7 +2344,7 @@ setInterval(() => {
     return f === 0 || (f >= GLOBAL_PAD_DAS && (f - GLOBAL_PAD_DAS) % GLOBAL_PAD_ARR === 0);
   };
 
-  const canMenuPadControl = (ctxKey !== 'game') && (typeof matchState === 'undefined' || matchState !== 'playing' || ctxKey === 'result' || ctxKey === 'exit-confirm' || ctxKey === 'settings' || ctxKey === 'select-picker');
+  const canMenuPadControl = (ctxKey !== 'game') && (typeof matchState === 'undefined' || matchState !== 'playing' || ctxKey === 'result' || ctxKey === 'exit-confirm' || ctxKey === 'settings' || ctxKey === 'select-picker' || (ctxKey === 'local-menu' && !!rangeEditState.el));
 
   if (canMenuPadControl) {
     const cancelTrig = justPressed(padConfig.Skill, 'cancel');

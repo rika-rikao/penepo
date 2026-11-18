@@ -495,16 +495,17 @@ function bindMenuHoverCursorSE() {
 }
 
 // ==========================================
-// ローカル対戦：スマブラ風 上半分タイル＆下半分4等分立ち絵・スキル・OK帯（上部設定パッド対応）
+// ローカル対戦：スマブラ風 上半分タイル＆下半分4等分ドック（見た目一致2Dナビ・ハンデ/Lvスライダー・コントローラー未接続枠編集対応）
 // ==========================================
 let localSlotsConfig = [
-  { isCom: false, comLevel: 3, charId: 'main00', skillId: 'erase_color',       phase: 'char', cursorStage: 'char', charCursorIdx: 0, skillCursorIdx: 0 },
-  { isCom: false, comLevel: 3, charId: 'sub01',  skillId: 'erase_rows',        phase: 'char', cursorStage: 'char', charCursorIdx: 1, skillCursorIdx: 1 },
-  { isCom: true,  comLevel: 3, charId: 'sub02',  skillId: 'purify_garbage',    phase: 'ready', cursorStage: 'char', charCursorIdx: 2, skillCursorIdx: 2 },
-  { isCom: true,  comLevel: 3, charId: 'sub03',  skillId: 'corrupt_enemy_row', phase: 'ready', cursorStage: 'char', charCursorIdx: 3, skillCursorIdx: 3 }
+  { isCom: false, comLevel: 3, handicap: 3, charId: 'main00', skillId: 'erase_color',       phase: 'char', cursorStage: 'char', charCursorIdx: 0, skillCursorIdx: 0 },
+  { isCom: false, comLevel: 3, handicap: 3, charId: 'sub01',  skillId: 'erase_rows',        phase: 'char', cursorStage: 'char', charCursorIdx: 1, skillCursorIdx: 1 },
+  { isCom: true,  comLevel: 3, handicap: 3, charId: 'sub02',  skillId: 'purify_garbage',    phase: 'ready', cursorStage: 'char', charCursorIdx: 2, skillCursorIdx: 2 },
+  { isCom: true,  comLevel: 3, handicap: 3, charId: 'sub03',  skillId: 'corrupt_enemy_row', phase: 'ready', cursorStage: 'char', charCursorIdx: 3, skillCursorIdx: 3 }
 ];
 let activeLocalTouchActor = 0;
-let localHeaderFocusIndex = -1;
+let localPadTargetSlot = [0, 1, 2, 3];
+let localDomNavOwner = null;
 let localAutoStartTimer = null;
 let localMenuPadPrev = [{}, {}, {}, {}];
 let localMenuPadHold = [
@@ -522,68 +523,63 @@ function isLocalSkillRuleOn() {
   return !!document.getElementById('local-skill-toggle')?.checked;
 }
 
-function getLocalHeaderControls() {
-  const count = getLocalPlayerCount();
-  const list = [
-    { id: 'share', type: 'button', elId: 'local-share-btn' },
-    { id: 'count', type: 'select', elId: 'local-player-count' },
-    { id: 'skill', type: 'checkbox', elId: 'local-skill-label', inputId: 'local-skill-toggle' }
-  ];
-  for (let i = 1; i < count; i++) {
-    list.push({ id: `slot-type-${i}`, type: 'slotType', slotIdx: i });
-    if (localSlotsConfig[i].isCom) {
-      list.push({ id: `slot-lv-minus-${i}`, type: 'slotLv', slotIdx: i, delta: -5 });
-      list.push({ id: `slot-lv-plus-${i}`, type: 'slotLv', slotIdx: i, delta: 5 });
-    }
-  }
-  list.push({ id: 'back', type: 'button', elId: 'local-back-btn' });
-  return list;
+function isLocalSlotPadConnected(slotIdx, pads = null) {
+  const pSlot = playerConfigs[slotIdx]?.padSlot;
+  if (pSlot === undefined || pSlot < 0) return false;
+  const padList = pads || (navigator.getGamepads ? Array.from(navigator.getGamepads()) : []);
+  return !!(padList[pSlot] && padList[pSlot].connected);
 }
 
-function moveLocalHeaderFocus(delta) {
-  const list = getLocalHeaderControls();
-  if (list.length === 0) { localHeaderFocusIndex = -1; return; }
-  if (localHeaderFocusIndex < 0) {
-    localHeaderFocusIndex = 1;
-  } else {
-    localHeaderFocusIndex = (localHeaderFocusIndex + delta + list.length) % list.length;
+function canOwnerEditLocalSlot(targetSlot, ownerKey, pads = null) {
+  const slot = localSlotsConfig[targetSlot];
+  if (!slot) return false;
+  if (slot.isCom) return true;
+  if (!isLocalSlotPadConnected(targetSlot, pads)) return true;
+  if (typeof ownerKey === 'number') {
+    return playerConfigs[targetSlot]?.padSlot === ownerKey;
   }
-  SE.play('cursorMove');
-  renderLocalMenuUI();
+  return true;
 }
 
-function activateLocalHeaderControl() {
-  const list = getLocalHeaderControls();
-  if (localHeaderFocusIndex < 0 || localHeaderFocusIndex >= list.length) return;
-  const item = list[localHeaderFocusIndex];
-  if (item.type === 'select') {
-    const sel = document.getElementById(item.elId);
-    if (sel && typeof openSelectPickerModal === 'function') {
-      SE.play('select');
-      openSelectPickerModal(sel, '対戦人数を選択');
-    }
-  } else if (item.type === 'checkbox') {
-    const cb = document.getElementById(item.inputId);
-    if (cb) {
-      cb.checked = !cb.checked;
-      onLocalSkillRuleToggle();
-    }
-  } else if (item.type === 'button') {
-    const btn = document.getElementById(item.elId);
-    if (btn) btn.click();
-  } else if (item.type === 'slotType') {
-    toggleLocalSlotCom(item.slotIdx);
-  } else if (item.type === 'slotLv') {
-    adjustLocalComLevel(item.slotIdx, item.delta);
+function getLocalOwnerPadTarget(ownerKey) {
+  if (typeof ownerKey === 'number') {
+    const val = localPadTargetSlot[ownerKey];
+    if (val !== undefined && val >= 0 && val < getLocalPlayerCount()) return val;
+    const owned = playerConfigs.findIndex(pc => pc.padSlot === ownerKey);
+    return owned >= 0 ? owned : 0;
   }
+  return activeLocalTouchActor;
 }
 
-function exitLocalHeaderFocus(playSe = true) {
-  if (localHeaderFocusIndex >= 0) {
-    localHeaderFocusIndex = -1;
-    if (playSe) SE.play('cursorMove');
-    renderLocalMenuUI();
+function setLocalOwnerPadTarget(ownerKey, targetSlot) {
+  if (typeof ownerKey === 'number') {
+    localPadTargetSlot[ownerKey] = targetSlot;
   }
+  activeLocalTouchActor = targetSlot;
+}
+
+function getLocalDomFocusables(scopeFilter = null) {
+  const root = document.getElementById('local-menu');
+  if (!root) return [];
+  return Array.from(root.querySelectorAll('button, select, input'))
+    .filter(el => {
+      if (el.disabled || el.tabIndex < 0) return false;
+      if (el.classList.contains('local-select-tile')) return false;
+      if (scopeFilter === 'top') {
+        if (!el.closest('.local-top-bar') && el.id !== 'local-back-btn') return false;
+      } else if (scopeFilter === 'dock') {
+        if (!el.closest('#local-slots-dock')) return false;
+      }
+      const st = window.getComputedStyle(el);
+      if (st.display === 'none' || st.visibility === 'hidden') return false;
+      let p = el.parentElement;
+      while (p) {
+        if (window.getComputedStyle(p).display === 'none') return false;
+        p = p.parentElement;
+      }
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    });
 }
 
 function cancelLocalAutoStart() {
@@ -595,11 +591,13 @@ function cancelLocalAutoStart() {
 
 function resetLocalSelectionStates() {
   cancelLocalAutoStart();
-  localHeaderFocusIndex = -1;
+  localDomNavOwner = null;
   const cnt = getLocalPlayerCount();
   for (let i = 0; i < 4; i++) {
     const slot = localSlotsConfig[i];
     if (i === 0) slot.isCom = false;
+    slot.handicap = Math.max(1, Math.min(5, slot.handicap || 3));
+    slot.comLevel = Math.max(1, Math.min(99, slot.comLevel || 3));
     slot.charCursorIdx = Math.max(0, CHAR_PICKER_ORDER.indexOf(slot.charId));
     slot.skillCursorIdx = Math.max(0, SKILL_IDS.indexOf(slot.skillId));
     if (slot.isCom) {
@@ -609,6 +607,8 @@ function resetLocalSelectionStates() {
       slot.phase = 'char';
       slot.cursorStage = 'char';
     }
+    const owned = playerConfigs.findIndex(pc => pc.padSlot === i);
+    localPadTargetSlot[i] = owned >= 0 ? owned : i;
   }
   if (activeLocalTouchActor >= cnt || localSlotsConfig[activeLocalTouchActor].isCom) {
     activeLocalTouchActor = 0;
@@ -639,8 +639,12 @@ function onLocalCountChange() {
     if (localSlotsConfig[i].isCom) localSlotsConfig[i].phase = 'ready';
   }
   if (activeLocalTouchActor >= count) activeLocalTouchActor = 0;
-  const list = getLocalHeaderControls();
-  if (localHeaderFocusIndex >= list.length) localHeaderFocusIndex = Math.max(0, list.length - 1);
+  for (let p = 0; p < 4; p++) {
+    if (localPadTargetSlot[p] >= count) {
+      const owned = playerConfigs.findIndex(pc => pc.padSlot === p);
+      localPadTargetSlot[p] = (owned >= 0 && owned < count) ? owned : 0;
+    }
+  }
   renderLocalMenuUI();
 }
 
@@ -681,17 +685,8 @@ function toggleLocalSlotCom(slotIdx) {
     activeLocalTouchActor = slotIdx;
   }
   SE.play('select');
-  const list = getLocalHeaderControls();
-  if (localHeaderFocusIndex >= list.length) localHeaderFocusIndex = Math.max(0, list.length - 1);
   renderLocalMenuUI();
   checkLocalAllReady();
-}
-
-function adjustLocalComLevel(slotIdx, delta) {
-  const slot = localSlotsConfig[slotIdx];
-  slot.comLevel = Math.max(1, Math.min(99, (slot.comLevel || 3) + delta));
-  SE.play('cursorMove');
-  renderLocalMenuUI();
 }
 
 function findNextUnreadyHumanSlot(fallback = 0) {
@@ -702,7 +697,43 @@ function findNextUnreadyHumanSlot(fallback = 0) {
   return fallback;
 }
 
-function confirmLocalCharForSlot(slotIdx, tileIdx) {
+function selectLocalActorToEdit(slotIdx, ownerKey = 'kb', reopenIfReady = true) {
+  const count = getLocalPlayerCount();
+  if (slotIdx < 0 || slotIdx >= count) return;
+  const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()) : [];
+  if (!canOwnerEditLocalSlot(slotIdx, ownerKey, pads)) {
+    SE.play('cancel');
+    showToast(`${slotIdx + 1}Pは別のコントローラーが操作中です`);
+    return;
+  }
+  cancelLocalAutoStart();
+  const slot = localSlotsConfig[slotIdx];
+  if (reopenIfReady && slot.phase === 'ready') {
+    slot.phase = 'char';
+    slot.cursorStage = 'char';
+  }
+  setLocalOwnerPadTarget(ownerKey, slotIdx);
+  localDomNavOwner = null;
+  if (document.activeElement && document.activeElement.closest('#local-menu')) {
+    document.activeElement.blur();
+  }
+  SE.play('select');
+  renderLocalMenuUI();
+}
+
+function releaseOwnerAfterSlotConfirm(confirmedSlotIdx, ownerKey = null) {
+  if (typeof ownerKey === 'number') {
+    const owned = playerConfigs.findIndex(pc => pc.padSlot === ownerKey);
+    if (owned >= 0 && owned < getLocalPlayerCount() && owned !== confirmedSlotIdx) {
+      localPadTargetSlot[ownerKey] = owned;
+    }
+  }
+  if (confirmedSlotIdx === activeLocalTouchActor) {
+    activeLocalTouchActor = findNextUnreadyHumanSlot(0);
+  }
+}
+
+function confirmLocalCharForSlot(slotIdx, tileIdx, ownerKey = null) {
   const slot = localSlotsConfig[slotIdx];
   const cid = CHAR_PICKER_ORDER[tileIdx];
   if (!cid) return;
@@ -715,20 +746,19 @@ function confirmLocalCharForSlot(slotIdx, tileIdx) {
   slot.charCursorIdx = tileIdx;
   slot.charId = cid;
 
-  if (slot.isCom) {
-    slot.phase = 'ready';
-  } else if (isLocalSkillRuleOn()) {
+  if (isLocalSkillRuleOn()) {
     slot.phase = 'skill';
     slot.cursorStage = 'skill';
   } else {
     slot.phase = 'ready';
+    releaseOwnerAfterSlotConfirm(slotIdx, ownerKey);
   }
   SE.play('select');
   renderLocalMenuUI();
   checkLocalAllReady();
 }
 
-function confirmLocalSkillForSlot(slotIdx, tileIdx) {
+function confirmLocalSkillForSlot(slotIdx, tileIdx, ownerKey = null) {
   if (!isLocalSkillRuleOn()) return;
   const slot = localSlotsConfig[slotIdx];
   const skId = SKILL_IDS[tileIdx];
@@ -739,9 +769,7 @@ function confirmLocalSkillForSlot(slotIdx, tileIdx) {
   slot.phase = 'ready';
   SE.play('select');
 
-  if (slotIdx === activeLocalTouchActor) {
-    activeLocalTouchActor = findNextUnreadyHumanSlot(slotIdx);
-  }
+  releaseOwnerAfterSlotConfirm(slotIdx, ownerKey);
   renderLocalMenuUI();
   checkLocalAllReady();
 }
@@ -749,13 +777,6 @@ function confirmLocalSkillForSlot(slotIdx, tileIdx) {
 function cancelLocalStepForSlot(slotIdx) {
   cancelLocalAutoStart();
   const slot = localSlotsConfig[slotIdx];
-  if (slot.isCom) {
-    slot.phase = (slot.phase === 'ready') ? 'char' : 'ready';
-    slot.cursorStage = 'char';
-    SE.play('cancel');
-    renderLocalMenuUI();
-    return;
-  }
   if (slot.phase === 'ready') {
     if (isLocalSkillRuleOn()) {
       slot.phase = 'skill';
@@ -773,7 +794,222 @@ function cancelLocalStepForSlot(slotIdx) {
   renderLocalMenuUI();
 }
 
-function moveLocalTileCursor(slotIdx, dx, dy) {
+function getActiveTileDomForSlot(slot) {
+  if (!slot) return null;
+  if (slot.phase === 'skill' && isLocalSkillRuleOn()) {
+    return document.querySelectorAll('#local-skill-tiles .local-select-tile')[slot.skillCursorIdx] || null;
+  }
+  return document.querySelectorAll('#local-char-tiles .local-select-tile')[slot.charCursorIdx] || null;
+}
+
+function enterLocalDomFocusFromTile(slotIdx, dirY, ownerKey) {
+  const slot = localSlotsConfig[slotIdx];
+  const tileEl = getActiveTileDomForSlot(slot);
+  const scopeFilter = dirY < 0 ? 'top' : 'dock';
+  const candidates = getLocalDomFocusables(scopeFilter);
+  if (candidates.length === 0) return false;
+
+  const tr = tileEl ? tileEl.getBoundingClientRect() : null;
+  const tx = tr ? (tr.left + tr.width / 2) : (window.innerWidth / 2);
+
+  let bestEl = null;
+  let bestScore = Infinity;
+
+  if (dirY < 0) {
+    const ty = tr ? tr.top : (window.innerHeight * 0.35);
+    candidates.forEach(el => {
+      const r = el.getBoundingClientRect();
+      const cx = r.left + r.width / 2;
+      const cy = r.top + r.height / 2;
+      if (cy >= ty + 4) return;
+      const vDist = Math.max(0, ty - r.bottom);
+      const score = vDist + Math.abs(cx - tx) * 2.2;
+      if (score < bestScore) { bestScore = score; bestEl = el; }
+    });
+  } else {
+    const ty = tr ? tr.bottom : (window.innerHeight * 0.5);
+    candidates.forEach(el => {
+      const r = el.getBoundingClientRect();
+      const cx = r.left + r.width / 2;
+      const cy = r.top + r.height / 2;
+      if (cy <= ty - 4) return;
+      const vDist = Math.max(0, r.top - ty);
+      const score = vDist * 1.4 + Math.abs(cx - tx) * 2.2;
+      if (score < bestScore) { bestScore = score; bestEl = el; }
+    });
+  }
+
+  if (!bestEl) bestEl = candidates[0];
+  localDomNavOwner = ownerKey;
+  bestEl.focus({ preventScroll: true });
+  if (typeof bestEl.scrollIntoView === 'function') {
+    bestEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
+  SE.play('cursorMove');
+  renderLocalMenuUI();
+  return true;
+}
+
+function tryReturnFromDomToTiles(activeEl, dirY, ownerKey) {
+  const targetSlot = getLocalOwnerPadTarget(ownerKey);
+  const slot = localSlotsConfig[targetSlot];
+  if (!slot || slot.phase === 'ready') return false;
+
+  const isSkillPhase = (slot.phase === 'skill' && isLocalSkillRuleOn());
+  const gridId = isSkillPhase ? 'local-skill-tiles' : 'local-char-tiles';
+  const cols = isSkillPhase ? 4 : 5;
+  const tileEls = Array.from(document.querySelectorAll(`#${gridId} .local-select-tile`));
+  if (tileEls.length === 0) return false;
+
+  const ar = activeEl.getBoundingClientRect();
+  const ax = ar.left + ar.width / 2;
+  const targetRow = (dirY > 0) ? 0 : Math.floor((tileEls.length - 1) / cols);
+
+  let bestIdx = -1;
+  let bestDist = Infinity;
+  tileEls.forEach((tile, idx) => {
+    const r = Math.floor(idx / cols);
+    if (r !== targetRow) return;
+    const tr = tile.getBoundingClientRect();
+    const tx = tr.left + tr.width / 2;
+    const dist = Math.abs(tx - ax);
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestIdx = idx;
+    }
+  });
+
+  if (bestIdx === -1) bestIdx = 0;
+
+  if (isSkillPhase) {
+    slot.skillCursorIdx = bestIdx;
+    slot.skillId = SKILL_IDS[bestIdx] || slot.skillId;
+  } else {
+    slot.charCursorIdx = bestIdx;
+    const cid = CHAR_PICKER_ORDER[bestIdx];
+    if (cid && (cid !== 'custom' || CustomAssets.chara)) slot.charId = cid;
+  }
+
+  localDomNavOwner = null;
+  if (document.activeElement) document.activeElement.blur();
+  SE.play('cursorMove');
+  renderLocalMenuUI();
+  return true;
+}
+
+function handleLocalDomNavigation(input, ownerKey) {
+  const activeEl = document.activeElement;
+  if (!activeEl || !activeEl.closest('#local-menu') || activeEl.classList.contains('local-select-tile')) {
+    return false;
+  }
+
+  const allFocusables = getLocalDomFocusables();
+  if (allFocusables.length === 0) return false;
+
+  const isSelect = activeEl.tagName === 'SELECT';
+  const isRange = activeEl.tagName === 'INPUT' && activeEl.type === 'range';
+  const isCheckbox = activeEl.tagName === 'INPUT' && activeEl.type === 'checkbox';
+  const inDock = !!activeEl.closest('#local-slots-dock');
+  const inTop = !!activeEl.closest('.local-top-bar') || activeEl.id === 'local-back-btn';
+
+  if (input.cancel) {
+    const targetSlot = getLocalOwnerPadTarget(ownerKey);
+    const slot = localSlotsConfig[targetSlot];
+    if (slot && slot.phase !== 'ready') {
+      localDomNavOwner = null;
+      activeEl.blur();
+      SE.play('cancel');
+      renderLocalMenuUI();
+      return true;
+    }
+    return !!handleMenuCancelAction();
+  }
+
+  if (isSelect) {
+    if (input.confirm) {
+      SE.play('select');
+      openSelectPickerModal(activeEl, '対戦人数を選択');
+      return true;
+    }
+  }
+
+  if (isRange) {
+    const step = parseFloat(activeEl.step) || 1;
+    const min = parseFloat(activeEl.min) || 1;
+    const max = parseFloat(activeEl.max) || 99;
+    if (input.left) {
+      setRangeValueWithEvents(activeEl, Math.max(min, parseFloat(activeEl.value) - step));
+      SE.play('cursorMove');
+      return true;
+    }
+    if (input.right) {
+      setRangeValueWithEvents(activeEl, Math.min(max, parseFloat(activeEl.value) + step));
+      SE.play('cursorMove');
+      return true;
+    }
+    if (input.confirm) {
+      rangeEditState.el = activeEl;
+      rangeEditState.digitIndex = 0;
+      updateRangeDigitHUD();
+      SE.play('select');
+      return true;
+    }
+  }
+
+  if (input.confirm) {
+    if (isCheckbox) {
+      activeEl.checked = !activeEl.checked;
+      activeEl.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    }
+    const focusId = activeEl.dataset.localFocusId || '';
+    if (focusId.startsWith('actor-')) {
+      const idx = parseInt(focusId.slice(6), 10);
+      selectLocalActorToEdit(idx, ownerKey, true);
+      return true;
+    }
+    if (focusId.startsWith('slot-edit-')) {
+      const idx = parseInt(focusId.slice(10), 10);
+      selectLocalActorToEdit(idx, ownerKey, true);
+      return true;
+    }
+    if (typeof activeEl.click === 'function') {
+      activeEl.click();
+      return true;
+    }
+  }
+
+  if (input.left) {
+    moveMenuFocus2D(-1, 0, allFocusables);
+    return true;
+  }
+  if (input.right) {
+    moveMenuFocus2D(1, 0, allFocusables);
+    return true;
+  }
+  if (input.up) {
+    if (inDock) {
+      const dockFocusables = getLocalDomFocusables('dock');
+      if (moveMenuFocus2D(0, -1, dockFocusables)) return true;
+      if (tryReturnFromDomToTiles(activeEl, -1, ownerKey)) return true;
+    }
+    moveMenuFocus2D(0, -1, allFocusables);
+    return true;
+  }
+  if (input.down) {
+    if (inTop) {
+      const topFocusables = getLocalDomFocusables('top');
+      if (moveMenuFocus2D(0, 1, topFocusables)) return true;
+      if (tryReturnFromDomToTiles(activeEl, 1, ownerKey)) return true;
+    }
+    moveMenuFocus2D(0, 1, allFocusables);
+    return true;
+  }
+
+  return false;
+}
+
+function moveLocalTileCursor(slotIdx, dx, dy, ownerKey = 'kb') {
   const slot = localSlotsConfig[slotIdx];
   if (!slot || slot.phase === 'ready') return;
 
@@ -785,10 +1021,12 @@ function moveLocalTileCursor(slotIdx, dx, dy) {
     let c = idx % cols;
     const rows = Math.ceil(total / cols);
 
-    if (slotIdx === 0 && dy < 0 && r === 0) {
-      localHeaderFocusIndex = 1;
-      SE.play('cursorMove');
-      renderLocalMenuUI();
+    if (dy < 0 && r === 0) {
+      enterLocalDomFocusFromTile(slotIdx, -1, ownerKey);
+      return;
+    }
+    if (dy > 0 && r === rows - 1) {
+      enterLocalDomFocusFromTile(slotIdx, 1, ownerKey);
       return;
     }
 
@@ -811,10 +1049,12 @@ function moveLocalTileCursor(slotIdx, dx, dy) {
     let c = idx % cols;
     const rows = Math.ceil(total / cols);
 
-    if (slotIdx === 0 && dy < 0 && r === 0) {
-      localHeaderFocusIndex = 1;
-      SE.play('cursorMove');
-      renderLocalMenuUI();
+    if (dy < 0 && r === 0) {
+      enterLocalDomFocusFromTile(slotIdx, -1, ownerKey);
+      return;
+    }
+    if (dy > 0 && r === rows - 1) {
+      enterLocalDomFocusFromTile(slotIdx, 1, ownerKey);
       return;
     }
 
@@ -853,87 +1093,108 @@ function checkLocalAllReady() {
 }
 
 function pollLocalMenuGamepads(pads) {
-  const count = getLocalPlayerCount();
   const now = performance.now();
   const isLocked = (typeof padInputLockUntil !== 'undefined' && now < padInputLockUntil);
 
-  for (let slotIdx = 0; slotIdx < count; slotIdx++) {
-    const slot = localSlotsConfig[slotIdx];
-    const pSlot = playerConfigs[slotIdx].padSlot;
-    const padObj = (pSlot >= 0 && pads[pSlot]) ? pads[pSlot] : null;
-    if (!padObj) {
-      localMenuPadHold[slotIdx] = { Up: 0, Down: 0, Left: 0, Right: 0 };
-      localMenuPadPrev[slotIdx] = {};
+  for (let padIdx = 0; padIdx < 4; padIdx++) {
+    const padObj = pads[padIdx];
+    if (!padObj || !padObj.connected) {
+      localMenuPadHold[padIdx] = { Up: 0, Down: 0, Left: 0, Right: 0 };
+      localMenuPadPrev[padIdx] = {};
       continue;
     }
-    const prev = localMenuPadPrev[slotIdx] || {};
+
+    const prev = localMenuPadPrev[padIdx] || {};
     const cur = {};
     padObj.buttons.forEach((b, i) => { cur[i] = !!b.pressed; });
 
-    if (slot.isCom || isLocked) {
-      localMenuPadPrev[slotIdx] = cur;
+    const ownerSlot = playerConfigs.findIndex(pc => pc.padSlot === padIdx);
+    if (ownerSlot === -1 || isLocked) {
+      localMenuPadPrev[padIdx] = cur;
       continue;
     }
 
-    const cfg = playerConfigs[slotIdx].pad;
+    const cfg = playerConfigs[ownerSlot].pad;
     const just = (btnIdx) => btnIdx !== null && btnIdx !== undefined && cur[btnIdx] && !prev[btnIdx];
     const isRep = (dir, btnIdx) => {
-      if (btnIdx === null || btnIdx !== undefined && !cur[btnIdx]) {
-        localMenuPadHold[slotIdx][dir] = 0;
+      if (btnIdx === null || btnIdx === undefined || !cur[btnIdx]) {
+        localMenuPadHold[padIdx][dir] = 0;
         return false;
       }
-      if (btnIdx === null || btnIdx === undefined) return false;
-      const f = localMenuPadHold[slotIdx][dir]++;
+      const f = localMenuPadHold[padIdx][dir]++;
       return f === 0 || (f >= 10 && (f - 10) % 3 === 0);
     };
 
-    // 1P用 START(Pause)で一括開始
-    if (slotIdx === 0 && just(cfg.Pause)) {
-      localMenuPadPrev[slotIdx] = cur;
+    if (ownerSlot === 0 && just(cfg.Pause)) {
+      localMenuPadPrev[padIdx] = cur;
       if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(200);
       forceConfirmAllAndStartLocal();
       return;
     }
 
-    // 1P用 上部ルール／COM設定フォーカス中の操作
-    if (slotIdx === 0 && localHeaderFocusIndex >= 0) {
-      if (isRep('Left', cfg.Left) || just(cfg.TargetLeft)) {
-        moveLocalHeaderFocus(-1);
-      } else if (isRep('Right', cfg.Right) || just(cfg.TargetRight)) {
-        moveLocalHeaderFocus(1);
-      } else if (isRep('Down', cfg.Down) || just(cfg.Skill) || just(cfg.GrabLeft)) {
-        exitLocalHeaderFocus(true);
-      } else if (just(cfg.Swap) || just(cfg.GrabRight)) {
-        activateLocalHeaderControl();
+    const upTrig = isRep('Up', cfg.Up);
+    const downTrig = isRep('Down', cfg.Down);
+    const leftTrig = isRep('Left', cfg.Left);
+    const rightTrig = isRep('Right', cfg.Right);
+    const confirmTrig = just(cfg.Swap) || just(cfg.GrabRight);
+    const cancelTrig = just(cfg.Skill) || just(cfg.GrabLeft);
+
+    if (upTrig || downTrig || leftTrig || rightTrig || confirmTrig || cancelTrig) {
+      const domActive = document.activeElement && document.activeElement.closest('#local-menu') && !document.activeElement.classList.contains('local-select-tile');
+      if (domActive && (localDomNavOwner === padIdx || localDomNavOwner === null)) {
+        localDomNavOwner = padIdx;
+        handleLocalDomNavigation({
+          up: upTrig, down: downTrig, left: leftTrig, right: rightTrig,
+          confirm: confirmTrig, cancel: cancelTrig
+        }, padIdx);
+        localMenuPadPrev[padIdx] = cur;
+        continue;
       }
-      localMenuPadPrev[slotIdx] = cur;
-      continue;
-    }
 
-    if (slotIdx === 0 && (just(cfg.TargetLeft) || just(cfg.TargetRight))) {
-      localHeaderFocusIndex = 1;
-      SE.play('cursorMove');
-      renderLocalMenuUI();
-      localMenuPadPrev[slotIdx] = cur;
-      continue;
-    }
+      const targetSlot = getLocalOwnerPadTarget(padIdx);
+      const slot = localSlotsConfig[targetSlot];
+      if (!slot) {
+        localMenuPadPrev[padIdx] = cur;
+        continue;
+      }
 
-    if (just(cfg.Skill) || just(cfg.GrabLeft)) {
-      if (slot.phase === 'char' && slotIdx === 0) {
-        backToMultiHubMenu(true);
+      if (slot.phase === 'ready') {
+        if (cancelTrig) {
+          cancelLocalStepForSlot(targetSlot);
+        } else if (upTrig || downTrig || leftTrig || rightTrig) {
+          const fallbackBtn = document.querySelector(`[data-local-focus-id="slot-edit-${targetSlot}"]`) || getLocalDomFocusables()[0];
+          if (fallbackBtn) {
+            localDomNavOwner = padIdx;
+            fallbackBtn.focus({ preventScroll: true });
+            SE.play('cursorMove');
+          }
+        }
+        localMenuPadPrev[padIdx] = cur;
+        continue;
+      }
+
+      if (cancelTrig) {
+        if (slot.phase === 'char' && targetSlot === 0 && ownerSlot === 0) {
+          backToMultiHubMenu(true);
+        } else if (slot.phase === 'char' && targetSlot !== ownerSlot) {
+          setLocalOwnerPadTarget(padIdx, ownerSlot);
+          SE.play('cancel');
+          renderLocalMenuUI();
+        } else {
+          cancelLocalStepForSlot(targetSlot);
+        }
+      } else if (confirmTrig) {
+        if (slot.phase === 'char') confirmLocalCharForSlot(targetSlot, slot.charCursorIdx, padIdx);
+        else if (slot.phase === 'skill') confirmLocalSkillForSlot(targetSlot, slot.skillCursorIdx, padIdx);
       } else {
-        cancelLocalStepForSlot(slotIdx);
+        if (leftTrig) moveLocalTileCursor(targetSlot, -1, 0, padIdx);
+        else if (rightTrig) moveLocalTileCursor(targetSlot, 1, 0, padIdx);
+        else if (upTrig) moveLocalTileCursor(targetSlot, 0, -1, padIdx);
+        else if (downTrig) moveLocalTileCursor(targetSlot, 0, 1, padIdx);
       }
-    } else if (just(cfg.Swap) || just(cfg.GrabRight)) {
-      if (slot.phase === 'char') confirmLocalCharForSlot(slotIdx, slot.charCursorIdx);
-      else if (slot.phase === 'skill') confirmLocalSkillForSlot(slotIdx, slot.skillCursorIdx);
-    } else {
-      if (isRep('Left', cfg.Left)) moveLocalTileCursor(slotIdx, -1, 0);
-      if (isRep('Right', cfg.Right)) moveLocalTileCursor(slotIdx, 1, 0);
-      if (isRep('Up', cfg.Up)) moveLocalTileCursor(slotIdx, 0, -1);
-      if (isRep('Down', cfg.Down)) moveLocalTileCursor(slotIdx, 0, 1);
     }
-    localMenuPadPrev[slotIdx] = cur;
+
+    localMenuPadPrev[padIdx] = cur;
   }
 }
 
@@ -947,17 +1208,12 @@ function renderLocalMenuUI() {
   const dockEl = document.getElementById('local-slots-dock');
   if (!charGrid || !skillGrid || !dockEl) return;
 
-  if (activeLocalTouchActor >= count) activeLocalTouchActor = 0;
-
-  const headerControls = getLocalHeaderControls();
-  const focusedHeaderItem = (localHeaderFocusIndex >= 0 && localHeaderFocusIndex < headerControls.length)
-    ? headerControls[localHeaderFocusIndex]
+  const activeBefore = document.activeElement;
+  const prevFocusKey = activeBefore && activeBefore.closest('#local-menu')
+    ? (activeBefore.dataset?.localFocusId || activeBefore.id || null)
     : null;
 
-  ['local-share-btn', 'local-player-count', 'local-skill-label', 'local-back-btn'].forEach(elId => {
-    const el = document.getElementById(elId);
-    if (el) el.classList.toggle('local-gp-focus', !!(focusedHeaderItem && focusedHeaderItem.elId === elId));
-  });
+  if (activeLocalTouchActor >= count) activeLocalTouchActor = 0;
 
   if (actorBar) {
     actorBar.innerHTML = '';
@@ -965,6 +1221,7 @@ function renderLocalMenuUI() {
     for (let i = 0; i < count; i++) {
       const btn = document.createElement('button');
       btn.type = 'button';
+      btn.dataset.localFocusId = `actor-${i}`;
       btn.className = 'local-actor-btn' + (activeLocalTouchActor === i ? ' active' : '');
       if (activeLocalTouchActor === i) {
         btn.style.background = colors[i];
@@ -972,11 +1229,7 @@ function renderLocalMenuUI() {
         if (i === 2) btn.style.color = '#070b14';
       }
       btn.innerText = `${i + 1}P操作`;
-      btn.onclick = () => {
-        activeLocalTouchActor = i;
-        SE.play('cursorMove');
-        renderLocalMenuUI();
-      };
+      btn.onclick = () => selectLocalActorToEdit(i, 'kb', true);
       actorBar.appendChild(btn);
     }
   }
@@ -987,6 +1240,7 @@ function renderLocalMenuUI() {
     const isCustomEmpty = (cid === 'custom' && !CustomAssets.chara);
     const tile = document.createElement('button');
     tile.type = 'button';
+    tile.tabIndex = -1;
     tile.className = 'local-select-tile' + (isCustomEmpty ? ' disabled-tile' : '');
 
     const imgWrap = document.createElement('div');
@@ -1009,7 +1263,7 @@ function renderLocalMenuUI() {
     badges.className = 'local-cursor-badges';
     for (let i = 0; i < count; i++) {
       const sl = localSlotsConfig[i];
-      if (!sl.isCom && sl.phase === 'char' && sl.charCursorIdx === tIdx && !(i === 0 && localHeaderFocusIndex >= 0)) {
+      if (sl.phase === 'char' && sl.charCursorIdx === tIdx) {
         tile.classList.add(`has-cursor-${i}`);
         const chip = document.createElement('span');
         chip.className = `local-cursor-chip p${i}`;
@@ -1020,10 +1274,10 @@ function renderLocalMenuUI() {
 
     tile.append(badges, imgWrap, lbl);
     tile.onclick = () => {
-      localHeaderFocusIndex = -1;
+      localDomNavOwner = null;
       const targetSlot = activeLocalTouchActor;
       if (localSlotsConfig[targetSlot].phase === 'ready') cancelLocalAutoStart();
-      confirmLocalCharForSlot(targetSlot, tIdx);
+      confirmLocalCharForSlot(targetSlot, tIdx, 'kb');
     };
     charGrid.appendChild(tile);
   });
@@ -1033,6 +1287,7 @@ function renderLocalMenuUI() {
   SKILL_IDS.forEach((skId, tIdx) => {
     const tile = document.createElement('button');
     tile.type = 'button';
+    tile.tabIndex = -1;
     tile.className = 'local-select-tile';
     tile.disabled = !skillOn;
 
@@ -1049,7 +1304,7 @@ function renderLocalMenuUI() {
     if (skillOn) {
       for (let i = 0; i < count; i++) {
         const sl = localSlotsConfig[i];
-        if (!sl.isCom && sl.phase === 'skill' && sl.skillCursorIdx === tIdx && !(i === 0 && localHeaderFocusIndex >= 0)) {
+        if (sl.phase === 'skill' && sl.skillCursorIdx === tIdx) {
           tile.classList.add(`has-cursor-${i}`);
           const chip = document.createElement('span');
           chip.className = `local-cursor-chip p${i}`;
@@ -1062,9 +1317,9 @@ function renderLocalMenuUI() {
     tile.append(badges, icon, lbl);
     tile.onclick = () => {
       if (!skillOn) return;
-      localHeaderFocusIndex = -1;
+      localDomNavOwner = null;
       const targetSlot = activeLocalTouchActor;
-      confirmLocalSkillForSlot(targetSlot, tIdx);
+      confirmLocalSkillForSlot(targetSlot, tIdx, 'kb');
     };
     skillGrid.appendChild(tile);
   });
@@ -1080,26 +1335,15 @@ function renderLocalMenuUI() {
     }
 
     const slot = localSlotsConfig[i];
-    const displayCharId = (slot.phase === 'char' && !slot.isCom)
+    const displayCharId = (slot.phase === 'char')
       ? (CHAR_PICKER_ORDER[slot.charCursorIdx] || slot.charId)
       : slot.charId;
     const ch = getCharacterById(displayCharId);
-    const displaySkillId = (slot.phase === 'skill' && !slot.isCom)
+    const displaySkillId = (slot.phase === 'skill')
       ? (SKILL_IDS[slot.skillCursorIdx] || slot.skillId)
       : slot.skillId;
 
     slotEl.className = `local-dock-slot p${i}` + (activeLocalTouchActor === i ? ' is-active-touch' : '');
-    slotEl.onclick = (e) => {
-      if (e.target.closest('button')) return;
-      localHeaderFocusIndex = -1;
-      activeLocalTouchActor = i;
-      if (slot.phase === 'ready' && !slot.isCom) {
-        cancelLocalStepForSlot(i);
-      } else {
-        SE.play('cursorMove');
-        renderLocalMenuUI();
-      }
-    };
 
     const topRow = document.createElement('div');
     topRow.className = 'local-slot-top';
@@ -1111,31 +1355,19 @@ function renderLocalMenuUI() {
     if (i > 0) {
       const toggleBtn = document.createElement('button');
       toggleBtn.type = 'button';
-      toggleBtn.className = 'local-slot-type-btn' + (focusedHeaderItem && focusedHeaderItem.id === `slot-type-${i}` ? ' local-gp-focus' : '');
+      toggleBtn.dataset.localFocusId = `slot-type-${i}`;
+      toggleBtn.className = 'local-slot-type-btn';
       toggleBtn.innerText = slot.isCom ? 'COM⇄人' : '人⇄COM';
       toggleBtn.onclick = (ev) => { ev.stopPropagation(); toggleLocalSlotCom(i); };
       topRow.appendChild(toggleBtn);
     }
     slotEl.appendChild(topRow);
 
-    if (slot.isCom) {
-      const lvRow = document.createElement('div');
-      lvRow.className = 'local-slot-com-lv';
-      const minus = document.createElement('button');
-      minus.type = 'button';
-      minus.className = 'local-slot-lv-btn' + (focusedHeaderItem && focusedHeaderItem.id === `slot-lv-minus-${i}` ? ' local-gp-focus' : '');
-      minus.innerText = '-';
-      minus.onclick = (ev) => { ev.stopPropagation(); adjustLocalComLevel(i, -5); };
-      const lvTxt = document.createElement('span');
-      lvTxt.innerText = `Lv.${slot.comLevel}`;
-      const plus = document.createElement('button');
-      plus.type = 'button';
-      plus.className = 'local-slot-lv-btn' + (focusedHeaderItem && focusedHeaderItem.id === `slot-lv-plus-${i}` ? ' local-gp-focus' : '');
-      plus.innerText = '+';
-      plus.onclick = (ev) => { ev.stopPropagation(); adjustLocalComLevel(i, 5); };
-      lvRow.append(minus, lvTxt, plus);
-      slotEl.appendChild(lvRow);
-    }
+    const editBtn = document.createElement('button');
+    editBtn.type = 'button';
+    editBtn.dataset.localFocusId = `slot-edit-${i}`;
+    editBtn.className = 'local-slot-edit-btn';
+    editBtn.onclick = () => selectLocalActorToEdit(i, 'kb', true);
 
     const portrait = document.createElement('div');
     portrait.className = 'local-slot-portrait';
@@ -1151,7 +1383,6 @@ function renderLocalMenuUI() {
     const charNameEl = document.createElement('div');
     charNameEl.className = 'local-slot-char-name';
     charNameEl.innerText = ch.name;
-    slotEl.append(portrait, charNameEl);
 
     const skBox = document.createElement('div');
     skBox.className = 'local-slot-skill-box';
@@ -1169,21 +1400,82 @@ function renderLocalMenuUI() {
         <div class="local-slot-skill-desc">スキルなしの純粋パズル対戦</div>
       `;
     }
-    slotEl.appendChild(skBox);
+
+    editBtn.append(portrait, charNameEl, skBox);
 
     if (slot.phase !== 'ready') {
       const hint = document.createElement('div');
       hint.className = 'local-slot-phase-hint';
       hint.innerText = slot.phase === 'char' ? 'キャラ選択中…' : 'スキル選択中…';
-      slotEl.appendChild(hint);
+      editBtn.appendChild(hint);
     } else {
       const okRibbon = document.createElement('div');
       okRibbon.className = 'local-slot-ok-ribbon';
       okRibbon.innerText = 'OK!';
-      slotEl.appendChild(okRibbon);
+      editBtn.appendChild(okRibbon);
+    }
+    slotEl.appendChild(editBtn);
+
+    const hdRow = document.createElement('div');
+    hdRow.className = 'local-slot-slider-row';
+    const hdHead = document.createElement('div');
+    hdHead.className = 'local-slot-slider-head';
+    hdHead.innerHTML = `<span>ハンデ</span><span id="local-slot-hd-val-${i}" class="local-slot-slider-val">${slot.handicap}</span>`;
+    const hdInput = document.createElement('input');
+    hdInput.type = 'range';
+    hdInput.min = '1';
+    hdInput.max = '5';
+    hdInput.step = '1';
+    hdInput.value = String(slot.handicap || 3);
+    hdInput.className = 'local-slot-range';
+    hdInput.dataset.localFocusId = `slot-hd-${i}`;
+    hdInput.oninput = (ev) => {
+      const v = Math.max(1, Math.min(5, parseInt(ev.target.value, 10) || 3));
+      slot.handicap = v;
+      const lbl = document.getElementById(`local-slot-hd-val-${i}`);
+      if (lbl) lbl.innerText = String(v);
+    };
+    if (typeof enhanceRangeSlider === 'function') enhanceRangeSlider(hdInput);
+    hdRow.append(hdHead, hdInput);
+    slotEl.appendChild(hdRow);
+
+    if (slot.isCom) {
+      const lvRow = document.createElement('div');
+      lvRow.className = 'local-slot-slider-row';
+      const lvHead = document.createElement('div');
+      lvHead.className = 'local-slot-slider-head';
+      lvHead.innerHTML = `<span>CPU強さ</span><span id="local-slot-lv-val-${i}" class="local-slot-slider-val com-lv">Lv.${slot.comLevel}</span>`;
+      const lvInput = document.createElement('input');
+      lvInput.type = 'range';
+      lvInput.min = '1';
+      lvInput.max = '99';
+      lvInput.step = '1';
+      lvInput.value = String(slot.comLevel || 3);
+      lvInput.className = 'local-slot-range com-lv-range';
+      lvInput.dataset.localFocusId = `slot-lv-${i}`;
+      lvInput.oninput = (ev) => {
+        const v = Math.max(1, Math.min(99, parseInt(ev.target.value, 10) || 3));
+        slot.comLevel = v;
+        const lbl = document.getElementById(`local-slot-lv-val-${i}`);
+        if (lbl) lbl.innerText = `Lv.${v}`;
+      };
+      if (typeof enhanceRangeSlider === 'function') enhanceRangeSlider(lvInput);
+      lvRow.append(lvHead, lvInput);
+      slotEl.appendChild(lvRow);
     }
 
     dockEl.appendChild(slotEl);
+  }
+
+  if (prevFocusKey) {
+    let restoreEl = document.querySelector(`#local-menu [data-local-focus-id="${prevFocusKey}"]`) || document.getElementById(prevFocusKey);
+    if (!restoreEl && prevFocusKey.startsWith('slot-lv-')) {
+      const idx = prevFocusKey.slice(8);
+      restoreEl = document.querySelector(`#local-menu [data-local-focus-id="slot-edit-${idx}"]`);
+    }
+    if (restoreEl && !restoreEl.disabled) {
+      restoreEl.focus({ preventScroll: true });
+    }
   }
 }
 
@@ -2568,6 +2860,77 @@ function activateShareP2Skill() {
 }
 
 // ==========================================
+// オンライン対戦：各プレイヤー等分フレーム背景（高さフィット・アス比維持・シームレス境界ブレンド）
+// ==========================================
+function refreshOnlineSplitFrames() {
+  const container = document.getElementById('online-split-frames-bg');
+  if (!container) return;
+  const isGameShown = document.getElementById('game-area')?.style.display !== 'none';
+  if (currentMode !== 'online' || !isGameShown) {
+    container.style.display = 'none';
+    container.innerHTML = '';
+    return;
+  }
+
+  const playersList = [];
+  if (myRenderer && myRenderer.theme) {
+    playersList.push({ id: 'me', theme: myRenderer.theme });
+  }
+  opponents.forEach((opp, idx) => {
+    if (opp && opp.renderer && opp.renderer.theme) {
+      playersList.push({ id: opp.id || `opp_${idx}`, theme: opp.renderer.theme });
+    }
+  });
+
+  const total = playersList.length;
+  if (total === 0) {
+    container.style.display = 'none';
+    container.innerHTML = '';
+    return;
+  }
+
+  const isPortrait = window.innerHeight >= window.innerWidth;
+  const isLandscapeLarge = !isPortrait && !useMobileLayoutInLandscape;
+  const isLeft = document.getElementById('handedness-toggle')?.checked;
+  if (!isLandscapeLarge && total === 2 && isLeft) {
+    playersList.reverse();
+  }
+
+  container.style.display = 'block';
+  container.innerHTML = '';
+  const unitPct = 100 / total;
+  playersList.forEach((p, idx) => {
+    const slot = document.createElement('div');
+    slot.className = 'online-split-frame-slot' + (idx > 0 ? ' has-left-feather' : '');
+    slot.style.zIndex = String(idx + 1);
+
+    if (total === 1) {
+      slot.style.left = '0%';
+      slot.style.width = '100%';
+    } else if (idx === 0) {
+      slot.style.left = '0%';
+      slot.style.width = `calc(${unitPct}% + 3.5vw)`;
+    } else if (idx === total - 1) {
+      slot.style.left = `calc(${idx * unitPct}% - 3.5vw)`;
+      slot.style.width = `calc(${unitPct}% + 3.5vw)`;
+    } else {
+      slot.style.left = `calc(${idx * unitPct}% - 3.5vw)`;
+      slot.style.width = `calc(${unitPct}% + 7vw)`;
+    }
+
+    const frameUrl = p.theme?.frameSrc ? toAbsoluteAssetUrl(p.theme.frameSrc) : null;
+    if (frameUrl) {
+      const img = document.createElement('img');
+      img.src = frameUrl;
+      img.alt = '';
+      slot.appendChild(img);
+    } else {
+      slot.style.background = `radial-gradient(circle at 50% 40%, ${p.theme?.color || '#334155'}44, rgba(8, 12, 24, 0.88))`;
+    }
+    container.appendChild(slot);
+  });
+}
+// ==========================================
 // バトル中サイド演出枠（1人時）& インライン立ち絵（横複数人対戦時：スキルゲージ＆連勝数付き）& 縦画面最下部ステータスバー
 // ==========================================
 function setSidePortraitElement(imgEl, theme) {
@@ -2764,7 +3127,6 @@ function updateAllPortraitHUDs() {
     ? (localSlotsConfig[0].skillId || 'erase_color')
     : (playerSkillState.skillId || selectedPlayerSkill);
 
-  // 1人練習時のサイドカード
   const sideCardP1 = document.getElementById('battle-side-p1');
   if (sideCardP1 && sideCardP1.style.display !== 'none') {
     applyWinsBadgeState(document.getElementById('battle-side-p1-wins'), p1WinsText);
@@ -2774,7 +3136,6 @@ function updateAllPortraitHUDs() {
     );
   }
 
-  // 横複数人対戦時のインライン立ち絵カード
   const totalCount = 1 + opponents.length;
   const isCompact = totalCount >= 4;
 
@@ -2809,7 +3170,6 @@ function refreshBattleSidePanels() {
   const isGameShown = document.getElementById('game-area')?.style.display !== 'none';
   const oppCount = opponents.length;
 
-  // 複数人対戦の横UIは盤面隣インライン立ち絵を使用するためサイドカードは1人練習時のみ表示
   const showSoloSideCard = isGameShown && isLandscapeLarge && oppCount === 0 && currentMode !== 'local' && currentMode !== 'share' && window.innerWidth >= 760;
 
   if (!showSoloSideCard || !myRenderer || !myRenderer.theme) {
@@ -2913,13 +3273,14 @@ function resetGameLogic() {
   hidePlayerHeaderCutin();
   resetAllLocalInputStates();
   removeInlinePlayerPortraits();
+  refreshOnlineSplitFrames();
 
   const myWrapper = document.getElementById('my-wrapper');
   if (myWrapper) myWrapper.classList.remove('sacrifice-aura');
 
   const handicap = currentMode === 'share'
     ? (sharePrepConfig.p1.handicap || 3)
-    : (currentMode === 'local' ? 3 : (parseInt(document.getElementById('handicap-val').value) || 3));
+    : (currentMode === 'local' ? (localSlotsConfig[0].handicap || 3) : (parseInt(document.getElementById('handicap-val').value) || 3));
   const sharedSeed = Math.floor(Math.random() * 0xFFFFFFFF);
 
   myRenderer = new BoardRenderer('my-canvas');
@@ -2958,20 +3319,28 @@ function resetGameLogic() {
   }
   if (currentMode !== 'story') {
     if (typeof applyGlobalFrameTheme === 'function') {
-      const globalFrame = isSharedScreenMode
-        ? (CustomAssets.frame ? CustomAssets.frame.dataUrl : null)
-        : myRenderer.theme.frameSrc;
+      let globalFrame;
+      if (currentMode === 'local') {
+        globalFrame = (typeof CustomAssets !== 'undefined' && CustomAssets.frame)
+          ? CustomAssets.frame.dataUrl
+          : myRenderer.theme.frameSrc;
+      } else if (currentMode === 'share') {
+        globalFrame = (typeof CustomAssets !== 'undefined' && CustomAssets.frame) ? CustomAssets.frame.dataUrl : null;
+      } else {
+        globalFrame = myRenderer.theme.frameSrc;
+      }
       applyGlobalFrameTheme(globalFrame);
     }
     if (!myRenderer.theme.frameSrc && myRenderer.theme.charId !== 'custom' && myRenderer.theme.voiceName && typeof resolveCharacterImage === 'function') {
       const targetTheme = myRenderer.theme;
       const isSharedCap = isSharedScreenMode;
+      const isLocalCap = (currentMode === 'local');
       resolveCharacterImage('frame', targetTheme.voiceName).then((url) => {
         if (url && currentMode !== 'story' && myRenderer && myRenderer.theme === targetTheme && document.getElementById('game-area')?.style.display !== 'none') {
           targetTheme.frameSrc = url;
           if (!CustomAssets.frame) {
             if (isSharedCap && typeof applyBoardFrame === 'function') applyBoardFrame('my-wrapper', url);
-            else if (!isSharedCap && typeof applyGlobalFrameTheme === 'function') applyGlobalFrameTheme(url);
+            if ((!isSharedCap || isLocalCap) && typeof applyGlobalFrameTheme === 'function') applyGlobalFrameTheme(url);
           }
         }
       });
@@ -3060,7 +3429,9 @@ function resetGameLogic() {
       });
     }
 
-    const oppHandicap = isShareMode ? (sharePrepConfig.p2.handicap || 3) : 3;
+    const oppHandicap = isShareMode
+      ? (sharePrepConfig.p2.handicap || 3)
+      : ((currentMode === 'local' && slotCfg) ? (slotCfg.handicap || 3) : 3);
     const rEngine = new PonEngine(
       (state) => { if (state === 'gameover') checkMatchEnd(); },
       (totalBlocks, isHard) => { distributeGarbage(oppId, totalBlocks, isHard); },
@@ -3202,6 +3573,8 @@ function performExitGame(silent = false) {
   if (typeof applyGlobalFrameTheme === 'function') {
     applyGlobalFrameTheme(typeof CustomAssets !== 'undefined' && CustomAssets.frame ? CustomAssets.frame.dataUrl : null);
   }
+  const splitBg = document.getElementById('online-split-frames-bg');
+  if (splitBg) { splitBg.style.display = 'none'; splitBg.innerHTML = ''; }
   document.body.classList.remove('local-force-landscape', 'share-force-portrait');
   try { screen.orientation?.unlock?.(); } catch (e) {}
   myEngine = null; opponents = [];
@@ -3288,7 +3661,6 @@ function pollSingleGamepad(engine, cfgPad, stateObj, padObj, isMainPlayer, oppRe
   stateObj.prevPadState = { ...stateObj.padState };
   padObj.buttons.forEach((b, i) => stateObj.padState[i] = !!b.pressed);
 
-  // モーダル切り替え直後のロックアウト中は、状態の同期のみ行いアクション発火を禁止
   if (typeof padInputLockUntil !== 'undefined' && performance.now() < padInputLockUntil) {
     if (engine) engine.isRisingManualPad = false;
     return;
@@ -3412,7 +3784,12 @@ function pollGamepadInput() {
     return;
   }
   const slot0 = playerConfigs[0].padSlot;
-  const pad0 = (slot0 >= 0 && pads[slot0]) ? pads[slot0] : ((currentMode === 'local' || currentMode === 'share') ? null : pads.find(p => p && p.connected));
+  let pad0 = null;
+  if (slot0 >= 0 && pads[slot0]) {
+    pad0 = pads[slot0];
+  } else if (slot0 === 0 && currentMode !== 'local' && currentMode !== 'share') {
+    pad0 = pads.find(p => p && p.connected) || null;
+  }
   pollSingleGamepad(myEngine, playerConfigs[0].pad, p1InputState, pad0, true, null);
   if (currentMode === 'local' || currentMode === 'share') {
     opponents.forEach(opp => {
@@ -3581,50 +3958,89 @@ function handleLocalMenuKeyInput(code, e) {
     forceConfirmAllAndStartLocal();
     return true;
   }
-  if (localHeaderFocusIndex >= 0 && cfg0) {
-    if (code === cfg0.Left || code === 'ArrowLeft' || code === cfg0.TargetLeft) {
-      e.preventDefault(); moveLocalHeaderFocus(-1); return true;
-    }
-    if (code === cfg0.Right || code === 'ArrowRight' || code === cfg0.TargetRight) {
-      e.preventDefault(); moveLocalHeaderFocus(1); return true;
-    }
-    if (code === cfg0.Down || code === 'ArrowDown' || code === cfg0.Skill || code === cfg0.GrabLeft || code === 'Escape') {
-      e.preventDefault(); exitLocalHeaderFocus(true); return true;
-    }
-    if (code === cfg0.Swap || code === cfg0.GrabRight || code === 'Enter' || code === 'Space') {
-      e.preventDefault(); activateLocalHeaderControl(); return true;
-    }
-  }
 
-  for (let slotIdx = 0; slotIdx < count; slotIdx++) {
+  for (let slotIdx = 1; slotIdx < count; slotIdx++) {
     const slot = localSlotsConfig[slotIdx];
     if (slot.isCom) continue;
     const cfg = playerConfigs[slotIdx].key;
     if (!cfg) continue;
+    if (code === cfg.Left)  { e.preventDefault(); moveLocalTileCursor(slotIdx, -1, 0, 'kb'); return true; }
+    if (code === cfg.Right) { e.preventDefault(); moveLocalTileCursor(slotIdx, 1, 0, 'kb');  return true; }
+    if (code === cfg.Up)    { e.preventDefault(); moveLocalTileCursor(slotIdx, 0, -1, 'kb'); return true; }
+    if (code === cfg.Down)  { e.preventDefault(); moveLocalTileCursor(slotIdx, 0, 1, 'kb');  return true; }
+    if (code === cfg.Swap || code === cfg.GrabRight) {
+      e.preventDefault();
+      if (slot.phase === 'char') confirmLocalCharForSlot(slotIdx, slot.charCursorIdx, 'kb');
+      else if (slot.phase === 'skill') confirmLocalSkillForSlot(slotIdx, slot.skillCursorIdx, 'kb');
+      return true;
+    }
+    if (code === cfg.Skill || code === cfg.GrabLeft) {
+      e.preventDefault();
+      cancelLocalStepForSlot(slotIdx);
+      return true;
+    }
+  }
 
-    if (slotIdx === 0 && (code === cfg.TargetLeft || code === cfg.TargetRight)) {
-      e.preventDefault();
-      localHeaderFocusIndex = 1;
-      SE.play('cursorMove');
+  const isUp = (code === 'ArrowUp' || (cfg0 && code === cfg0.Up));
+  const isDown = (code === 'ArrowDown' || (cfg0 && code === cfg0.Down));
+  const isLeft = (code === 'ArrowLeft' || (cfg0 && code === cfg0.Left));
+  const isRight = (code === 'ArrowRight' || (cfg0 && code === cfg0.Right));
+  const isConfirm = (code === 'Enter' || code === 'Space' || (cfg0 && (code === cfg0.Swap || code === cfg0.GrabRight)));
+  const isCancel = (code === 'Escape' || (cfg0 && (code === cfg0.Skill || code === cfg0.GrabLeft)));
+
+  if (!isUp && !isDown && !isLeft && !isRight && !isConfirm && !isCancel) return false;
+
+  const domActive = document.activeElement && document.activeElement.closest('#local-menu') && !document.activeElement.classList.contains('local-select-tile');
+  if (domActive) {
+    e.preventDefault();
+    localDomNavOwner = 'kb';
+    return handleLocalDomNavigation({
+      up: isUp, down: isDown, left: isLeft, right: isRight,
+      confirm: isConfirm, cancel: isCancel
+    }, 'kb');
+  }
+
+  const targetSlot = activeLocalTouchActor;
+  const slot = localSlotsConfig[targetSlot];
+  if (!slot) return false;
+
+  e.preventDefault();
+  if (slot.phase === 'ready') {
+    if (isCancel) {
+      cancelLocalStepForSlot(targetSlot);
+      return true;
+    }
+    if (isUp || isDown || isLeft || isRight) {
+      const fallbackBtn = document.querySelector(`[data-local-focus-id="slot-edit-${targetSlot}"]`) || getLocalDomFocusables()[0];
+      if (fallbackBtn) {
+        localDomNavOwner = 'kb';
+        fallbackBtn.focus({ preventScroll: true });
+        SE.play('cursorMove');
+      }
+      return true;
+    }
+    return false;
+  }
+
+  if (isLeft)  { moveLocalTileCursor(targetSlot, -1, 0, 'kb'); return true; }
+  if (isRight) { moveLocalTileCursor(targetSlot, 1, 0, 'kb');  return true; }
+  if (isUp)    { moveLocalTileCursor(targetSlot, 0, -1, 'kb'); return true; }
+  if (isDown)  { moveLocalTileCursor(targetSlot, 0, 1, 'kb');  return true; }
+  if (isConfirm) {
+    if (slot.phase === 'char') confirmLocalCharForSlot(targetSlot, slot.charCursorIdx, 'kb');
+    else if (slot.phase === 'skill') confirmLocalSkillForSlot(targetSlot, slot.skillCursorIdx, 'kb');
+    return true;
+  }
+  if (isCancel) {
+    if (slot.phase !== 'char') cancelLocalStepForSlot(targetSlot);
+    else if (targetSlot !== 0) {
+      activeLocalTouchActor = 0;
+      SE.play('cancel');
       renderLocalMenuUI();
-      return true;
+    } else {
+      handleMenuCancelAction();
     }
-    if (code === cfg.Left)  { e.preventDefault(); moveLocalTileCursor(slotIdx, -1, 0); return true; }
-    if (code === cfg.Right) { e.preventDefault(); moveLocalTileCursor(slotIdx, 1, 0);  return true; }
-    if (code === cfg.Up)    { e.preventDefault(); moveLocalTileCursor(slotIdx, 0, -1); return true; }
-    if (code === cfg.Down)  { e.preventDefault(); moveLocalTileCursor(slotIdx, 0, 1);  return true; }
-    if (code === cfg.Swap || code === cfg.GrabRight || (slotIdx === 0 && code === 'Enter')) {
-      e.preventDefault();
-      if (slot.phase === 'char') confirmLocalCharForSlot(slotIdx, slot.charCursorIdx);
-      else if (slot.phase === 'skill') confirmLocalSkillForSlot(slotIdx, slot.skillCursorIdx);
-      return true;
-    }
-    if (code === cfg.Skill || code === cfg.GrabLeft || (slotIdx === 0 && code === 'Escape')) {
-      e.preventDefault();
-      if (slot.phase !== 'char') cancelLocalStepForSlot(slotIdx);
-      else if (slotIdx === 0) handleMenuCancelAction();
-      return true;
-    }
+    return true;
   }
   return false;
 }
@@ -3760,15 +4176,30 @@ function setupInput() {
 
   window.addEventListener('keydown', (e) => {
     if (battleEndState.active) { e.preventDefault(); tryDismissBattleEndOverlay(); return; }
-    if (assigningAction && assignType === 'key') {
+    if (assigningAction) {
       e.preventDefault();
       e.stopPropagation();
-      const doneAction = assigningAction;
-      pendingConfigFocus = { action: doneAction, type: 'key' };
-      playerConfigs[settingsPlayerIdx].key[doneAction] = (e.code === 'Delete' || e.code === 'Backspace') ? '' : e.code;
-      assigningAction = null;
-      renderConfigUI();
-      SE.play('select');
+      if (assignType === 'key') {
+        const doneAction = assigningAction;
+        pendingConfigFocus = { action: doneAction, type: 'key' };
+        playerConfigs[settingsPlayerIdx].key[doneAction] = (e.code === 'Delete' || e.code === 'Backspace') ? '' : e.code;
+        assigningAction = null;
+        renderConfigUI();
+        SE.play('select');
+      } else if (assignType === 'pad') {
+        if (e.code === 'Delete' || e.code === 'Backspace') {
+          const doneAction = assigningAction;
+          pendingConfigFocus = { action: doneAction, type: 'pad' };
+          playerConfigs[settingsPlayerIdx].pad[doneAction] = null;
+          assigningAction = null;
+          renderConfigUI();
+          SE.play('select');
+        } else if (e.code === 'Escape') {
+          assigningAction = null;
+          renderConfigUI();
+          SE.play('cancel');
+        }
+      }
       return;
     }
     const code = e.code;
@@ -3793,12 +4224,14 @@ function setupInput() {
       const tag = document.activeElement?.tagName;
       const isTextInput = tag === 'INPUT' && document.activeElement?.type === 'text';
       const isLocalMenuOpen = document.getElementById('local-menu')?.style.display === 'flex';
+      const isDigitHudOpen = (typeof rangeEditState !== 'undefined' && !!rangeEditState.el);
       const isModalOpen = isSkillModalVisible
                        || isConfirmModalVisible
                        || isSelectPickerVisible
                        || isExitConfirmVisible
                        || isSettingsVisible
                        || isResultVisible
+                       || isDigitHudOpen
                        || document.getElementById('share-prep-overlay')?.style.display === 'flex';
 
       if (!isGameVisible && isLocalMenuOpen && !isModalOpen && !isTextInput && !e.repeat) {
@@ -3867,7 +4300,6 @@ function updateMyZoneFrameLayout(rect) {
   }
 }
 
-// 縦UI⇔横UI切替時の残存要素・インラインスタイルを完全リセット
 function resetBattleLayoutStyles() {
   cleanupShareDomZones();
   removeInlinePlayerPortraits();
@@ -3951,6 +4383,7 @@ function adjustLayout() {
     bottomBar.style.display = (isGameShown && isPortrait && currentMode !== 'local' && currentMode !== 'share') ? 'flex' : 'none';
   }
   refreshBattleSidePanels();
+  refreshOnlineSplitFrames();
 
   if (currentMode === 'share') {
     if (zoneBgEl) zoneBgEl.style.opacity = '0';
@@ -4056,7 +4489,7 @@ function adjustLayout() {
     return;
   }
 
-  if (zoneBgEl) zoneBgEl.style.opacity = '1';
+  if (zoneBgEl) zoneBgEl.style.opacity = (currentMode === 'online') ? '0' : '1';
   document.body.classList.remove('local-force-landscape');
 
   if (isLandscapeLarge) {
@@ -4128,7 +4561,6 @@ function adjustLayout() {
       return;
     }
 
-    // 1人練習（oppCount === 0）横画面
     rivalsArea.style.display = 'none';
     const sideMargin = (W >= 760) ? 168 : 10;
     gameContainer.style.cssText = `position:relative;width:100%;height:100%;display:flex;flex-direction:row;align-items:center;justify-content:center;padding:10px ${sideMargin}px 34px ${sideMargin}px;gap:10px;`;

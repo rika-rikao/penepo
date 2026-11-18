@@ -218,8 +218,8 @@
 
         <p style="font-size:0.8rem; color:#aaa; margin-top: 12px; margin-bottom: 5px;">マイBGM（ファイルやフォルダを選択して再生）</p>
         <div style="display:flex; gap:10px; margin-bottom: 8px; flex-wrap:wrap;">
-          <label class="small-btn">ファイル選択<input type="file" tabindex="-1" id="bgm-file-input" multiple accept="audio/*, .mp3, .m4a, .aac, .wav, .ogg, .opus, .webm" style="display:none;"></label>
-          <label class="small-btn">フォルダ選択<input type="file" tabindex="-1" id="bgm-dir-input" multiple webkitdirectory directory accept="audio/*, .mp3, .m4a, .aac, .wav, .ogg, .opus, .webm" style="display:none;"></label>
+          <label class="small-btn" tabindex="0">ファイル選択<input type="file" tabindex="-1" id="bgm-file-input" multiple accept="audio/*, .mp3, .m4a, .aac, .wav, .ogg, .opus, .webm" style="display:none;"></label>
+          <label class="small-btn" tabindex="0">フォルダ選択<input type="file" tabindex="-1" id="bgm-dir-input" multiple webkitdirectory directory accept="audio/*, .mp3, .m4a, .aac, .wav, .ogg, .opus, .webm" style="display:none;"></label>
           <button class="small-btn" onclick="toggleBgmPlay()">再生 / 停止</button>
         </div>
 
@@ -230,21 +230,21 @@
               <div class="custom-voice-subrow">
                 <span class="custom-voice-label">攻撃(お邪魔):</span>
                 <span id="custom-voice-attack-info" class="custom-asset-info">未設定</span>
-                <label class="small-btn">選択<input type="file" tabindex="-1" accept="audio/*, .mp3, .m4a, .aac, .wav, .ogg, .opus, .webm" style="display:none;" onchange="handleCustomVoiceUpload('attack', this)"></label>
+                <label class="small-btn" tabindex="0">選択<input type="file" tabindex="-1" accept="audio/*, .mp3, .m4a, .aac, .wav, .ogg, .opus, .webm" style="display:none;" onchange="handleCustomVoiceUpload('attack', this)"></label>
                 <button class="small-btn" onclick="testCustomVoice('attack')">試聴</button>
                 <button class="small-btn" onclick="clearCustomVoice('attack')">解除</button>
               </div>
               <div class="custom-voice-subrow">
                 <span class="custom-voice-label">勝利時:</span>
                 <span id="custom-voice-win-info" class="custom-asset-info">未設定</span>
-                <label class="small-btn">選択<input type="file" tabindex="-1" accept="audio/*, .mp3, .m4a, .aac, .wav, .ogg, .opus, .webm" style="display:none;" onchange="handleCustomVoiceUpload('win', this)"></label>
+                <label class="small-btn" tabindex="0">選択<input type="file" tabindex="-1" accept="audio/*, .mp3, .m4a, .aac, .wav, .ogg, .opus, .webm" style="display:none;" onchange="handleCustomVoiceUpload('win', this)"></label>
                 <button class="small-btn" onclick="testCustomVoice('win')">試聴</button>
                 <button class="small-btn" onclick="clearCustomVoice('win')">解除</button>
               </div>
               <div class="custom-voice-subrow">
                 <span class="custom-voice-label">敗北時:</span>
                 <span id="custom-voice-lose-info" class="custom-asset-info">未設定</span>
-                <label class="small-btn">選択<input type="file" tabindex="-1" accept="audio/*, .mp3, .m4a, .aac, .wav, .ogg, .opus, .webm" style="display:none;" onchange="handleCustomVoiceUpload('lose', this)"></label>
+                <label class="small-btn" tabindex="0">選択<input type="file" tabindex="-1" accept="audio/*, .mp3, .m4a, .aac, .wav, .ogg, .opus, .webm" style="display:none;" onchange="handleCustomVoiceUpload('lose', this)"></label>
                 <button class="small-btn" onclick="testCustomVoice('lose')">試聴</button>
                 <button class="small-btn" onclick="clearCustomVoice('lose')">解除</button>
               </div>
@@ -276,7 +276,7 @@
             <div style="font-size:0.82rem; font-weight:bold;">すがた (マイ立ち絵)</div>
             <div id="custom-chara-info" class="custom-asset-info">未設定</div>
           </div>
-          <label class="small-btn">選択<input type="file" tabindex="-1" accept="image/*" style="display:none;" onchange="handleCustomAssetUpload('chara', this)"></label>
+          <label class="small-btn" tabindex="0">選択<input type="file" tabindex="-1" accept="image/*" style="display:none;" onchange="handleCustomAssetUpload('chara', this)"></label>
           <button class="small-btn" onclick="clearCustomAsset('chara')">解除</button>
         </div>
 
@@ -286,7 +286,7 @@
             <div style="font-size:0.82rem; font-weight:bold;">はいけい (パズル背景)</div>
             <div id="custom-bg-info" class="custom-asset-info">未設定</div>
           </div>
-          <label class="small-btn">選択<input type="file" tabindex="-1" accept="image/*" style="display:none;" onchange="handleCustomAssetUpload('bg', this)"></label>
+          <label class="small-btn" tabindex="0">選択<input type="file" tabindex="-1" accept="image/*" style="display:none;" onchange="handleCustomAssetUpload('bg', this)"></label>
           <button class="small-btn" onclick="clearCustomAsset('bg')">解除</button>
         </div>
 
@@ -296,7 +296,7 @@
             <div style="font-size:0.82rem; font-weight:bold;">ふれーむ (フレーム)</div>
             <div id="custom-frame-info" class="custom-asset-info">未設定</div>
           </div>
-          <label class="small-btn">選択<input type="file" tabindex="-1" accept="image/*" style="display:none;" onchange="handleCustomAssetUpload('frame', this)"></label>
+          <label class="small-btn" tabindex="0">選択<input type="file" tabindex="-1" accept="image/*" style="display:none;" onchange="handleCustomAssetUpload('frame', this)"></label>
           <button class="small-btn" onclick="clearCustomAsset('frame')">解除</button>
         </div>
       </div>
@@ -311,7 +311,7 @@
             <div style="font-size:0.82rem; font-weight:bold; color:#ffd700;">ZIP一括登録</div>
             <div id="custom-zip-info" class="custom-asset-info">chara / bg / frame / voice / se / name.txt 等</div>
           </div>
-          <label class="small-btn" style="border-color:#ffd700;">ZIP選択<input type="file" tabindex="-1" id="custom-zip-input" accept=".zip,application/zip" style="display:none;" onchange="handleCustomZipUpload(this)"></label>
+          <label class="small-btn" tabindex="0" style="border-color:#ffd700;">ZIP選択<input type="file" tabindex="-1" id="custom-zip-input" accept=".zip,application/zip" style="display:none;" onchange="handleCustomZipUpload(this)"></label>
         </div>
 
         <div class="custom-asset-row">
@@ -592,7 +592,7 @@
           </label>
           <div id="local-touch-actor-bar" class="local-touch-actor-bar"></div>
         </div>
-        <div class="local-gamepad-hint">🎮 パッド: 最上段で↑ または L/Rで人数・スキル・COM設定へ移動 / STARTで一括開始</div>
+        <div class="local-gamepad-hint">🎮 パッド/キー: 上下左右でタイル・操作切替・設定・下の各プレイヤー枠へ移動 / STARTで一括開始</div>
       </div>
 
       <!-- 画面上半分：キャラタイル一覧 ＋ スキルタイル一覧（各パッド/キーのカーソルが独立移動） -->
@@ -662,6 +662,7 @@
 
   <div id="game-area" class="right-handed">
     <div id="my-zone-frame-bg" aria-hidden="true"></div>
+    <div id="online-split-frames-bg" aria-hidden="true"></div>
     <button id="exit-btn" class="action-btn retire-btn absolute-top" onclick="exitGame()">退出 (リタイア)</button>
     <div id="rivals-top-area" style="display:none;"></div>
 

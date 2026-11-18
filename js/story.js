@@ -252,6 +252,9 @@ const StoryManager = {
     if (typeof refreshMenuLayoutState === 'function') {
       refreshMenuLayoutState();
     }
+    if (typeof focusPrimaryMenuElement === 'function') {
+      focusPrimaryMenuElement('story-prep-step');
+    }
   },
 
   confirmPrepAndNext() {
@@ -283,6 +286,9 @@ const StoryManager = {
     if (stageStep) stageStep.style.display = 'flex';
     this.renderPrepSummaryBar();
     this.renderStageList();
+    if (typeof focusPrimaryMenuElement === 'function') {
+      focusPrimaryMenuElement('story-stage-step');
+    }
   },
 
   backToPrepStep() {
@@ -292,6 +298,9 @@ const StoryManager = {
     const stageStep = document.getElementById('story-stage-step');
     if (stageStep) stageStep.style.display = 'none';
     if (prepStep) prepStep.style.display = 'flex';
+    if (typeof focusPrimaryMenuElement === 'function') {
+      focusPrimaryMenuElement('story-prep-step');
+    }
   },
 
   renderPrepSummaryBar() {
@@ -379,7 +388,7 @@ const StoryManager = {
       createCoverFlow(container, {
         items,
         initialIndex: this.selectedStageIdx,
-        title: 'ステージ選択（スワイプ・バーで選択）',
+        title: 'ステージ選択（左右で切替 / 決定で開始）',
         compact: false,
         showDesc: true,
         renderCard: (card, item) => {
@@ -433,6 +442,18 @@ const StoryManager = {
     container.appendChild(startBtn);
   },
 
+  startSelectedStage() {
+    const st = STORY_STAGES[this.selectedStageIdx];
+    if (!st) return;
+    if (st.id <= this.clearedStage + 1) {
+      if (typeof SE !== 'undefined') SE.play('select');
+      this.startStage(st.id);
+    } else {
+      if (typeof SE !== 'undefined') SE.play('cancel');
+      showToast('前のステージをクリアすると解放されます');
+    }
+  },
+
   startStage(stageId) {
     const stage = STORY_STAGES.find(s => s.id === stageId);
     if (!stage) return;
@@ -459,12 +480,19 @@ const StoryManager = {
     this.currentLines = lines;
     this.lineIndex = 0;
 
+    if (document.activeElement && typeof document.activeElement.blur === 'function') {
+      document.activeElement.blur();
+    }
+
     const overlay = document.getElementById('story-overlay');
     const bgEl = document.getElementById('story-stage-bg');
     if (bgEl) {
       bgEl.style.backgroundImage = CustomAssets.bg ? `url("${CustomAssets.bg.dataUrl}")` : 'none';
     }
     if (overlay) overlay.style.display = 'flex';
+    if (typeof syncPadSnapshotsAll === 'function') {
+      syncPadSnapshotsAll(180);
+    }
   },
 
   startDialogue(phase, lines) {
@@ -597,11 +625,20 @@ const StoryManager = {
 
 function initStorySystem() {
   window.addEventListener('keydown', (e) => {
-    if (document.getElementById('story-overlay').style.display === 'flex') {
-      if (e.code === keyConfig.Swap || e.code === 'Enter' || e.code === 'Space') {
-        e.preventDefault();
-        StoryManager.advance();
-      }
+    const overlay = document.getElementById('story-overlay');
+    if (!overlay || overlay.style.display !== 'flex') return;
+    if (e.repeat) return;
+
+    if (e.code === keyConfig.Pause || e.code === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      StoryManager.skip();
+      return;
+    }
+    if (e.code === keyConfig.Swap || e.code === keyConfig.GrabRight || e.code === 'Enter' || e.code === 'Space') {
+      e.preventDefault();
+      e.stopPropagation();
+      StoryManager.advance();
     }
   });
 }

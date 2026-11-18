@@ -35,7 +35,7 @@ const SKILL_DESCRIPTIONS = {
   corrupt_enemy_row: '相手のブロックがある段をランダムで1段お邪魔に変え、さらに上から幅3のお邪魔ブロックを1段降らせます！',
   seal_skill: '相手（ターゲット優先）のスキル発動までに必要な残りスコアを300点追加して、スキルを遠ざけます！',
   convert_blocks: '盤面にあるマークの中からランダムで3色のブロックを、別の2色のブロックに一斉変換します！大連鎖の大チャンス！',
-  sacrifice: '発動不可・被弾お邪魔1.2倍・送信お邪魔1段階低下(5個/3連鎖〜)・5分で自動敗北する代わりに、連鎖猶予と天井判定時間が常時2倍に！',
+  sacrifice: '発動不可・被弾お邪魔1.2倍・送信お邪魔2段階低下(6個/4連鎖〜)・3分で自動敗北する代わりに、連鎖猶予と天井判定時間が常時1.5倍に！',
   no_skill: 'スキルを使用しません。自分だけスキルなし・純粋なパズル勝負で挑みます。'
 };
 
@@ -400,9 +400,15 @@ function createCoverFlow(container, config) {
 
   const stageWrap = document.createElement('div');
   stageWrap.className = 'cf-stage-wrap' + (compact ? ' compact' : '');
+  stageWrap.tabIndex = 0;
   const stage = document.createElement('div');
   stage.className = 'cf-stage';
   stageWrap.appendChild(stage);
+
+  stageWrap._cfStep = (dir) => stepIndex(dir);
+  stageWrap._cfConfirm = (typeof config.onCenterClick === 'function')
+    ? () => config.onCenterClick(items[activeIdx], activeIdx)
+    : null;
 
   const cardEls = items.map((item, idx) => {
     const card = document.createElement('div');
@@ -432,6 +438,7 @@ function createCoverFlow(container, config) {
 
     card.addEventListener('click', () => {
       if (suppressNextClick) return;
+      stageWrap.focus({ preventScroll: true });
       if (idx === activeIdx) {
         if (typeof config.onCenterClick === 'function') {
           config.onCenterClick(items[idx], idx);
@@ -457,12 +464,14 @@ function createCoverFlow(container, config) {
     const prevBtn = document.createElement('button');
     prevBtn.type = 'button';
     prevBtn.className = 'cf-nav-btn';
+    prevBtn.tabIndex = -1;
     prevBtn.innerText = '◀';
     prevBtn.onclick = () => stepIndex(-1);
 
     sliderEl = document.createElement('input');
     sliderEl.type = 'range';
     sliderEl.className = 'cf-slider';
+    sliderEl.tabIndex = -1;
     sliderEl.min = '0';
     sliderEl.max = String(Math.max(0, total - 1));
     sliderEl.step = '1';
@@ -481,6 +490,7 @@ function createCoverFlow(container, config) {
     const nextBtn = document.createElement('button');
     nextBtn.type = 'button';
     nextBtn.className = 'cf-nav-btn';
+    nextBtn.tabIndex = -1;
     nextBtn.innerText = '▶';
     nextBtn.onclick = () => stepIndex(1);
 
@@ -630,6 +640,7 @@ function createCoverFlow(container, config) {
 
   return {
     wrapper,
+    stageWrap,
     getIndex: () => activeIdx,
     setIndex: (idx) => setActiveIndex(idx, false),
     step: stepIndex
@@ -673,8 +684,8 @@ function renderCharPicker(containerId, options = {}) {
   if (initialIndex < 0) initialIndex = 0;
 
   const titleText = options.title || (storyOnly
-    ? '使用キャラ選択（フレア / マイ立ち絵）'
-    : '使用キャラ選択（スワイプ・バーで選択）');
+    ? '使用キャラ選択（左右で切替 / 決定で次へ）'
+    : '使用キャラ選択（左右で切替 / 決定で次へ）');
 
   const syncInlineNameBox = (selectedId) => {
     let nameRow = container.querySelector('.char-name-inline-row');
@@ -803,7 +814,7 @@ function renderSkillCarousel(containerId, options = {}) {
   createCoverFlow(container, {
     items,
     initialIndex: idx,
-    title: options.title || 'スキルを選択（左右スワイプ / バー）',
+    title: options.title || 'スキルを選択（左右で切替 / 決定で確定）',
     compact: true,
     wrapperClass: 'skill-theme',
     showDesc: true,
@@ -838,8 +849,8 @@ function renderSkillCarousel(containerId, options = {}) {
 function refreshAllSkillCarousels() {
   const modalPicker = document.getElementById('skill-modal-picker');
   if (modalPicker && document.getElementById('skill-select-modal')?.style.display === 'flex') {
-    const curSlider = modalPicker.querySelector('.cf-slider');
-    if (!curSlider) renderSkillCarousel('skill-modal-picker');
+    const curStage = modalPicker.querySelector('.cf-stage-wrap');
+    if (!curStage) renderSkillCarousel('skill-modal-picker');
   }
 }
 

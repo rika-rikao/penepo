@@ -989,6 +989,75 @@ function resumeBgm() {
 }
 
 // ==========================================
+// プルダウン選択モーダル（決定ボタンで一覧から選択）
+// ==========================================
+let activeSelectPickerEl = null;
+
+function openSelectPickerModal(selectEl, titleText = null) {
+  if (!selectEl || selectEl.tagName !== 'SELECT') return;
+  const modal = document.getElementById('select-picker-modal');
+  const titleEl = document.getElementById('select-picker-title');
+  const optionsEl = document.getElementById('select-picker-options');
+  if (!modal || !optionsEl) return;
+
+  activeSelectPickerEl = selectEl;
+  if (titleEl) {
+    let label = titleText;
+    if (!label && selectEl.id === 'local-player-count') label = '対戦人数を選択';
+    else if (!label && selectEl.id === 'online-max-players') label = 'オンライン最大人数を選択';
+    else if (!label && selectEl.id === 'settings-pad-slot') label = '使用ゲームパッド番号';
+    else if (!label && selectEl.id === 'settings-hub-char') label = 'ホーム立ち絵を選択';
+    titleEl.innerText = label || '選択してください';
+  }
+
+  optionsEl.innerHTML = '';
+  let selectedBtn = null;
+  Array.from(selectEl.options).forEach((opt) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    const isSel = opt.value === selectEl.value;
+    btn.className = 'select-picker-opt-btn' + (isSel ? ' selected' : '');
+    const txtSpan = document.createElement('span');
+    txtSpan.innerText = opt.textContent || opt.label || opt.value;
+    btn.appendChild(txtSpan);
+    if (isSel) {
+      const chk = document.createElement('span');
+      chk.innerText = '✓';
+      chk.style.color = '#4ecca3';
+      btn.appendChild(chk);
+      selectedBtn = btn;
+    }
+    btn.onclick = () => {
+      if (selectEl.value !== opt.value) {
+        selectEl.value = opt.value;
+        selectEl.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      SE.play('select');
+      closeSelectPickerModal(true);
+    };
+    optionsEl.appendChild(btn);
+  });
+
+  modal.style.display = 'flex';
+  const focusTarget = selectedBtn || optionsEl.querySelector('button');
+  if (focusTarget) focusTarget.focus();
+}
+
+function closeSelectPickerModal(silent = false) {
+  const modal = document.getElementById('select-picker-modal');
+  if (modal) modal.style.display = 'none';
+  if (!silent) SE.play('cancel');
+  const target = activeSelectPickerEl;
+  activeSelectPickerEl = null;
+  if (target && document.body.contains(target)) {
+    const style = window.getComputedStyle(target);
+    if (style.display !== 'none' && style.visibility !== 'hidden') {
+      target.focus();
+    }
+  }
+}
+
+// ==========================================
 // スライダー拡張（バー直接ジャンプ＋つまみドラッグ維持＋桁編集HUD）
 // ==========================================
 function setRangeValueWithEvents(rangeEl, newVal) {
@@ -1291,11 +1360,13 @@ try {
 let settingsPlayerIdx = 0;
 let currentSettingsTab = 'audio';
 let assigningAction = null, assignType = null;
+let pendingConfigFocus = null;
 let settingsSnapshot = null;
 
 function selectSettingsTab(tabKey) {
   currentSettingsTab = tabKey || 'audio';
   assigningAction = null;
+  pendingConfigFocus = null;
   const tabKeys = ['audio', 'visual', 'zip', 'control'];
   const btns = document.querySelectorAll('#settings-category-tabs button');
   btns.forEach((btn, idx) => {
@@ -1314,6 +1385,7 @@ function selectSettingsTab(tabKey) {
 function selectSettingsPlayer(idx) {
   settingsPlayerIdx = idx;
   assigningAction = null;
+  pendingConfigFocus = null;
   document.querySelectorAll('#settings-player-tabs button').forEach((btn, i) => {
     btn.classList.toggle('active', i === idx);
   });
@@ -1328,7 +1400,6 @@ function onSettingsPadSlotChange(val) {
 
 function openSettings() {
   SE.play('select');
-  // 変更前スナップショットを保存（「保存せずに戻る」での復元用）
   settingsSnapshot = {
     bgmVol: parseFloat(document.getElementById('bgm-volume')?.value ?? bgmAudio.volume),
     seVol: SE.volume,
@@ -1362,11 +1433,15 @@ function openSettings() {
   document.getElementById('settings-overlay').style.display = 'block';
   selectSettingsTab(currentSettingsTab || 'audio');
   enhanceAllRangeSliders();
+  const firstTabBtn = document.querySelector('#settings-category-tabs button');
+  if (firstTabBtn) firstTabBtn.focus();
 }
 
 async function cancelSettings() {
   closeRangeDigitEdit();
+  closeSelectPickerModal(true);
   assigningAction = null;
+  pendingConfigFocus = null;
   if (settingsSnapshot) {
     const snap = settingsSnapshot;
     SE.volume = snap.seVol;
@@ -1389,14 +1464,12 @@ async function cancelSettings() {
     if (bEl) bEl.value = snap.bgmVol;
     if (bVal) bVal.innerText = Math.round(snap.bgmVol * 100);
 
-    // キー・パッド設定復元
     snap.playerConfigs.forEach((sc, idx) => {
       playerConfigs[idx].padSlot = sc.padSlot;
       Object.assign(playerConfigs[idx].key, sc.key);
       Object.assign(playerConfigs[idx].pad, sc.pad);
     });
 
-    // 名前・ハブ立ち絵設定復元
     if (typeof playerCustomName !== 'undefined') {
       playerCustomName = snap.playerCustomName;
       const nameInput = document.getElementById('settings-player-name');
@@ -1410,7 +1483,6 @@ async function cancelSettings() {
     if (typeof selectedCharId !== 'undefined') selectedCharId = snap.selectedCharId;
     if (typeof storySelectedCharId !== 'undefined') storySelectedCharId = snap.storySelectedCharId;
 
-    // カスタム画像復元
     if (snap.customAssets && typeof CustomAssets !== 'undefined') {
       for (const k of ['chara', 'bg', 'frame']) {
         CustomAssets[k] = snap.customAssets[k];
@@ -1424,7 +1496,6 @@ async function cancelSettings() {
       }
     }
 
-    // カスタムボイス復元
     if (snap.customVoices) {
       const prevCats = new Set(Object.keys(VOICE.customRawMap));
       VOICE.customBuffers = { ...snap.customVoices.buffers };
@@ -1437,7 +1508,6 @@ async function cancelSettings() {
       }
     }
 
-    // カスタムSE復元
     if (snap.customSE) {
       const allKeys = new Set([...Object.keys(SE.customRawMap), ...Object.keys(snap.customSE.raw)]);
       SE.customBuffers = { ...snap.customSE.buffers };
@@ -1450,7 +1520,6 @@ async function cancelSettings() {
       }
     }
 
-    // BGMリスト復元
     bgmPlaylist = [...snap.bgmPlaylist];
     currentBgmIndex = snap.currentBgmIndex;
     bgmNeedsPlay = snap.bgmNeedsPlay;
@@ -1467,8 +1536,10 @@ async function cancelSettings() {
 
 function closeSettings() {
   closeRangeDigitEdit();
+  closeSelectPickerModal(true);
   document.getElementById('settings-overlay').style.display = 'none';
   assigningAction = null;
+  pendingConfigFocus = null;
   settingsSnapshot = null;
 
   localStorage.setItem('pdw_se_vol', SE.volume);
@@ -1530,6 +1601,15 @@ function closeSettings() {
 function renderConfigUI() {
   const list = document.getElementById('key-config-list');
   if (!list) return;
+
+  let restoreTarget = pendingConfigFocus ? { ...pendingConfigFocus } : null;
+  if (!restoreTarget && document.activeElement && list.contains(document.activeElement)) {
+    const actEl = document.activeElement;
+    if (actEl.dataset && actEl.dataset.cfgAction && actEl.dataset.cfgType) {
+      restoreTarget = { action: actEl.dataset.cfgAction, type: actEl.dataset.cfgType };
+    }
+  }
+
   const cfg = playerConfigs[settingsPlayerIdx];
   list.innerHTML = '';
   Object.keys(ACTION_LABELS).forEach(action => {
@@ -1540,20 +1620,52 @@ function renderConfigUI() {
     lbl.innerText = ACTION_LABELS[action]; 
     lbl.style.flex = '1'; lbl.style.fontSize = '0.8rem';
     
-    const kBtn = document.createElement('button'); kBtn.className = 'config-btn';
+    const kBtn = document.createElement('button');
+    kBtn.type = 'button';
+    kBtn.className = 'config-btn';
+    kBtn.dataset.cfgAction = action;
+    kBtn.dataset.cfgType = 'key';
     kBtn.style.width = '95px'; kBtn.style.flexShrink = '0';
     const rawKey = cfg.key[action] || '';
     kBtn.innerText = `Key: ${rawKey ? rawKey.replace('Arrow','').replace('Key','') : 'なし'}`;
-    kBtn.onclick = () => { assigningAction = action; assignType = 'key'; kBtn.innerText = '押してください'; };
+    kBtn.onclick = () => {
+      assigningAction = action;
+      assignType = 'key';
+      pendingConfigFocus = { action, type: 'key' };
+      kBtn.innerText = '押してください';
+      kBtn.focus({ preventScroll: true });
+    };
     
-    const pBtn = document.createElement('button'); pBtn.className = 'config-btn';
+    const pBtn = document.createElement('button');
+    pBtn.type = 'button';
+    pBtn.className = 'config-btn';
+    pBtn.dataset.cfgAction = action;
+    pBtn.dataset.cfgType = 'pad';
     pBtn.style.width = '95px'; pBtn.style.flexShrink = '0';
     pBtn.innerText = `Pad: ${cfg.pad[action] !== null && cfg.pad[action] !== undefined ? cfg.pad[action] : 'なし'}`;
-    pBtn.onclick = () => { assigningAction = action; assignType = 'pad'; pBtn.innerText = '押してください'; };
+    pBtn.onclick = () => {
+      assigningAction = action;
+      assignType = 'pad';
+      pendingConfigFocus = { action, type: 'pad' };
+      pBtn.innerText = '押してください';
+      pBtn.focus({ preventScroll: true });
+    };
     
     row.append(lbl, kBtn, pBtn);
     list.appendChild(row);
   });
+
+  if (restoreTarget) {
+    const targetBtn = Array.from(list.querySelectorAll('button')).find(
+      b => b.dataset.cfgAction === restoreTarget.action && b.dataset.cfgType === restoreTarget.type
+    );
+    if (targetBtn) {
+      targetBtn.focus({ preventScroll: true });
+    }
+    if (!assigningAction) {
+      pendingConfigFocus = null;
+    }
+  }
 }
 
 function getConnectedPadsSummaryText() {
@@ -1571,6 +1683,8 @@ function getConnectedPadsSummaryText() {
 
 function getActiveMenuFocusScope() {
   const modalIds = [
+    'exit-confirm-modal',
+    'select-picker-modal',
     'confirm-match-modal',
     'skill-select-modal',
     'settings-overlay',
@@ -1593,7 +1707,195 @@ function getActiveMenuFocusScope() {
   return document;
 }
 
+function getMenuFocusables(scope) {
+  return Array.from(scope.querySelectorAll('button, select, input, .cf-stage-wrap, [tabindex]:not([tabindex="-1"])'))
+    .filter(el => {
+      if (el.disabled) return false;
+      if (el.tabIndex < 0) return false;
+      if (el.closest('#slider-digit-hud')) return false;
+      if (el.classList.contains('cf-nav-btn') || el.classList.contains('cf-slider')) return false;
+      const style = window.getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden') return false;
+      let parent = el.parentElement;
+      while (parent) {
+        if (window.getComputedStyle(parent).display === 'none') return false;
+        parent = parent.parentElement;
+      }
+      const rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    });
+}
+
+function moveMenuFocus(dir) {
+  const scope = getActiveMenuFocusScope();
+  const focusables = getMenuFocusables(scope);
+  if (focusables.length === 0) return;
+  let idx = focusables.indexOf(document.activeElement);
+  if (idx === -1) {
+    if (dir < 0) {
+      idx = focusables.length - 1;
+    } else {
+      const nonBackIdx = focusables.findIndex(el => !el.classList.contains('menu-back-top-btn'));
+      idx = nonBackIdx >= 0 ? nonBackIdx : 0;
+    }
+  } else {
+    idx += dir;
+    if (idx < 0) idx = focusables.length - 1;
+    if (idx >= focusables.length) idx = 0;
+  }
+  focusables[idx].focus();
+  if (typeof focusables[idx].scrollIntoView === 'function') {
+    focusables[idx].scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
+  SE.play('cursorMove');
+}
+
+function moveMenuFocus2D(dx, dy) {
+  const scope = getActiveMenuFocusScope();
+  const focusables = getMenuFocusables(scope);
+  if (focusables.length === 0) return false;
+
+  const activeEl = document.activeElement;
+  if (!activeEl || !focusables.includes(activeEl)) {
+    const nonBackIdx = focusables.findIndex(el => !el.classList.contains('menu-back-top-btn'));
+    const initial = focusables[nonBackIdx >= 0 ? nonBackIdx : 0];
+    initial.focus();
+    if (typeof initial.scrollIntoView === 'function') {
+      initial.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
+    SE.play('cursorMove');
+    return true;
+  }
+
+  const ar = activeEl.getBoundingClientRect();
+  const ax = ar.left + ar.width / 2;
+  const ay = ar.top + ar.height / 2;
+
+  let bestEl = null;
+  let bestScore = Infinity;
+
+  if (dy !== 0) {
+    const isDown = dy > 0;
+    for (const el of focusables) {
+      if (el === activeEl) continue;
+      const r = el.getBoundingClientRect();
+      const cx = r.left + r.width / 2;
+      const cy = r.top + r.height / 2;
+
+      if (isDown ? (cy <= ay + 3) : (cy >= ay - 3)) continue;
+      if (isDown ? (r.bottom <= ar.top + 3) : (r.top >= ar.bottom - 3)) continue;
+
+      const overlapX = Math.max(0, Math.min(ar.right, r.right) - Math.max(ar.left, r.left));
+      const horizGap = overlapX > 0 ? 0 : Math.min(Math.abs(r.left - ar.right), Math.abs(ar.left - r.right));
+      const vertDist = isDown
+        ? (r.top >= ar.bottom - 2 ? r.top - ar.bottom : (cy - ay) * 0.45)
+        : (ar.top >= r.bottom - 2 ? ar.top - r.bottom : (ay - cy) * 0.45);
+
+      const score = vertDist + horizGap * 3.2 + Math.abs(cx - ax) * 0.22 - (overlapX > 0 ? 45 : 0);
+      if (score < bestScore) {
+        bestScore = score;
+        bestEl = el;
+      }
+    }
+  } else if (dx !== 0) {
+    const isRight = dx > 0;
+    for (const el of focusables) {
+      if (el === activeEl) continue;
+      const r = el.getBoundingClientRect();
+      const cx = r.left + r.width / 2;
+      const cy = r.top + r.height / 2;
+
+      if (isRight ? (cx <= ax + 3) : (cx >= ax - 3)) continue;
+      if (isRight ? (r.right <= ar.left + 3) : (r.left >= ar.right - 3)) continue;
+
+      const overlapY = Math.max(0, Math.min(ar.bottom, r.bottom) - Math.max(ar.top, r.top));
+      if (overlapY <= 0) continue;
+
+      const horizDist = isRight
+        ? (r.left >= ar.right - 2 ? r.left - ar.right : (cx - ax) * 0.45)
+        : (ar.left >= r.right - 2 ? ar.left - r.right : (ax - cx) * 0.45);
+      const score = horizDist + Math.abs(cy - ay) * 0.65;
+      if (score < bestScore) {
+        bestScore = score;
+        bestEl = el;
+      }
+    }
+
+    // 同じ行に重なる候補がない場合、少し広い縦ズレで左右の隣接要素（例：横2カラム間）を拾う
+    if (!bestEl) {
+      for (const el of focusables) {
+        if (el === activeEl) continue;
+        const r = el.getBoundingClientRect();
+        const cx = r.left + r.width / 2;
+        const cy = r.top + r.height / 2;
+        if (isRight ? (cx <= ax + 6) : (cx >= ax - 6)) continue;
+        const vertDist = Math.abs(cy - ay);
+        if (vertDist > 42) continue;
+        const horizDist = Math.abs(cx - ax);
+        const score = horizDist + vertDist * 2.5;
+        if (score < bestScore) {
+          bestScore = score;
+          bestEl = el;
+        }
+      }
+    }
+  }
+
+  if (bestEl) {
+    bestEl.focus();
+    if (typeof bestEl.scrollIntoView === 'function') {
+      bestEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
+    SE.play('cursorMove');
+    return true;
+  }
+  return false;
+}
+
+function advanceFromCoverFlow(cfEl) {
+  if (!cfEl) return false;
+  const grid = cfEl.closest('.mode-two-col-grid');
+  if (grid) {
+    const rightCol = grid.querySelector('.mode-right-top') || grid.querySelector('.mode-right-bottom');
+    if (rightCol) {
+      const candidates = getMenuFocusables(rightCol);
+      if (candidates.length > 0) {
+        candidates[0].focus();
+        if (typeof candidates[0].scrollIntoView === 'function') {
+          candidates[0].scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        }
+        SE.play('select');
+        return true;
+      }
+    }
+  }
+  if (moveMenuFocus2D(0, 1)) {
+    SE.play('select');
+    return true;
+  }
+  if (moveMenuFocus2D(1, 0)) {
+    SE.play('select');
+    return true;
+  }
+  moveMenuFocus(1);
+  return true;
+}
+
 function processMenuNavigationInput(input) {
+  // ストーリー表示中は汎用メニュー移動を行わず、決定=次へ / START=スキップ に専用化
+  const storyOverlay = document.getElementById('story-overlay');
+  if (storyOverlay && window.getComputedStyle(storyOverlay).display !== 'none') {
+    if (input.start || input.cancel) {
+      if (typeof StoryManager !== 'undefined') StoryManager.skip();
+      return true;
+    }
+    if (input.confirm || input.altConfirm) {
+      if (typeof StoryManager !== 'undefined') StoryManager.advance();
+      return true;
+    }
+    return false;
+  }
+
   const scope = getActiveMenuFocusScope();
   let activeEl = document.activeElement;
   if (activeEl && scope !== document && !scope.contains(activeEl)) {
@@ -1602,7 +1904,7 @@ function processMenuNavigationInput(input) {
 
   const isSelect = activeEl && activeEl.tagName === 'SELECT';
   const isRange = activeEl && activeEl.tagName === 'INPUT' && activeEl.type === 'range';
-  const isCoverFlowSlider = isRange && activeEl.classList.contains('cf-slider');
+  const isCoverFlowEl = activeEl && (activeEl.classList.contains('cf-stage-wrap') || activeEl.classList.contains('cf-slider'));
   const isCheckbox = activeEl && activeEl.tagName === 'INPUT' && activeEl.type === 'checkbox';
 
   if (rangeEditState.el && rangeEditState.el !== activeEl) {
@@ -1621,29 +1923,27 @@ function processMenuNavigationInput(input) {
     return false;
   }
 
+  if (input.start && typeof handleMenuStartAction === 'function') {
+    if (handleMenuStartAction()) {
+      return true;
+    }
+  }
+
+  // プルダウンは決定ボタンで選択肢モーダルを開き、上下左右は見た目通りに移動
   if (isSelect) {
-    if (input.left) {
-      if (activeEl.selectedIndex > 0) {
-        activeEl.selectedIndex--;
-        activeEl.dispatchEvent(new Event('change', { bubbles: true }));
-        SE.play('cursorMove');
-      }
+    if (input.up) { moveMenuFocus2D(0, -1); return true; }
+    if (input.down) { moveMenuFocus2D(0, 1); return true; }
+    if (input.left) { moveMenuFocus2D(-1, 0); return true; }
+    if (input.right) { moveMenuFocus2D(1, 0); return true; }
+    if (input.confirm) {
+      SE.play('select');
+      openSelectPickerModal(activeEl);
       return true;
     }
-    if (input.right) {
-      if (activeEl.selectedIndex < activeEl.options.length - 1) {
-        activeEl.selectedIndex++;
-        activeEl.dispatchEvent(new Event('change', { bubbles: true }));
-        SE.play('cursorMove');
-      }
-      return true;
-    }
-    if (input.up) { moveMenuFocus(-1); return true; }
-    if (input.down) { moveMenuFocus(1); return true; }
     return false;
   }
 
-  if (isCoverFlowSlider) {
+  if (isCoverFlowEl) {
     if (input.left && typeof activeEl._cfStep === 'function') {
       activeEl._cfStep(-1);
       return true;
@@ -1652,11 +1952,15 @@ function processMenuNavigationInput(input) {
       activeEl._cfStep(1);
       return true;
     }
-    if (input.up) { moveMenuFocus(-1); return true; }
-    if (input.down) { moveMenuFocus(1); return true; }
-    if (input.confirm && typeof activeEl._cfConfirm === 'function') {
-      SE.play('select');
-      activeEl._cfConfirm();
+    if (input.up) { moveMenuFocus2D(0, -1); return true; }
+    if (input.down) { moveMenuFocus2D(0, 1); return true; }
+    if (input.confirm) {
+      if (typeof activeEl._cfConfirm === 'function') {
+        SE.play('select');
+        activeEl._cfConfirm();
+      } else {
+        advanceFromCoverFlow(activeEl);
+      }
       return true;
     }
     return false;
@@ -1708,8 +2012,8 @@ function processMenuNavigationInput(input) {
       SE.play('cursorMove');
       return true;
     }
-    if (input.up) { moveMenuFocus(-1); return true; }
-    if (input.down) { moveMenuFocus(1); return true; }
+    if (input.up) { moveMenuFocus2D(0, -1); return true; }
+    if (input.down) { moveMenuFocus2D(0, 1); return true; }
     if (input.confirm) {
       rangeEditState.el = activeEl;
       rangeEditState.digitIndex = 0;
@@ -1720,17 +2024,25 @@ function processMenuNavigationInput(input) {
     return false;
   }
 
-  if (input.up || input.left) {
-    moveMenuFocus(-1);
+  if (input.up) {
+    moveMenuFocus2D(0, -1);
     return true;
   }
-  if (input.down || input.right) {
-    moveMenuFocus(1);
+  if (input.down) {
+    moveMenuFocus2D(0, 1);
+    return true;
+  }
+  if (input.left) {
+    moveMenuFocus2D(-1, 0);
+    return true;
+  }
+  if (input.right) {
+    moveMenuFocus2D(1, 0);
     return true;
   }
   if (input.confirm) {
-    if (!activeEl || activeEl === document.body) {
-      moveMenuFocus(1);
+    if (!activeEl || activeEl === document.body || !scope.contains(activeEl)) {
+      moveMenuFocus2D(0, 1);
       return true;
     }
     if (isCheckbox) {
@@ -1768,9 +2080,10 @@ function handleMenuKeyDown(e) {
   const isRight = (code === 'ArrowRight' || code === keyConfig.Right);
   const isConfirm = !e.repeat && (code === keyConfig.Swap || code === 'Enter');
   const isAltConfirm = !e.repeat && (code === keyConfig.GrabRight);
+  const isStart = !e.repeat && (code === keyConfig.Pause && keyConfig.Pause !== 'Escape');
   const isCancel = !e.repeat && (code === keyConfig.Skill || code === 'Escape');
 
-  if (!isUp && !isDown && !isLeft && !isRight && !isConfirm && !isAltConfirm && !isCancel) {
+  if (!isUp && !isDown && !isLeft && !isRight && !isConfirm && !isAltConfirm && !isStart && !isCancel) {
     return false;
   }
 
@@ -1781,31 +2094,100 @@ function handleMenuKeyDown(e) {
     right: isRight,
     confirm: isConfirm,
     altConfirm: isAltConfirm,
+    start: isStart,
     cancel: isCancel
   });
   if (handled) e.preventDefault();
   return handled;
 }
 
-// ゲームパッドによるメニュー操作 & 設定画面のボタン割り当て用グローバルループ
+// ==========================================
+// ゲームパッド統一ポーリング・誤複数押し完全防止・コンテキスト切替スナップショット
+// ==========================================
 let globalPadPrevState = {};
 let globalPadHold = { Up: 0, Down: 0, Left: 0, Right: 0 };
+let lastPadContextKey = '';
+let padInputLockUntil = 0;
+let padActionLastTime = {};
 const GLOBAL_PAD_DAS = 10;
 const GLOBAL_PAD_ARR = 2;
 
+function getPad0Object(pads) {
+  const slot0 = playerConfigs[0].padSlot;
+  return (slot0 >= 0 && pads[slot0]) ? pads[slot0] : pads.find(p => p && p.connected);
+}
+
+function readPadButtonsMap(pad) {
+  const pressed = {};
+  if (pad && pad.buttons) {
+    pad.buttons.forEach((b, i) => { pressed[i] = !!b.pressed; });
+  }
+  return pressed;
+}
+
+function getCurrentPadContextKey() {
+  if (document.getElementById('exit-confirm-modal')?.style.display === 'flex') return 'exit-confirm';
+  if (document.getElementById('select-picker-modal')?.style.display === 'flex') return 'select-picker';
+  if (document.getElementById('confirm-match-modal')?.style.display === 'flex') return 'confirm-modal';
+  if (document.getElementById('skill-select-modal')?.style.display === 'flex') return 'skill-modal';
+  if (document.getElementById('settings-overlay')?.style.display === 'block') return 'settings';
+  if (document.getElementById('result-overlay')?.style.display === 'flex') return 'result';
+  if (document.getElementById('countdown-overlay')?.style.display === 'flex') return 'countdown';
+  if (document.getElementById('room-waiting')?.style.display === 'flex') return 'room-waiting';
+  if (document.getElementById('battle-end-overlay')?.style.display === 'flex') return 'battle-end';
+  if (document.getElementById('share-prep-overlay')?.style.display === 'flex') return 'share-prep';
+  if (document.getElementById('story-overlay')?.style.display === 'flex') return 'story';
+  if (document.getElementById('game-area')?.style.display === 'flex') return 'game';
+  if (document.getElementById('local-menu')?.style.display === 'flex') return 'local-menu';
+
+  const subIds = ['main-menu-actions', 'solo-hub-menu', 'multi-hub-menu', 'story-prep-step', 'story-stage-step', 'single-menu', 'com-menu', 'online-menu', 'ranking-menu'];
+  for (const id of subIds) {
+    const el = document.getElementById(id);
+    if (el && window.getComputedStyle(el).display !== 'none') return 'menu:' + id;
+  }
+  return 'menu';
+}
+
+function syncPadSnapshotsAll(lockMs = 150) {
+  const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()) : [];
+  const pad0 = getPad0Object(pads);
+  const pressed0 = readPadButtonsMap(pad0);
+  globalPadPrevState = { ...pressed0 };
+  globalPadHold = { Up: 0, Down: 0, Left: 0, Right: 0 };
+  padInputLockUntil = Math.max(padInputLockUntil, performance.now() + lockMs);
+
+  if (typeof p1InputState !== 'undefined' && p1InputState) {
+    p1InputState.prevPadState = { ...pressed0 };
+    p1InputState.padState = { ...pressed0 };
+    p1InputState.padHoldFrames = { Up: 0, Down: 0, Left: 0, Right: 0 };
+  }
+  if (typeof localMenuPadPrev !== 'undefined' && Array.isArray(localMenuPadPrev)) {
+    for (let i = 0; i < 4; i++) {
+      const slot = playerConfigs[i]?.padSlot ?? i;
+      const pObj = (slot >= 0 && pads[slot]) ? pads[slot] : null;
+      localMenuPadPrev[i] = readPadButtonsMap(pObj);
+    }
+  }
+  lastPadContextKey = getCurrentPadContextKey();
+}
+
 setInterval(() => {
   const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()) : [];
+  const pad0 = getPad0Object(pads);
+  const pressed = readPadButtonsMap(pad0);
+  const ctxKey = getCurrentPadContextKey();
 
   const settingsPadStatus = document.getElementById('settings-pad-status');
   if (settingsPadStatus && document.getElementById('settings-overlay').style.display === 'block') {
     settingsPadStatus.innerText = getConnectedPadsSummaryText();
   }
   const localPadStatus = document.getElementById('local-pad-status');
-  const isLocalMenuOpen = document.getElementById('local-menu')?.style.display === 'flex';
+  const isLocalMenuOpen = (ctxKey === 'local-menu');
   if (localPadStatus && isLocalMenuOpen) {
     localPadStatus.innerText = getConnectedPadsSummaryText();
   }
 
+  // キーコンフィグ（ゲームパッド割り当て待機中）
   if (assigningAction && assignType === 'pad') {
     const targetSlot = playerConfigs[settingsPlayerIdx].padSlot;
     const scanOrder = [];
@@ -1815,40 +2197,68 @@ setInterval(() => {
     for (const p of scanOrder) {
       const pressedIdx = p.buttons.findIndex(b => b.pressed);
       if (pressedIdx !== -1) {
-        playerConfigs[settingsPlayerIdx].pad[assigningAction] = pressedIdx;
+        const doneAction = assigningAction;
+        pendingConfigFocus = { action: doneAction, type: 'pad' };
+        playerConfigs[settingsPlayerIdx].pad[doneAction] = pressedIdx;
         assigningAction = null;
         renderConfigUI();
         SE.play('select');
+        // 割り当てボタンを押したままの状態をそのままprevに焼き付けて誤決定を完全防止
+        syncPadSnapshotsAll(220);
         return;
       }
     }
+    globalPadPrevState = { ...pressed };
     return;
   }
 
-  const isGameAreaShown = document.getElementById('game-area')?.style.display === 'flex';
-  const isResultShown = document.getElementById('result-overlay')?.style.display === 'flex';
-  const isSettingsShown = document.getElementById('settings-overlay')?.style.display === 'block';
-  const isSkillModalShown = document.getElementById('skill-select-modal')?.style.display === 'flex';
-  const isConfirmModalShown = document.getElementById('confirm-match-modal')?.style.display === 'flex';
-  const isSharePrepShown = document.getElementById('share-prep-overlay')?.style.display === 'flex';
+  // 画面コンテキスト切替時は必ずスナップショット同期してそのフレームの発火を抑止
+  if (ctxKey !== lastPadContextKey) {
+    lastPadContextKey = ctxKey;
+    globalPadPrevState = { ...pressed };
+    globalPadHold = { Up: 0, Down: 0, Left: 0, Right: 0 };
+    padInputLockUntil = Math.max(padInputLockUntil, performance.now() + 140);
+    return;
+  }
 
-  if (!isGameAreaShown && !isSettingsShown && !isSkillModalShown && !isConfirmModalShown && !isSharePrepShown && isLocalMenuOpen) {
+  if (ctxKey === 'local-menu') {
     if (typeof pollLocalMenuGamepads === 'function') {
       pollLocalMenuGamepads(pads);
     }
+    globalPadPrevState = { ...pressed };
     return;
   }
 
-  const slot0 = playerConfigs[0].padSlot;
-  const pad = (slot0 >= 0 && pads[slot0]) ? pads[slot0] : pads.find(p => p && p.connected);
-  if (!pad) {
+  // ゲーム画面中（かつモーダル等なし）・対戦終了画面・シェア準備画面は各自のハンドラに委譲し、ここではprevのみ同期
+  if (ctxKey === 'game' || ctxKey === 'battle-end' || ctxKey === 'share-prep') {
     globalPadHold = { Up: 0, Down: 0, Left: 0, Right: 0 };
+    if (rangeEditState.el) closeRangeDigitEdit();
+    globalPadPrevState = { ...pressed };
     return;
   }
-  let pressed = {};
-  pad.buttons.forEach((b, i) => pressed[i] = b.pressed);
-  
-  const justPressed = (btnIdx) => btnIdx !== null && btnIdx !== undefined && pressed[btnIdx] && !globalPadPrevState[btnIdx];
+
+  if (!pad0) {
+    globalPadHold = { Up: 0, Down: 0, Left: 0, Right: 0 };
+    globalPadPrevState = {};
+    return;
+  }
+
+  const now = performance.now();
+  if (now < padInputLockUntil) {
+    globalPadPrevState = { ...pressed };
+    return;
+  }
+
+  const justPressed = (btnIdx, actionTag = '') => {
+    if (btnIdx === null || btnIdx === undefined) return false;
+    if (!pressed[btnIdx] || globalPadPrevState[btnIdx]) return false;
+    if (actionTag) {
+      const lastT = padActionLastTime[actionTag] || 0;
+      if (now - lastT < 150) return false;
+      padActionLastTime[actionTag] = now;
+    }
+    return true;
+  };
   const isDirRepeat = (dirName, btnIdx) => {
     if (btnIdx === null || btnIdx === undefined || !pressed[btnIdx]) {
       globalPadHold[dirName] = 0;
@@ -1858,53 +2268,33 @@ setInterval(() => {
     return f === 0 || (f >= GLOBAL_PAD_DAS && (f - GLOBAL_PAD_DAS) % GLOBAL_PAD_ARR === 0);
   };
 
-  const isBattleEndShown = document.getElementById('battle-end-overlay')?.style.display === 'flex';
-  const canMenuPadControl = (!isGameAreaShown || isResultShown || isSettingsShown || isSkillModalShown || isConfirmModalShown)
-    && !isBattleEndShown
-    && !isSharePrepShown
-    && (isResultShown || isSettingsShown || (typeof matchState !== 'undefined' && matchState !== 'playing'));
+  const canMenuPadControl = (ctxKey !== 'game') && (typeof matchState === 'undefined' || matchState !== 'playing' || ctxKey === 'result' || ctxKey === 'exit-confirm' || ctxKey === 'settings' || ctxKey === 'select-picker');
 
   if (canMenuPadControl) {
-    processMenuNavigationInput({
+    const cancelTrig = justPressed(padConfig.Skill, 'cancel');
+    const startTrig = justPressed(padConfig.Pause, 'start');
+    const confirmTrig = justPressed(padConfig.Swap, 'confirm');
+    const altConfirmTrig = justPressed(padConfig.GrabRight, 'altConfirm');
+
+    const didAction = processMenuNavigationInput({
       up: isDirRepeat('Up', padConfig.Up),
       down: isDirRepeat('Down', padConfig.Down),
       left: isDirRepeat('Left', padConfig.Left),
       right: isDirRepeat('Right', padConfig.Right),
-      confirm: justPressed(padConfig.Swap),
-      altConfirm: justPressed(padConfig.GrabRight),
-      cancel: justPressed(padConfig.Skill)
+      confirm: confirmTrig,
+      altConfirm: altConfirmTrig,
+      start: startTrig,
+      cancel: cancelTrig
     });
+
+    if (didAction && (confirmTrig || altConfirmTrig || startTrig || cancelTrig)) {
+      padInputLockUntil = Math.max(padInputLockUntil, performance.now() + 140);
+    }
   } else {
     globalPadHold = { Up: 0, Down: 0, Left: 0, Right: 0 };
     if (rangeEditState.el) closeRangeDigitEdit();
   }
-  globalPadPrevState = { ...pressed };
-}, 1000 / 30);
 
-function moveMenuFocus(dir) {
-  const scope = getActiveMenuFocusScope();
-  const focusables = Array.from(scope.querySelectorAll('button, select, input, [tabindex]:not([tabindex="-1"])'))
-    .filter(el => {
-      if (el.disabled) return false;
-      if (el.closest('#slider-digit-hud')) return false;
-      let style = window.getComputedStyle(el);
-      if (style.display === 'none' || style.visibility === 'hidden') return false;
-      let parent = el.parentElement;
-      while(parent) {
-        if (window.getComputedStyle(parent).display === 'none') return false;
-        parent = parent.parentElement;
-      }
-      const rect = el.getBoundingClientRect();
-      return rect.width > 0 && rect.height > 0;
-    });
-  if (focusables.length === 0) return;
-  let idx = focusables.indexOf(document.activeElement);
-  if (idx === -1) idx = dir < 0 ? focusables.length - 1 : 0;
-  else {
-    idx += dir;
-    if (idx < 0) idx = focusables.length - 1;
-    if (idx >= focusables.length) idx = 0;
-  }
-  focusables[idx].focus();
-  SE.play('cursorMove');
-}
+  globalPadPrevState = { ...pressed };
+  lastPadContextKey = getCurrentPadContextKey();
+}, 1000 / 30);

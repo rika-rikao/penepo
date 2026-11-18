@@ -1,5 +1,5 @@
 // ==========================================
-// 対戦・ターゲット・ローカルスマブラ風UI・確認モーダル・シェア対戦統合管理システム
+// 対戦・ターゲット・ローカルスマブラ風UI・確認モーダル・横複数人立ち絵HUD・シェア対戦統合管理システム
 // ==========================================
 let myEngine, myRenderer;
 let opponents = [];
@@ -19,6 +19,7 @@ let isPracticeMode = false;
 let currentSurvivalWins = 0;
 let endSequenceTriggered = false;
 let maxChainInMatch = 0;
+let isExitConfirmOpen = false;
 
 let rematchReady = {};
 let boardReady = {};
@@ -51,6 +52,62 @@ function onPlayerSkillSelectChange(val) {
 
 function syncPlayerSkillSelects() {
   if (typeof refreshAllSkillCarousels === 'function') refreshAllSkillCarousels();
+}
+
+function focusPrimaryMenuElement(containerId) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  const focusables = Array.from(container.querySelectorAll('button, select, input, .cf-stage-wrap, [tabindex]:not([tabindex="-1"])'))
+    .filter(el => {
+      if (el.disabled || el.tabIndex < 0 || el.classList.contains('menu-back-top-btn')) return false;
+      if (el.classList.contains('cf-nav-btn') || el.classList.contains('cf-slider')) return false;
+      const st = window.getComputedStyle(el);
+      if (st.display === 'none' || st.visibility === 'hidden') return false;
+      let p = el.parentElement;
+      while (p) {
+        if (window.getComputedStyle(p).display === 'none') return false;
+        p = p.parentElement;
+      }
+      return true;
+    });
+  if (focusables.length > 0) {
+    requestAnimationFrame(() => focusables[0].focus());
+  }
+}
+
+// ==========================================
+// 退出確認モーダル
+// ==========================================
+function openExitConfirmModal() {
+  const modal = document.getElementById('exit-confirm-modal');
+  if (!modal) {
+    performExitGame(true);
+    return;
+  }
+  isExitConfirmOpen = true;
+  if (myEngine) myEngine.isRisingManualBtn = myEngine.isRisingManualKey = myEngine.isRisingManualPad = false;
+  opponents.forEach(opp => {
+    if (opp.engine) opp.engine.isRisingManualBtn = opp.engine.isRisingManualKey = opp.engine.isRisingManualPad = false;
+  });
+  modal.style.display = 'flex';
+  SE.play('select');
+  if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(200);
+  const cancelBtn = document.getElementById('exit-confirm-cancel-btn');
+  if (cancelBtn) requestAnimationFrame(() => cancelBtn.focus());
+}
+
+function closeExitConfirmModal(silent = false) {
+  const modal = document.getElementById('exit-confirm-modal');
+  if (modal) modal.style.display = 'none';
+  isExitConfirmOpen = false;
+  if (!silent) SE.play('cancel');
+  if (document.activeElement) document.activeElement.blur();
+  if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(180);
+}
+
+function confirmExitFromModal() {
+  closeExitConfirmModal(true);
+  performExitGame(false);
 }
 
 // ==========================================
@@ -89,8 +146,9 @@ function openSkillSelectModal() {
   }
   if (modal) {
     modal.style.display = 'flex';
-    const slider = modal.querySelector('.cf-slider');
-    if (slider) slider.focus();
+    if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(160);
+    const stageWrap = modal.querySelector('.cf-stage-wrap');
+    if (stageWrap) stageWrap.focus();
   }
 }
 
@@ -99,6 +157,7 @@ function closeSkillSelectModal(silent = false) {
   if (modal) modal.style.display = 'none';
   if (!silent && activeSkillConfirmFlow) SE.play('cancel');
   activeSkillConfirmFlow = null;
+  if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(160);
 }
 
 function confirmSkillSelectModal() {
@@ -148,6 +207,7 @@ function openConfirmMatchModal() {
   } else {
     modal.style.display = 'flex';
   }
+  if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(160);
 }
 
 function backFromConfirmModal() {
@@ -163,6 +223,7 @@ function acceptConfirmModal() {
   const cb = activeSkillConfirmFlow && activeSkillConfirmFlow.onConfirm;
   activeSkillConfirmFlow = null;
   SE.play('select');
+  if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(180);
   if (typeof cb === 'function') cb();
 }
 
@@ -244,19 +305,99 @@ function syncHandicapFromSlider(val) {
 }
 
 // ==========================================
+// START(ポーズ／退出相当)ボタンによるメニュー一括決定
+// ==========================================
+function handleMenuStartAction() {
+  const isVis = (id) => {
+    const el = document.getElementById(id);
+    return !!(el && window.getComputedStyle(el).display !== 'none');
+  };
+
+  if (isVis('exit-confirm-modal')) {
+    closeExitConfirmModal();
+    return true;
+  }
+  if (isVis('confirm-match-modal')) {
+    acceptConfirmModal();
+    return true;
+  }
+  if (isVis('skill-select-modal')) {
+    confirmSkillSelectModal();
+    return true;
+  }
+  if (isVis('settings-overlay')) {
+    closeSettings();
+    return true;
+  }
+  if (isVis('result-overlay')) {
+    requestRematch();
+    return true;
+  }
+  if (isVis('countdown-overlay')) {
+    const startBtn = document.getElementById('countdown-start-btn');
+    if (startBtn && window.getComputedStyle(startBtn).display !== 'none') {
+      forceStartRoom();
+      return true;
+    }
+    return false;
+  }
+  if (isVis('room-waiting')) {
+    const forceBtn = document.getElementById('force-start-btn');
+    if (forceBtn && window.getComputedStyle(forceBtn).display !== 'none') {
+      startCountdown();
+      return true;
+    }
+    return false;
+  }
+  if (isVis('story-menu')) {
+    if (isVis('story-stage-step')) {
+      StoryManager.startSelectedStage();
+      return true;
+    }
+    if (isVis('story-prep-step')) {
+      StoryManager.confirmPrepAndNext();
+      return true;
+    }
+  }
+  if (isVis('single-menu')) {
+    beginSingleStartFlow();
+    return true;
+  }
+  if (isVis('com-menu')) {
+    beginComStartFlow();
+    return true;
+  }
+  if (isVis('online-menu')) {
+    const code = document.getElementById('peer-room-id')?.value.trim();
+    if (code) beginOnlineJoinFlow();
+    else beginOnlineCreateFlow();
+    return true;
+  }
+  if (isVis('local-menu')) {
+    forceConfirmAllAndStartLocal();
+    return true;
+  }
+
+  // メイン/ハブメニュー時はフォーカスされているボタンを押下
+  const activeEl = document.activeElement;
+  if (activeEl && activeEl.classList.contains('menu-card-btn') && typeof activeEl.click === 'function') {
+    activeEl.click();
+    return true;
+  }
+  return false;
+}
+
+// ==========================================
 // 縦UIハブ大型立ち絵（ランダム/固定） & Switch風メニュー2ペイン制御
 // ==========================================
 function refreshMenuHeaderAndPreview(rerollHubChar = false) {
-  // 横画面Switch風：使用中キャラ表示
   const charId = resolvePlayableCharId(selectedCharId);
-  const ch = getCharacterById(charId);
   const customUrl = (charId === 'custom' && CustomAssets.chara) ? CustomAssets.chara.dataUrl : null;
   const heroImg = document.getElementById('switch-hero-img');
   if (heroImg && typeof applyCharacterImageToElement === 'function') {
     applyCharacterImageToElement(heroImg, charId, 'normal', { customUrl });
   }
 
-  // 縦UIハブ：ランダム（または設定で固定された）キャラを大きく表示
   const hubCharId = typeof pickHubPortraitCharId === 'function' ? pickHubPortraitCharId(rerollHubChar) : charId;
   const hubCh = getCharacterById(hubCharId);
   const hubCustomUrl = (hubCharId === 'custom' && CustomAssets.chara) ? CustomAssets.chara.dataUrl : null;
@@ -283,29 +424,30 @@ function setSwitchHeroPreview(title, desc, badge = 'PUZZLE ACTION') {
 function refreshMenuLayoutState(rerollHubChar = false) {
   const menuOverlay = document.getElementById('menu-overlay');
   if (!menuOverlay) return;
-  const isLandscape = window.innerWidth > window.innerHeight && window.innerWidth >= 700;
+  const isPortrait = window.innerHeight >= window.innerWidth;
+  const isLandscape = !isPortrait;
+  const isSwitchLandscape = isLandscape && window.innerWidth >= 560;
   const isVis = (id) => {
     const el = document.getElementById(id);
     return el && window.getComputedStyle(el).display !== 'none';
   };
   const isWaiting = isVis('room-waiting');
-  // ハブ画面（メイン / ひとりで / みんなで）のみ立ち絵表示。深い階層に入ったら完全排除
   const isHub = !isWaiting && (
     (isVis('main-menu') && isVis('main-menu-actions')) ||
     isVis('solo-hub-menu') ||
     isVis('multi-hub-menu')
   );
 
-  menuOverlay.classList.toggle('switch-hub-active', isLandscape && isHub);
-  menuOverlay.classList.toggle('vertical-hub-active', !isLandscape && isHub);
+  menuOverlay.classList.toggle('switch-hub-active', isSwitchLandscape && isHub);
+  menuOverlay.classList.toggle('vertical-hub-active', isPortrait && isHub);
 
   const verticalHubHero = document.getElementById('vertical-hub-hero');
   if (verticalHubHero) {
-    verticalHubHero.style.display = (!isLandscape && isHub) ? 'flex' : 'none';
+    verticalHubHero.style.display = (isPortrait && isHub) ? 'flex' : 'none';
   }
   const heroPanel = document.getElementById('switch-hero-panel');
   if (heroPanel) {
-    heroPanel.style.display = (isLandscape && isHub) ? 'flex' : 'none';
+    heroPanel.style.display = (isSwitchLandscape && isHub) ? 'flex' : 'none';
   }
   refreshMenuHeaderAndPreview(rerollHubChar);
 }
@@ -331,8 +473,10 @@ function bindMenuHoverCursorSE() {
     const isSettingsVisible = document.getElementById('settings-overlay')?.style.display === 'block';
     const isSkillModalVisible = document.getElementById('skill-select-modal')?.style.display === 'flex';
     const isConfirmModalVisible = document.getElementById('confirm-match-modal')?.style.display === 'flex';
+    const isSelectPickerVisible = document.getElementById('select-picker-modal')?.style.display === 'flex';
+    const isExitConfirmVisible = document.getElementById('exit-confirm-modal')?.style.display === 'flex';
     const isSharePrepVisible = document.getElementById('share-prep-overlay')?.style.display === 'flex';
-    const isMenuHoverContext = !isGameVisible || isResultVisible || isSettingsVisible || isSkillModalVisible || isConfirmModalVisible || isSharePrepVisible;
+    const isMenuHoverContext = !isGameVisible || isResultVisible || isSettingsVisible || isSkillModalVisible || isConfirmModalVisible || isSelectPickerVisible || isExitConfirmVisible || isSharePrepVisible;
     if (!isMenuHoverContext) {
       lastHoveredEl = null;
       return;
@@ -352,7 +496,7 @@ function bindMenuHoverCursorSE() {
 }
 
 // ==========================================
-// ローカル対戦：スマブラ風 上半分タイル＆下半分4等分立ち絵・スキル・OK帯
+// ローカル対戦：スマブラ風 上半分タイル＆下半分4等分立ち絵・スキル・OK帯（上部設定パッド対応）
 // ==========================================
 let localSlotsConfig = [
   { isCom: false, comLevel: 3, charId: 'main00', skillId: 'erase_color',       phase: 'char', cursorStage: 'char', charCursorIdx: 0, skillCursorIdx: 0 },
@@ -361,6 +505,7 @@ let localSlotsConfig = [
   { isCom: true,  comLevel: 3, charId: 'sub03',  skillId: 'corrupt_enemy_row', phase: 'ready', cursorStage: 'char', charCursorIdx: 3, skillCursorIdx: 3 }
 ];
 let activeLocalTouchActor = 0;
+let localHeaderFocusIndex = -1;
 let localAutoStartTimer = null;
 let localMenuPadPrev = [{}, {}, {}, {}];
 let localMenuPadHold = [
@@ -378,6 +523,70 @@ function isLocalSkillRuleOn() {
   return !!document.getElementById('local-skill-toggle')?.checked;
 }
 
+function getLocalHeaderControls() {
+  const count = getLocalPlayerCount();
+  const list = [
+    { id: 'share', type: 'button', elId: 'local-share-btn' },
+    { id: 'count', type: 'select', elId: 'local-player-count' },
+    { id: 'skill', type: 'checkbox', elId: 'local-skill-label', inputId: 'local-skill-toggle' }
+  ];
+  for (let i = 1; i < count; i++) {
+    list.push({ id: `slot-type-${i}`, type: 'slotType', slotIdx: i });
+    if (localSlotsConfig[i].isCom) {
+      list.push({ id: `slot-lv-minus-${i}`, type: 'slotLv', slotIdx: i, delta: -5 });
+      list.push({ id: `slot-lv-plus-${i}`, type: 'slotLv', slotIdx: i, delta: 5 });
+    }
+  }
+  list.push({ id: 'back', type: 'button', elId: 'local-back-btn' });
+  return list;
+}
+
+function moveLocalHeaderFocus(delta) {
+  const list = getLocalHeaderControls();
+  if (list.length === 0) { localHeaderFocusIndex = -1; return; }
+  if (localHeaderFocusIndex < 0) {
+    localHeaderFocusIndex = 1;
+  } else {
+    localHeaderFocusIndex = (localHeaderFocusIndex + delta + list.length) % list.length;
+  }
+  SE.play('cursorMove');
+  renderLocalMenuUI();
+}
+
+function activateLocalHeaderControl() {
+  const list = getLocalHeaderControls();
+  if (localHeaderFocusIndex < 0 || localHeaderFocusIndex >= list.length) return;
+  const item = list[localHeaderFocusIndex];
+  if (item.type === 'select') {
+    const sel = document.getElementById(item.elId);
+    if (sel && typeof openSelectPickerModal === 'function') {
+      SE.play('select');
+      openSelectPickerModal(sel, '対戦人数を選択');
+    }
+  } else if (item.type === 'checkbox') {
+    const cb = document.getElementById(item.inputId);
+    if (cb) {
+      cb.checked = !cb.checked;
+      onLocalSkillRuleToggle();
+    }
+  } else if (item.type === 'button') {
+    const btn = document.getElementById(item.elId);
+    if (btn) btn.click();
+  } else if (item.type === 'slotType') {
+    toggleLocalSlotCom(item.slotIdx);
+  } else if (item.type === 'slotLv') {
+    adjustLocalComLevel(item.slotIdx, item.delta);
+  }
+}
+
+function exitLocalHeaderFocus(playSe = true) {
+  if (localHeaderFocusIndex >= 0) {
+    localHeaderFocusIndex = -1;
+    if (playSe) SE.play('cursorMove');
+    renderLocalMenuUI();
+  }
+}
+
 function cancelLocalAutoStart() {
   if (localAutoStartTimer) {
     clearTimeout(localAutoStartTimer);
@@ -387,6 +596,7 @@ function cancelLocalAutoStart() {
 
 function resetLocalSelectionStates() {
   cancelLocalAutoStart();
+  localHeaderFocusIndex = -1;
   const cnt = getLocalPlayerCount();
   for (let i = 0; i < 4; i++) {
     const slot = localSlotsConfig[i];
@@ -406,6 +616,22 @@ function resetLocalSelectionStates() {
   }
 }
 
+function forceConfirmAllAndStartLocal() {
+  const count = getLocalPlayerCount();
+  for (let i = 0; i < count; i++) {
+    const sl = localSlotsConfig[i];
+    const cid = CHAR_PICKER_ORDER[sl.charCursorIdx] || sl.charId;
+    sl.charId = (cid === 'custom' && !CustomAssets.chara) ? 'main00' : cid;
+    if (isLocalSkillRuleOn()) {
+      sl.skillId = SKILL_IDS[sl.skillCursorIdx] || sl.skillId;
+    }
+    sl.phase = 'ready';
+  }
+  SE.play('select');
+  renderLocalMenuUI();
+  startLocalGame();
+}
+
 function onLocalCountChange() {
   cancelLocalAutoStart();
   SE.play('select');
@@ -414,6 +640,8 @@ function onLocalCountChange() {
     if (localSlotsConfig[i].isCom) localSlotsConfig[i].phase = 'ready';
   }
   if (activeLocalTouchActor >= count) activeLocalTouchActor = 0;
+  const list = getLocalHeaderControls();
+  if (localHeaderFocusIndex >= list.length) localHeaderFocusIndex = Math.max(0, list.length - 1);
   renderLocalMenuUI();
 }
 
@@ -454,6 +682,8 @@ function toggleLocalSlotCom(slotIdx) {
     activeLocalTouchActor = slotIdx;
   }
   SE.play('select');
+  const list = getLocalHeaderControls();
+  if (localHeaderFocusIndex >= list.length) localHeaderFocusIndex = Math.max(0, list.length - 1);
   renderLocalMenuUI();
   checkLocalAllReady();
 }
@@ -555,6 +785,14 @@ function moveLocalTileCursor(slotIdx, dx, dy) {
     let r = Math.floor(idx / cols);
     let c = idx % cols;
     const rows = Math.ceil(total / cols);
+
+    if (slotIdx === 0 && dy < 0 && r === 0) {
+      localHeaderFocusIndex = 1;
+      SE.play('cursorMove');
+      renderLocalMenuUI();
+      return;
+    }
+
     c = (c + dx + cols) % cols;
     r = (r + dy + rows) % rows;
     let nextIdx = r * cols + c;
@@ -573,6 +811,14 @@ function moveLocalTileCursor(slotIdx, dx, dy) {
     let r = Math.floor(idx / cols);
     let c = idx % cols;
     const rows = Math.ceil(total / cols);
+
+    if (slotIdx === 0 && dy < 0 && r === 0) {
+      localHeaderFocusIndex = 1;
+      SE.play('cursorMove');
+      renderLocalMenuUI();
+      return;
+    }
+
     c = (c + dx + cols) % cols;
     r = (r + dy + rows) % rows;
     let nextIdx = r * cols + c;
@@ -609,18 +855,27 @@ function checkLocalAllReady() {
 
 function pollLocalMenuGamepads(pads) {
   const count = getLocalPlayerCount();
+  const now = performance.now();
+  const isLocked = (typeof padInputLockUntil !== 'undefined' && now < padInputLockUntil);
+
   for (let slotIdx = 0; slotIdx < count; slotIdx++) {
     const slot = localSlotsConfig[slotIdx];
-    if (slot.isCom) continue;
     const pSlot = playerConfigs[slotIdx].padSlot;
     const padObj = (pSlot >= 0 && pads[pSlot]) ? pads[pSlot] : null;
     if (!padObj) {
       localMenuPadHold[slotIdx] = { Up: 0, Down: 0, Left: 0, Right: 0 };
+      localMenuPadPrev[slotIdx] = {};
       continue;
     }
-    const prev = localMenuPadPrev[slotIdx];
+    const prev = localMenuPadPrev[slotIdx] || {};
     const cur = {};
-    padObj.buttons.forEach((b, i) => cur[i] = b.pressed);
+    padObj.buttons.forEach((b, i) => { cur[i] = !!b.pressed; });
+
+    if (slot.isCom || isLocked) {
+      localMenuPadPrev[slotIdx] = cur;
+      continue;
+    }
+
     const cfg = playerConfigs[slotIdx].pad;
     const just = (btnIdx) => btnIdx !== null && btnIdx !== undefined && cur[btnIdx] && !prev[btnIdx];
     const isRep = (dir, btnIdx) => {
@@ -631,6 +886,37 @@ function pollLocalMenuGamepads(pads) {
       const f = localMenuPadHold[slotIdx][dir]++;
       return f === 0 || (f >= 10 && (f - 10) % 3 === 0);
     };
+
+    // 1P用 START(Pause)で一括開始
+    if (slotIdx === 0 && just(cfg.Pause)) {
+      localMenuPadPrev[slotIdx] = cur;
+      if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(200);
+      forceConfirmAllAndStartLocal();
+      return;
+    }
+
+    // 1P用 上部ルール／COM設定フォーカス中の操作
+    if (slotIdx === 0 && localHeaderFocusIndex >= 0) {
+      if (isRep('Left', cfg.Left) || just(cfg.TargetLeft)) {
+        moveLocalHeaderFocus(-1);
+      } else if (isRep('Right', cfg.Right) || just(cfg.TargetRight)) {
+        moveLocalHeaderFocus(1);
+      } else if (isRep('Down', cfg.Down) || just(cfg.Skill) || just(cfg.GrabLeft)) {
+        exitLocalHeaderFocus(true);
+      } else if (just(cfg.Swap) || just(cfg.GrabRight)) {
+        activateLocalHeaderControl();
+      }
+      localMenuPadPrev[slotIdx] = cur;
+      continue;
+    }
+
+    if (slotIdx === 0 && (just(cfg.TargetLeft) || just(cfg.TargetRight))) {
+      localHeaderFocusIndex = 1;
+      SE.play('cursorMove');
+      renderLocalMenuUI();
+      localMenuPadPrev[slotIdx] = cur;
+      continue;
+    }
 
     if (just(cfg.Skill) || just(cfg.GrabLeft)) {
       if (slot.phase === 'char' && slotIdx === 0) {
@@ -662,6 +948,16 @@ function renderLocalMenuUI() {
   if (!charGrid || !skillGrid || !dockEl) return;
 
   if (activeLocalTouchActor >= count) activeLocalTouchActor = 0;
+
+  const headerControls = getLocalHeaderControls();
+  const focusedHeaderItem = (localHeaderFocusIndex >= 0 && localHeaderFocusIndex < headerControls.length)
+    ? headerControls[localHeaderFocusIndex]
+    : null;
+
+  ['local-share-btn', 'local-player-count', 'local-skill-label', 'local-back-btn'].forEach(elId => {
+    const el = document.getElementById(elId);
+    if (el) el.classList.toggle('local-gp-focus', !!(focusedHeaderItem && focusedHeaderItem.elId === elId));
+  });
 
   if (actorBar) {
     actorBar.innerHTML = '';
@@ -713,7 +1009,7 @@ function renderLocalMenuUI() {
     badges.className = 'local-cursor-badges';
     for (let i = 0; i < count; i++) {
       const sl = localSlotsConfig[i];
-      if (!sl.isCom && sl.phase === 'char' && sl.charCursorIdx === tIdx) {
+      if (!sl.isCom && sl.phase === 'char' && sl.charCursorIdx === tIdx && !(i === 0 && localHeaderFocusIndex >= 0)) {
         tile.classList.add(`has-cursor-${i}`);
         const chip = document.createElement('span');
         chip.className = `local-cursor-chip p${i}`;
@@ -724,6 +1020,7 @@ function renderLocalMenuUI() {
 
     tile.append(badges, imgWrap, lbl);
     tile.onclick = () => {
+      localHeaderFocusIndex = -1;
       const targetSlot = activeLocalTouchActor;
       if (localSlotsConfig[targetSlot].phase === 'ready') cancelLocalAutoStart();
       confirmLocalCharForSlot(targetSlot, tIdx);
@@ -752,7 +1049,7 @@ function renderLocalMenuUI() {
     if (skillOn) {
       for (let i = 0; i < count; i++) {
         const sl = localSlotsConfig[i];
-        if (!sl.isCom && sl.phase === 'skill' && sl.skillCursorIdx === tIdx) {
+        if (!sl.isCom && sl.phase === 'skill' && sl.skillCursorIdx === tIdx && !(i === 0 && localHeaderFocusIndex >= 0)) {
           tile.classList.add(`has-cursor-${i}`);
           const chip = document.createElement('span');
           chip.className = `local-cursor-chip p${i}`;
@@ -765,6 +1062,7 @@ function renderLocalMenuUI() {
     tile.append(badges, icon, lbl);
     tile.onclick = () => {
       if (!skillOn) return;
+      localHeaderFocusIndex = -1;
       const targetSlot = activeLocalTouchActor;
       confirmLocalSkillForSlot(targetSlot, tIdx);
     };
@@ -793,6 +1091,7 @@ function renderLocalMenuUI() {
     slotEl.className = `local-dock-slot p${i}` + (activeLocalTouchActor === i ? ' is-active-touch' : '');
     slotEl.onclick = (e) => {
       if (e.target.closest('button')) return;
+      localHeaderFocusIndex = -1;
       activeLocalTouchActor = i;
       if (slot.phase === 'ready' && !slot.isCom) {
         cancelLocalStepForSlot(i);
@@ -812,7 +1111,7 @@ function renderLocalMenuUI() {
     if (i > 0) {
       const toggleBtn = document.createElement('button');
       toggleBtn.type = 'button';
-      toggleBtn.className = 'local-slot-type-btn';
+      toggleBtn.className = 'local-slot-type-btn' + (focusedHeaderItem && focusedHeaderItem.id === `slot-type-${i}` ? ' local-gp-focus' : '');
       toggleBtn.innerText = slot.isCom ? 'COM⇄人' : '人⇄COM';
       toggleBtn.onclick = (ev) => { ev.stopPropagation(); toggleLocalSlotCom(i); };
       topRow.appendChild(toggleBtn);
@@ -823,12 +1122,16 @@ function renderLocalMenuUI() {
       const lvRow = document.createElement('div');
       lvRow.className = 'local-slot-com-lv';
       const minus = document.createElement('button');
-      minus.type = 'button'; minus.className = 'local-slot-lv-btn'; minus.innerText = '-';
+      minus.type = 'button';
+      minus.className = 'local-slot-lv-btn' + (focusedHeaderItem && focusedHeaderItem.id === `slot-lv-minus-${i}` ? ' local-gp-focus' : '');
+      minus.innerText = '-';
       minus.onclick = (ev) => { ev.stopPropagation(); adjustLocalComLevel(i, -5); };
       const lvTxt = document.createElement('span');
       lvTxt.innerText = `Lv.${slot.comLevel}`;
       const plus = document.createElement('button');
-      plus.type = 'button'; plus.className = 'local-slot-lv-btn'; plus.innerText = '+';
+      plus.type = 'button';
+      plus.className = 'local-slot-lv-btn' + (focusedHeaderItem && focusedHeaderItem.id === `slot-lv-plus-${i}` ? ' local-gp-focus' : '');
+      plus.innerText = '+';
       plus.onclick = (ev) => { ev.stopPropagation(); adjustLocalComLevel(i, 5); };
       lvRow.append(minus, lvTxt, plus);
       slotEl.appendChild(lvRow);
@@ -1126,6 +1429,7 @@ function showSoloHubMenu() {
   document.getElementById('solo-hub-menu').style.display = 'flex';
   setSwitchHeroPreview('ひとりで', 'ストーリー・COM対戦・各種練習モードを楽しめます。', 'SOLO PLAY');
   refreshMenuLayoutState(true);
+  focusPrimaryMenuElement('solo-hub-menu');
 }
 function showMultiHubMenu() {
   SE.play('select');
@@ -1133,11 +1437,13 @@ function showMultiHubMenu() {
   document.getElementById('multi-hub-menu').style.display = 'flex';
   setSwitchHeroPreview('みんなで', '1台で最大4人対戦、またはP2Pオンライン対戦を選べます。', 'MULTI PLAY');
   refreshMenuLayoutState(true);
+  focusPrimaryMenuElement('multi-hub-menu');
 }
 function backToMainMenu(playSe = true) {
   if (playSe) SE.play('cancel');
   cancelLocalAutoStart();
   if (typeof closeRangeDigitEdit === 'function') closeRangeDigitEdit();
+  if (typeof closeSelectPickerModal === 'function') closeSelectPickerModal(true);
   closeSharePrepMenu(true);
   closeSkillSelectModal(true);
   const cModal = document.getElementById('confirm-match-modal');
@@ -1148,25 +1454,38 @@ function backToMainMenu(playSe = true) {
   document.getElementById('main-menu-actions').style.display = 'flex';
   setSwitchHeroPreview('ぺねぽ', '連鎖とスキルで相手にお邪魔を送り込む対戦パズル！', 'MAIN MENU');
   refreshMenuLayoutState(true);
+  focusPrimaryMenuElement('main-menu-actions');
 }
 function backToSoloHubMenu(playSe = true) {
   if (playSe) SE.play('cancel');
   if (typeof closeRangeDigitEdit === 'function') closeRangeDigitEdit();
+  if (typeof closeSelectPickerModal === 'function') closeSelectPickerModal(true);
   hideAllMenuSubViews();
   document.getElementById('solo-hub-menu').style.display = 'flex';
   refreshMenuLayoutState(true);
+  focusPrimaryMenuElement('solo-hub-menu');
 }
 function backToMultiHubMenu(playSe = true) {
   if (playSe) SE.play('cancel');
   cancelLocalAutoStart();
   if (typeof closeRangeDigitEdit === 'function') closeRangeDigitEdit();
+  if (typeof closeSelectPickerModal === 'function') closeSelectPickerModal(true);
   closeSharePrepMenu(true);
   hideAllMenuSubViews();
   document.getElementById('multi-hub-menu').style.display = 'flex';
   refreshMenuLayoutState(true);
+  focusPrimaryMenuElement('multi-hub-menu');
 }
 
 function handleMenuCancelAction() {
+  if (document.getElementById('exit-confirm-modal')?.style.display === 'flex') {
+    closeExitConfirmModal();
+    return true;
+  }
+  if (document.getElementById('select-picker-modal')?.style.display === 'flex') {
+    if (typeof closeSelectPickerModal === 'function') closeSelectPickerModal();
+    return true;
+  }
   if (document.getElementById('confirm-match-modal')?.style.display === 'flex') {
     backFromConfirmModal();
     return true;
@@ -1187,7 +1506,15 @@ function handleMenuCancelAction() {
     const el = document.getElementById(id);
     return el && window.getComputedStyle(el).display !== 'none';
   };
-  if (isVisible('story-menu') || isVisible('single-menu') || isVisible('com-menu')) {
+  if (isVisible('story-menu')) {
+    if (isVisible('story-stage-step')) {
+      StoryManager.backToPrepStep();
+      return true;
+    }
+    backToSoloHubMenu(true);
+    return true;
+  }
+  if (isVisible('single-menu') || isVisible('com-menu')) {
     backToSoloHubMenu(true);
     return true;
   }
@@ -1229,6 +1556,7 @@ function showSingleMenu() {
   renderCharPicker('single-char-picker', { storyOnly: false });
   if (typeof enhanceAllRangeSliders === 'function') enhanceAllRangeSliders();
   refreshMenuLayoutState();
+  focusPrimaryMenuElement('single-menu');
 }
 
 function showComMenu() {
@@ -1240,6 +1568,7 @@ function showComMenu() {
   renderCharPicker('com-char-picker', { storyOnly: false });
   if (typeof enhanceAllRangeSliders === 'function') enhanceAllRangeSliders();
   refreshMenuLayoutState();
+  focusPrimaryMenuElement('com-menu');
 }
 
 function showLocalMenu() {
@@ -1249,6 +1578,8 @@ function showLocalMenu() {
   resetLocalSelectionStates();
   renderLocalMenuUI();
   refreshMenuLayoutState();
+  if (document.activeElement) document.activeElement.blur();
+  if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(160);
 }
 
 function showOnlineMenu(silent = false) {
@@ -1259,6 +1590,7 @@ function showOnlineMenu(silent = false) {
   renderCharPicker('online-char-picker', { storyOnly: false });
   if (typeof enhanceAllRangeSliders === 'function') enhanceAllRangeSliders();
   refreshMenuLayoutState();
+  focusPrimaryMenuElement('online-menu');
 }
 
 function moveRankingCarousel(delta) {
@@ -1322,6 +1654,7 @@ function showRankingMenu(silent = false) {
       return `<div><span style="display:inline-block; width:25px; color:#ff007f;">${i+1}.</span> ${scoreText} <span style="font-size:0.75rem; color:#aaa;">(HD:${d.handicap})</span></div>`;
     }).join('');
   }
+  if (!silent) focusPrimaryMenuElement('ranking-menu');
 }
 
 function updateSingleMenu() {
@@ -1388,8 +1721,11 @@ function cycleTarget(dir = 1) {
 
 function updateTargetUI() {
   opponents.forEach((opp, idx) => {
+    const isTargeted = idx === myTargetIndex && !opp.engine.gameOver;
     const el = document.getElementById(`rival-wrapper-${idx}`);
-    if (el) el.classList.toggle('targeted', idx === myTargetIndex && !opp.engine.gameOver);
+    if (el) el.classList.toggle('targeted', isTargeted);
+    const pCard = document.getElementById(`inline-portrait-p${idx + 1}`);
+    if (pCard) pCard.classList.toggle('targeted', isTargeted);
   });
 }
 
@@ -1588,6 +1924,7 @@ function buildBattleEndPortraitDom(wrapEl, theme, isWin) {
 }
 
 function showBattleEndOverlay(options) {
+  closeExitConfirmModal(true);
   const overlay = document.getElementById('battle-end-overlay');
   const singleView = document.getElementById('battle-end-single-view');
   const shareView = document.getElementById('battle-end-share-view');
@@ -1627,6 +1964,7 @@ function showBattleEndOverlay(options) {
     if (typeof VOICE !== 'undefined') VOICE.play(options.isWin ? 'win' : 'lose', options.theme, options.senderId || null);
   }
   overlay.style.display = 'flex';
+  if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(250);
 }
 
 function hideBattleEndOverlay() {
@@ -1634,6 +1972,7 @@ function hideBattleEndOverlay() {
   battleEndState.onContinue = null;
   const overlay = document.getElementById('battle-end-overlay');
   if (overlay) overlay.style.display = 'none';
+  if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(200);
 }
 
 function tryDismissBattleEndOverlay() {
@@ -1649,6 +1988,7 @@ function tryDismissBattleEndOverlay() {
 function showResultModal(titleMsg) {
   stopBgm();
   hideBattleEndOverlay();
+  closeExitConfirmModal(true);
   document.getElementById('result-title').innerText = titleMsg;
   document.getElementById('result-status').innerText = '';
   const btn = document.getElementById('result-rematch-btn');
@@ -1658,11 +1998,12 @@ function showResultModal(titleMsg) {
   document.getElementById('result-overlay').style.display = 'flex';
   if (document.activeElement) document.activeElement.blur();
   btn.focus();
+  if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(220);
 }
 
 function requestRematch() {
   SE.play('select');
-  if (hostDisconnected) { exitGame(true); return; }
+  if (hostDisconnected) { performExitGame(true); return; }
   if (currentMode === 'story') startGame('story', currentComLevel, 2, currentSkillEnabled);
   else if (currentMode === 'single_survival') startSingleMode();
   else if (currentMode === 'single' || currentMode.startsWith('single_') || currentMode === 'com' || currentMode === 'local' || currentMode === 'share') {
@@ -1822,7 +2163,7 @@ function checkMatchEnd() {
 
   if (isMatchOver && aliveCount <= 1) {
     matchState = 'gameover';
-    if (hostDisconnected) setTimeout(() => { showToast("ホストが退出済みのため解散します。"); exitGame(true); }, 3000);
+    if (hostDisconnected) setTimeout(() => { showToast("ホストが退出済みのため解散します。"); performExitGame(true); }, 3000);
     else if (myOnlineId === 'host') checkRematchCondition();
   }
 }
@@ -2044,7 +2385,7 @@ function applySkillSealToMainPlayer(amount = 300) {
 
 function formatSacrificeRemainText(engine) {
   const elapsed = engine ? engine.timeElapsed : 0;
-  const remSec = Math.max(0, Math.ceil((300000 - elapsed) / 1000));
+  const remSec = Math.max(0, Math.ceil((180000 - elapsed) / 1000));
   const m = String(Math.floor(remSec / 60)).padStart(2, '0');
   const s = String(remSec % 60).padStart(2, '0');
   return `${m}:${s}`;
@@ -2135,6 +2476,7 @@ function updateSkillButtonUI() {
         renderLocalSkillBarElement(`rival-local-skill-bar-${i}`, opp.skillState, opp.engine, opp.skillId);
       }
     });
+    updateAllPortraitHUDs();
     return;
   }
   const myBar = document.getElementById('my-local-skill-bar');
@@ -2146,10 +2488,12 @@ function updateSkillButtonUI() {
       checkSkillFilledSound(p2Opp.skillState, p2Opp.engine, p2Opp.skillId);
       updateSkillButtonVisual(p2Btn, p2Label, p2Prog, p2Opp.skillState, p2Opp.engine, p2Opp.skillId);
     } else if (p2Btn) p2Btn.style.display = 'none';
+    updateAllPortraitHUDs();
     return;
   }
   if (p2Btn) p2Btn.style.display = 'none';
   updateSkillButtonVisual(btn, label, prog, playerSkillState, myEngine, playerSkillState.skillId || selectedPlayerSkill);
+  updateAllPortraitHUDs();
 }
 
 function updateRivalSkillBadge(opp, index) {
@@ -2224,7 +2568,7 @@ function activateShareP2Skill() {
 }
 
 // ==========================================
-// バトル中サイド演出枠 & 縦画面最下部閲覧専用ステータスバー
+// バトル中サイド演出枠（1人時）& インライン立ち絵（横複数人対戦時：スキルゲージ＆連勝数付き）& 縦画面最下部ステータスバー
 // ==========================================
 function setSidePortraitElement(imgEl, theme) {
   if (!imgEl || !theme) return;
@@ -2243,17 +2587,232 @@ function setSidePortraitElement(imgEl, theme) {
   }
 }
 
+function removeInlinePlayerPortraits() {
+  document.querySelectorAll('.inline-player-portrait').forEach(el => el.remove());
+}
+
+function buildInlinePortraitCard(playerIdx, totalCount, theme, rivalIndex = -1) {
+  const card = document.createElement('div');
+  card.id = `inline-portrait-p${playerIdx}`;
+  card.className = `inline-player-portrait p-count-${totalCount}` + (playerIdx === 0 ? ' is-p1' : ' is-rival');
+  if (theme && theme.color && playerIdx > 0) {
+    card.style.borderColor = theme.color;
+  }
+
+  const img = document.createElement('img');
+  img.className = 'inline-portrait-img';
+  img.alt = theme ? theme.name : `${playerIdx + 1}P`;
+  setSidePortraitElement(img, theme);
+  card.appendChild(img);
+
+  const tag = document.createElement('div');
+  tag.className = 'inline-portrait-tag';
+  tag.innerText = playerIdx === 0 ? '1P' : `${playerIdx + 1}P`;
+  card.appendChild(tag);
+
+  const winsBadge = document.createElement('div');
+  winsBadge.id = `inline-portrait-wins-p${playerIdx}`;
+  winsBadge.className = 'portrait-wins-badge';
+  winsBadge.style.display = 'none';
+  card.appendChild(winsBadge);
+
+  const footer = document.createElement('div');
+  footer.className = 'inline-portrait-footer';
+
+  const name = document.createElement('div');
+  name.className = 'inline-portrait-name';
+  name.innerText = theme ? theme.name : `${playerIdx + 1}P`;
+  footer.appendChild(name);
+
+  const skillMeter = document.createElement('div');
+  skillMeter.id = `inline-portrait-skill-p${playerIdx}`;
+  skillMeter.className = 'portrait-skill-meter';
+  skillMeter.style.display = 'none';
+
+  const skillFill = document.createElement('div');
+  skillFill.className = 'portrait-skill-fill';
+  const skillText = document.createElement('span');
+  skillText.className = 'portrait-skill-text';
+  skillMeter.append(skillFill, skillText);
+  footer.appendChild(skillMeter);
+
+  card.appendChild(footer);
+
+  if (rivalIndex >= 0 && currentMode !== 'local' && currentMode !== 'share') {
+    card.onclick = () => selectTarget(rivalIndex);
+  }
+  return card;
+}
+
+function applySkillMeterState(meterEl, spec) {
+  if (!meterEl) return;
+  if (!spec || !spec.show) {
+    if (meterEl.style.display !== 'none') meterEl.style.display = 'none';
+    meterEl.dataset.lastKey = '';
+    return;
+  }
+  const key = `${spec.pct}|${spec.text}|${spec.cls || ''}`;
+  if (meterEl.dataset.lastKey === key) return;
+  meterEl.dataset.lastKey = key;
+
+  meterEl.style.display = 'flex';
+  meterEl.className = 'portrait-skill-meter' + (spec.cls ? ' ' + spec.cls : '');
+  const fill = meterEl.querySelector('.portrait-skill-fill');
+  const txt = meterEl.querySelector('.portrait-skill-text');
+  if (fill) fill.style.width = `${Math.max(0, Math.min(100, spec.pct))}%`;
+  if (txt) txt.innerText = spec.text;
+}
+
+function applyWinsBadgeState(badgeEl, text) {
+  if (!badgeEl) return;
+  if (!text) {
+    if (badgeEl.style.display !== 'none') badgeEl.style.display = 'none';
+    badgeEl.dataset.lastVal = '';
+    return;
+  }
+  if (badgeEl.dataset.lastVal === text) return;
+  badgeEl.dataset.lastVal = text;
+  badgeEl.style.display = 'block';
+  badgeEl.innerText = text;
+}
+
+function buildHumanSkillMeterSpec(skillState, engine, skillId, isCompact = false) {
+  if (!skillState || !skillState.enabled || !engine || isPracticeMode) return null;
+  if (skillId === 'no_skill') {
+    return { show: true, pct: 0, text: isCompact ? 'スキル無' : 'ノースキル', cls: 'empty' };
+  }
+  if (skillId === 'sacrifice') {
+    return {
+      show: true,
+      pct: 100,
+      text: isCompact ? `💀${formatSacrificeRemainText(engine)}` : `💀代償 ${formatSacrificeRemainText(engine)}`,
+      cls: 'sacrifice'
+    };
+  }
+  if (skillState.usesLeft <= 0) {
+    return { show: true, pct: 0, text: isCompact ? '⚡0/3' : `⚡終了 (0/${PLAYER_SKILL_MAX})`, cls: 'empty' };
+  }
+  const remain = Math.max(0, skillState.nextRequiredScore - engine.score);
+  if (remain === 0) {
+    return {
+      show: true,
+      pct: 100,
+      text: isCompact ? `⚡OK(${skillState.usesLeft})` : `⚡発動OK! (${skillState.usesLeft}/${PLAYER_SKILL_MAX})`,
+      cls: 'ready'
+    };
+  }
+  const pct = Math.min(100, Math.floor((Math.max(0, PLAYER_SKILL_SCORE_STEP - remain) / PLAYER_SKILL_SCORE_STEP) * 100));
+  return {
+    show: true,
+    pct,
+    text: isCompact ? `⚡あと${remain}` : `⚡あと${remain} (${skillState.usesLeft}/${PLAYER_SKILL_MAX})`,
+    cls: ''
+  };
+}
+
+function buildOpponentSkillMeterSpec(opp, isCompact = false) {
+  if (!opp || !opp.engine) return null;
+  if (opp.type === 'local_human') {
+    return buildHumanSkillMeterSpec(opp.skillState, opp.engine, opp.skillId, isCompact);
+  }
+  if (opp.ai && typeof opp.ai.getRemainingSkills === 'function') {
+    if (opp.engine.isSacrifice) {
+      return {
+        show: true,
+        pct: 100,
+        text: isCompact ? `💀${formatSacrificeRemainText(opp.engine)}` : `💀代償 ${formatSacrificeRemainText(opp.engine)}`,
+        cls: 'sacrifice'
+      };
+    }
+    const maxUses = Math.max(1, opp.ai.maxSkillUses || 3);
+    const rem = Math.max(0, opp.ai.getRemainingSkills());
+    if (rem <= 0) {
+      return { show: true, pct: 0, text: isCompact ? '⚡0' : `⚡終了 (0/${maxUses})`, cls: 'empty' };
+    }
+    const cdReady = (typeof opp.ai.skillCooldown === 'number' && opp.ai.skillCooldown <= 0);
+    const pct = Math.round((rem / maxUses) * 100);
+    return {
+      show: true,
+      pct,
+      text: isCompact ? `⚡${rem}/${maxUses}` : `⚡残${rem}/${maxUses}${cdReady ? ' OK' : ''}`,
+      cls: cdReady ? 'ready' : ''
+    };
+  }
+  if (opp.syncedSkillRemaining !== undefined && opp.syncedSkillRemaining !== null) {
+    if (opp.engine.isSacrifice) {
+      return { show: true, pct: 100, text: isCompact ? '💀代償' : '💀代償発動中', cls: 'sacrifice' };
+    }
+    const rem = Math.max(0, opp.syncedSkillRemaining);
+    if (rem <= 0) {
+      return { show: true, pct: 0, text: isCompact ? '⚡0' : `⚡終了 (0/${PLAYER_SKILL_MAX})`, cls: 'empty' };
+    }
+    const pct = Math.round((rem / PLAYER_SKILL_MAX) * 100);
+    return {
+      show: true,
+      pct,
+      text: isCompact ? `⚡${rem}/${PLAYER_SKILL_MAX}` : `⚡残${rem}/${PLAYER_SKILL_MAX}`,
+      cls: 'ready'
+    };
+  }
+  return null;
+}
+
+function updateAllPortraitHUDs() {
+  const isSurvival = (currentMode === 'single_survival');
+  const p1WinsText = isSurvival ? `🏆 ${currentSurvivalWins}連勝` : '';
+  const p1SkillId = currentMode === 'local'
+    ? (localSlotsConfig[0].skillId || 'erase_color')
+    : (playerSkillState.skillId || selectedPlayerSkill);
+
+  // 1人練習時のサイドカード
+  const sideCardP1 = document.getElementById('battle-side-p1');
+  if (sideCardP1 && sideCardP1.style.display !== 'none') {
+    applyWinsBadgeState(document.getElementById('battle-side-p1-wins'), p1WinsText);
+    applySkillMeterState(
+      document.getElementById('battle-side-p1-skill'),
+      buildHumanSkillMeterSpec(playerSkillState, myEngine, p1SkillId, false)
+    );
+  }
+
+  // 横複数人対戦時のインライン立ち絵カード
+  const totalCount = 1 + opponents.length;
+  const isCompact = totalCount >= 4;
+
+  const p0Card = document.getElementById('inline-portrait-p0');
+  if (p0Card) {
+    applyWinsBadgeState(document.getElementById('inline-portrait-wins-p0'), isSurvival ? `🏆 ${currentSurvivalWins}連勝` : '');
+    applySkillMeterState(
+      document.getElementById('inline-portrait-skill-p0'),
+      buildHumanSkillMeterSpec(playerSkillState, myEngine, p1SkillId, isCompact)
+    );
+  }
+
+  opponents.forEach((opp, i) => {
+    const oppCard = document.getElementById(`inline-portrait-p${i + 1}`);
+    if (!oppCard) return;
+    const oppWinsText = isSurvival ? `Lv.${opp.level || currentComLevel}` : '';
+    applyWinsBadgeState(document.getElementById(`inline-portrait-wins-p${i + 1}`), oppWinsText);
+    applySkillMeterState(
+      document.getElementById(`inline-portrait-skill-p${i + 1}`),
+      buildOpponentSkillMeterSpec(opp, isCompact)
+    );
+  });
+}
+
 function refreshBattleSidePanels() {
   const p1Card = document.getElementById('battle-side-p1');
   const p2Card = document.getElementById('battle-side-p2');
   if (!p1Card || !p2Card) return;
 
-  const isPortrait = window.innerHeight > window.innerWidth;
+  const isPortrait = window.innerHeight >= window.innerWidth;
   const isLandscapeLarge = !isPortrait && !useMobileLayoutInLandscape;
   const isGameShown = document.getElementById('game-area')?.style.display !== 'none';
-  const showSideCards = isGameShown && isLandscapeLarge && currentMode !== 'local' && currentMode !== 'share' && window.innerWidth >= 920;
+  const oppCount = opponents.length;
 
-  if (!showSideCards || !myRenderer || !myRenderer.theme) {
+  // 複数人対戦の横UIは盤面隣インライン立ち絵を使用するためサイドカードは1人練習時のみ表示
+  const showSoloSideCard = isGameShown && isLandscapeLarge && oppCount === 0 && currentMode !== 'local' && currentMode !== 'share' && window.innerWidth >= 760;
+
+  if (!showSoloSideCard || !myRenderer || !myRenderer.theme) {
     p1Card.style.display = 'none';
     p2Card.style.display = 'none';
     return;
@@ -2264,20 +2823,8 @@ function refreshBattleSidePanels() {
   document.getElementById('battle-side-p1-name').innerText = myRenderer.theme.name || 'YOU';
   document.getElementById('battle-side-p1-tag').innerText = 'PLAYER';
   setSidePortraitElement(document.getElementById('battle-side-p1-img'), myRenderer.theme);
-
-  const oppTarget = (myTargetIndex >= 0 && opponents[myTargetIndex])
-    ? opponents[myTargetIndex]
-    : (opponents.find(o => o.engine && !o.engine.gameOver) || opponents[0]);
-
-  if (oppTarget && oppTarget.renderer && oppTarget.renderer.theme) {
-    p2Card.style.display = 'flex';
-    p2Card.style.borderColor = oppTarget.renderer.theme.color || '#f43f5e';
-    document.getElementById('battle-side-p2-name').innerText = oppTarget.renderer.theme.name || oppTarget.name || 'RIVAL';
-    document.getElementById('battle-side-p2-tag').innerText = (myTargetIndex >= 0 && opponents[myTargetIndex]) ? '🎯 TARGET' : 'RIVAL';
-    setSidePortraitElement(document.getElementById('battle-side-p2-img'), oppTarget.renderer.theme);
-  } else {
-    p2Card.style.display = 'none';
-  }
+  p2Card.style.display = 'none';
+  updateAllPortraitHUDs();
 }
 
 function getModeLabelForBottomBar() {
@@ -2320,7 +2867,9 @@ function updateBottomStatusBar() {
 
 function startGame(mode, level = 1, totalPlayers = 2, skillEnabled = false) {
   cancelLocalAutoStart();
+  closeExitConfirmModal(true);
   if (typeof closeRangeDigitEdit === 'function') closeRangeDigitEdit();
+  if (typeof closeSelectPickerModal === 'function') closeSelectPickerModal(true);
   document.getElementById('result-overlay').style.display = 'none';
   hideBattleEndOverlay();
   currentMode = mode; currentComLevel = level; currentTotalPlayers = totalPlayers; currentSkillEnabled = !!skillEnabled;
@@ -2344,6 +2893,7 @@ function startGame(mode, level = 1, totalPlayers = 2, skillEnabled = false) {
     resetGameLogic();
     readyBgm();
     showReadyGo();
+    if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(220);
     if (loopId) cancelAnimationFrame(loopId);
     lastTime = performance.now(); accumulator = 0;
     loopId = requestAnimationFrame(gameLoop);
@@ -2358,9 +2908,11 @@ function startGame(mode, level = 1, totalPlayers = 2, skillEnabled = false) {
 
 function resetGameLogic() {
   isMatchOver = false; isDeadInMatch = false; isPracticeMode = false; endSequenceTriggered = false;
+  isExitConfirmOpen = false;
   myTargetIndex = -1; currentMatchId = Date.now(); currentSurvivalWins = 0; maxChainInMatch = 0;
   hidePlayerHeaderCutin();
   resetAllLocalInputStates();
+  removeInlinePlayerPortraits();
 
   const myWrapper = document.getElementById('my-wrapper');
   if (myWrapper) myWrapper.classList.remove('sacrifice-aura');
@@ -2399,7 +2951,7 @@ function resetGameLogic() {
     true,
     resolvedCharId === 'custom' ? getPlayerDisplayName() : null
   );
-  if (typeof applyBoardFrame === 'function') applyBoardFrame('my-wrapper', (currentMode === 'local' || currentMode === 'share') ? myRenderer.theme.frameSrc : null);
+  if (typeof applyBoardFrame === 'function') applyBoardFrame('my-wrapper', currentMode === 'share' ? myRenderer.theme.frameSrc : null);
   if (typeof applyGlobalFrameTheme === 'function') applyGlobalFrameTheme(CustomAssets.frame ? CustomAssets.frame.dataUrl : null);
   document.getElementById('player-label').innerText = (currentMode === 'local' || currentMode === 'share') ? `1P: ${myRenderer.theme.name}` : myRenderer.theme.name;
 
@@ -2521,7 +3073,7 @@ function resetGameLogic() {
     const oppObj = {
       id: oppId, name: oppName, type: isLocalHuman ? 'local_human' : 'com',
       playerSlotIndex: i + 1, skillId: oppSkillId, engine: rEngine, renderer: rRenderer, ai: rAI,
-      index: i, targetId: null, inputState: oppInputState,
+      index: i, level: currentComLevel, targetId: null, inputState: oppInputState,
       skillState: isLocalHuman ? {
         enabled: currentSkillEnabled,
         usesLeft: (currentSkillEnabled && !oppIsNoSkill) ? PLAYER_SKILL_MAX : 0,
@@ -2572,21 +3124,28 @@ function cleanupShareDomZones() {
 }
 
 function exitGame(silent = false) {
-  if (myEngine && !currentMode.startsWith('single')) {
+  if (!silent && myEngine && !currentMode.startsWith('single')) {
     if (!isMatchOver && !isPracticeMode && !myEngine.gameOver) {
-      if (!confirm("退出してメニューに戻りますか？\n（対戦時は負けになります）")) {
-        if (!silent) SE.play('cancel');
-        return;
-      }
+      openExitConfirmModal();
+      return;
     }
+  }
+  performExitGame(silent);
+}
+
+function performExitGame(silent = false) {
+  closeExitConfirmModal(true);
+  if (myEngine && !currentMode.startsWith('single')) {
     onlineConnections.forEach(c => { if(c && c.open) c.send({ type: 'leave', senderId: myOnlineId }); });
   }
   if (!silent) SE.play('cancel');
   isMatchOver = true; isDeadInMatch = true; matchState = 'gameover'; isPracticeMode = false;
   hostDisconnected = false; endSequenceTriggered = false;
   clearReadyGoTimers(); hideBattleEndOverlay(); stopAllEngines(); stopBgm(); hidePlayerHeaderCutin();
+  removeInlinePlayerPortraits();
   if (typeof hideOnlineSyncOverlay === 'function') hideOnlineSyncOverlay();
   if (typeof closeRangeDigitEdit === 'function') closeRangeDigitEdit();
+  if (typeof closeSelectPickerModal === 'function') closeSelectPickerModal(true);
   if (typeof SE !== 'undefined' && SE.clearRemoteSounds) SE.clearRemoteSounds();
   if (typeof VOICE !== 'undefined' && VOICE.clearRemoteVoices) VOICE.clearRemoteVoices();
   cleanupShareDomZones();
@@ -2616,6 +3175,7 @@ function exitGame(silent = false) {
   document.getElementById('story-overlay').style.display = 'none';
   document.getElementById('share-prep-overlay').style.display = 'none';
   backToMainMenu(false);
+  if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(220);
 }
 
 function toggleContinuousSwipe() {
@@ -2674,17 +3234,32 @@ function pollSingleGamepad(engine, cfgPad, stateObj, padObj, isMainPlayer, oppRe
     return;
   }
   stateObj.prevPadState = { ...stateObj.padState };
-  padObj.buttons.forEach((b, i) => stateObj.padState[i] = b.pressed);
+  padObj.buttons.forEach((b, i) => stateObj.padState[i] = !!b.pressed);
+
+  // モーダル切り替え直後のロックアウト中は、状態の同期のみ行いアクション発火を禁止
+  if (typeof padInputLockUntil !== 'undefined' && performance.now() < padInputLockUntil) {
+    if (engine) engine.isRisingManualPad = false;
+    return;
+  }
+
   const justPressed = (btnIdx) => btnIdx !== null && btnIdx !== undefined && stateObj.padState[btnIdx] && !stateObj.prevPadState[btnIdx];
   const isPressed = (btnIdx) => btnIdx !== null && btnIdx !== undefined && !!stateObj.padState[btnIdx];
 
   if (isMainPlayer && justPressed(cfgPad.Pause)) {
+    if (isExitConfirmOpen) {
+      closeExitConfirmModal();
+      return;
+    }
     if (document.getElementById('game-area').style.display === 'flex' && document.getElementById('result-overlay').style.display !== 'flex' && !battleEndState.active) {
       stateObj.padHoldFrames = { Up: 0, Down: 0, Left: 0, Right: 0 };
       stateObj.padGrabState.active = stateObj.padGrabState.consumed = false;
       exitGame();
       return;
     }
+  }
+  if (isExitConfirmOpen) {
+    if (engine) engine.isRisingManualPad = false;
+    return;
   }
   if (!engine || engine.gameOver || (isMatchOver && !isPracticeMode)) {
     stateObj.padHoldFrames = { Up: 0, Down: 0, Left: 0, Right: 0 };
@@ -2776,6 +3351,14 @@ function pollGamepadInput() {
     battleEndState.prevAnyPadPressed = anyPressed;
     return;
   }
+  if (typeof getCurrentPadContextKey === 'function' && getCurrentPadContextKey() !== 'game') {
+    const pad0 = getPad0Object(pads);
+    if (pad0) {
+      p1InputState.padState = readPadButtonsMap(pad0);
+      p1InputState.prevPadState = { ...p1InputState.padState };
+    }
+    return;
+  }
   const slot0 = playerConfigs[0].padSlot;
   const pad0 = (slot0 >= 0 && pads[slot0]) ? pads[slot0] : ((currentMode === 'local' || currentMode === 'share') ? null : pads.find(p => p && p.connected));
   pollSingleGamepad(myEngine, playerConfigs[0].pad, p1InputState, pad0, true, null);
@@ -2819,6 +3402,15 @@ let lastTime = 0, accumulator = 0;
 const FIXED_TIME_STEP = 1000 / 60;
 
 function gameLoop(time) {
+  if (isExitConfirmOpen && currentMode !== 'online') {
+    lastTime = time;
+    accumulator = 0;
+    if (myEngine) myRenderer.draw(myEngine);
+    opponents.forEach(opp => { if (opp.renderer && opp.engine) opp.renderer.draw(opp.engine); });
+    loopId = requestAnimationFrame(gameLoop);
+    return;
+  }
+
   let deltaTime = time - lastTime;
   if (deltaTime > 100) deltaTime = 100;
   lastTime = time; accumulator += deltaTime;
@@ -2866,6 +3458,8 @@ function gameLoop(time) {
     if (currentMode === 'single_ta' && myEngine.timeElapsed >= 180000 && !myEngine.gameOver && !isMatchOver) {
       myEngine.gameOver = true; checkMatchEnd();
     }
+    const p0Card = document.getElementById('inline-portrait-p0');
+    if (p0Card) p0Card.classList.toggle('is-dead', !!myEngine.gameOver && !isPracticeMode);
   }
   opponents.forEach((opp, i) => {
     if (opp.renderer && opp.engine) {
@@ -2874,6 +3468,8 @@ function gameLoop(time) {
       if (scoreEl) scoreEl.innerText = currentMode === 'single_survival' ? `WINS: ${currentSurvivalWins}` : `SCORE: ${opp.engine.score}`;
       updateGarbagePreview(opp.engine, `rival-garbage-preview-${i}`);
       updateRivalSkillBadge(opp, i);
+      const pCard = document.getElementById(`inline-portrait-p${i + 1}`);
+      if (pCard) pCard.classList.toggle('is-dead', !!opp.engine.gameOver);
     }
   });
   loopId = requestAnimationFrame(gameLoop);
@@ -2927,12 +3523,40 @@ function handleKeyboardActionForPlayer(engine, cfgKey, stateObj, code, isRepeat,
 
 function handleLocalMenuKeyInput(code, e) {
   const count = getLocalPlayerCount();
+  const cfg0 = playerConfigs[0].key;
+  if (cfg0 && code === cfg0.Pause && keyConfig.Pause !== 'Escape') {
+    e.preventDefault();
+    forceConfirmAllAndStartLocal();
+    return true;
+  }
+  if (localHeaderFocusIndex >= 0 && cfg0) {
+    if (code === cfg0.Left || code === 'ArrowLeft' || code === cfg0.TargetLeft) {
+      e.preventDefault(); moveLocalHeaderFocus(-1); return true;
+    }
+    if (code === cfg0.Right || code === 'ArrowRight' || code === cfg0.TargetRight) {
+      e.preventDefault(); moveLocalHeaderFocus(1); return true;
+    }
+    if (code === cfg0.Down || code === 'ArrowDown' || code === cfg0.Skill || code === cfg0.GrabLeft || code === 'Escape') {
+      e.preventDefault(); exitLocalHeaderFocus(true); return true;
+    }
+    if (code === cfg0.Swap || code === cfg0.GrabRight || code === 'Enter' || code === 'Space') {
+      e.preventDefault(); activateLocalHeaderControl(); return true;
+    }
+  }
+
   for (let slotIdx = 0; slotIdx < count; slotIdx++) {
     const slot = localSlotsConfig[slotIdx];
     if (slot.isCom) continue;
     const cfg = playerConfigs[slotIdx].key;
     if (!cfg) continue;
 
+    if (slotIdx === 0 && (code === cfg.TargetLeft || code === cfg.TargetRight)) {
+      e.preventDefault();
+      localHeaderFocusIndex = 1;
+      SE.play('cursorMove');
+      renderLocalMenuUI();
+      return true;
+    }
     if (code === cfg.Left)  { e.preventDefault(); moveLocalTileCursor(slotIdx, -1, 0); return true; }
     if (code === cfg.Right) { e.preventDefault(); moveLocalTileCursor(slotIdx, 1, 0);  return true; }
     if (code === cfg.Up)    { e.preventDefault(); moveLocalTileCursor(slotIdx, 0, -1); return true; }
@@ -2943,7 +3567,7 @@ function handleLocalMenuKeyInput(code, e) {
       else if (slot.phase === 'skill') confirmLocalSkillForSlot(slotIdx, slot.skillCursorIdx);
       return true;
     }
-    if (code === cfg.Skill || code === cfg.GrabLeft) {
+    if (code === cfg.Skill || code === cfg.GrabLeft || (slotIdx === 0 && code === 'Escape')) {
       e.preventDefault();
       if (slot.phase !== 'char') cancelLocalStepForSlot(slotIdx);
       else if (slotIdx === 0) handleMenuCancelAction();
@@ -2969,6 +3593,7 @@ function bindBoardTouchInput(cvs, getEngine, getContinuousChecked, isSelf180Rota
   if (setRowFollowCb) setRowFollowCb(() => { if (activePointerId !== null && grabbedRow > 0) grabbedRow--; });
 
   cvs.addEventListener('pointerdown', (e) => {
+    if (isExitConfirmOpen) return;
     const engine = getEngine();
     if (!engine || (isMatchOver && !isPracticeMode) || activePointerId !== null) return;
     activePointerId = e.pointerId;
@@ -3035,7 +3660,7 @@ function setupInput() {
   let p1RisePointerId = null;
   riseBtn.addEventListener('pointerdown', (e) => {
     e.preventDefault();
-    if (myEngine && !(isMatchOver && !isPracticeMode)) {
+    if (myEngine && !(isMatchOver && !isPracticeMode) && !isExitConfirmOpen) {
       p1RisePointerId = e.pointerId;
       try { riseBtn.setPointerCapture(e.pointerId); } catch (_) {}
       myEngine.isRisingManualBtn = true;
@@ -3050,7 +3675,7 @@ function setupInput() {
     p2RiseBtn.addEventListener('pointerdown', (e) => {
       e.preventDefault();
       const opp0 = opponents[0];
-      if (currentMode === 'share' && opp0 && opp0.engine && !(isMatchOver && !isPracticeMode)) {
+      if (currentMode === 'share' && opp0 && opp0.engine && !(isMatchOver && !isPracticeMode) && !isExitConfirmOpen) {
         p2RisePointerId = e.pointerId;
         try { p2RiseBtn.setPointerCapture(e.pointerId); } catch (_) {}
         opp0.engine.isRisingManualBtn = true;
@@ -3085,8 +3710,14 @@ function setupInput() {
     if (battleEndState.active) { e.preventDefault(); tryDismissBattleEndOverlay(); return; }
     if (assigningAction && assignType === 'key') {
       e.preventDefault();
-      playerConfigs[settingsPlayerIdx].key[assigningAction] = (e.code === 'Delete' || e.code === 'Backspace') ? '' : e.code;
-      assigningAction = null; renderConfigUI(); SE.play('select'); return;
+      e.stopPropagation();
+      const doneAction = assigningAction;
+      pendingConfigFocus = { action: doneAction, type: 'key' };
+      playerConfigs[settingsPlayerIdx].key[doneAction] = (e.code === 'Delete' || e.code === 'Backspace') ? '' : e.code;
+      assigningAction = null;
+      renderConfigUI();
+      SE.play('select');
+      return;
     }
     const code = e.code;
     const isGameVisible = document.getElementById('game-area').style.display === 'flex';
@@ -3094,21 +3725,31 @@ function setupInput() {
     const isSettingsVisible = document.getElementById('settings-overlay')?.style.display === 'block';
     const isSkillModalVisible = document.getElementById('skill-select-modal')?.style.display === 'flex';
     const isConfirmModalVisible = document.getElementById('confirm-match-modal')?.style.display === 'flex';
+    const isSelectPickerVisible = document.getElementById('select-picker-modal')?.style.display === 'flex';
+    const isExitConfirmVisible = document.getElementById('exit-confirm-modal')?.style.display === 'flex';
     const isStoryOverlayVisible = document.getElementById('story-overlay')?.style.display === 'flex';
 
     if (isStoryOverlayVisible) return;
 
-    if (!isGameVisible || isResultVisible || isSettingsVisible || isSkillModalVisible || isConfirmModalVisible) {
+    if (isExitConfirmVisible && code === keyConfig.Pause && !e.repeat) {
+      e.preventDefault();
+      closeExitConfirmModal();
+      return;
+    }
+
+    if (!isGameVisible || isResultVisible || isSettingsVisible || isSkillModalVisible || isConfirmModalVisible || isSelectPickerVisible || isExitConfirmVisible) {
       const tag = document.activeElement?.tagName;
       const isTextInput = tag === 'INPUT' && document.activeElement?.type === 'text';
       const isLocalMenuOpen = document.getElementById('local-menu')?.style.display === 'flex';
       const isModalOpen = isSkillModalVisible
                        || isConfirmModalVisible
+                       || isSelectPickerVisible
+                       || isExitConfirmVisible
                        || isSettingsVisible
                        || isResultVisible
                        || document.getElementById('share-prep-overlay')?.style.display === 'flex';
 
-      if (!isGameVisible && isLocalMenuOpen && !isModalOpen && !isTextInput && tag !== 'SELECT' && !e.repeat) {
+      if (!isGameVisible && isLocalMenuOpen && !isModalOpen && !isTextInput && !e.repeat) {
         if (handleLocalMenuKeyInput(code, e)) return;
       }
 
@@ -3174,11 +3815,67 @@ function updateMyZoneFrameLayout(rect) {
   }
 }
 
+// 縦UI⇔横UI切替時の残存要素・インラインスタイルを完全リセット
+function resetBattleLayoutStyles() {
+  cleanupShareDomZones();
+  removeInlinePlayerPortraits();
+
+  const gameArea = document.getElementById('game-area');
+  const gameContainer = document.getElementById('game-container');
+  const exitBtn = document.getElementById('exit-btn');
+  const controls = document.getElementById('controls-container');
+  const p2Controls = document.getElementById('p2-controls-container');
+  const myWrapper = document.getElementById('my-wrapper');
+  const rivalsArea = document.getElementById('rivals-area');
+  const rivalsTopArea = document.getElementById('rivals-top-area');
+  const handednessWrapper = document.getElementById('handedness-wrapper');
+
+  if (gameArea) gameArea.classList.remove('share-mode');
+  if (exitBtn) {
+    if (gameArea && exitBtn.parentNode !== gameArea) gameArea.appendChild(exitBtn);
+    exitBtn.className = 'action-btn retire-btn absolute-top';
+    exitBtn.style.cssText = '';
+  }
+  if (controls) {
+    if (gameContainer && controls.parentNode !== gameContainer) gameContainer.appendChild(controls);
+    controls.style.cssText = 'display: flex; flex-direction: column; justify-content: flex-end; gap: 6px; z-index: 20; width: 110px;';
+  }
+  if (p2Controls) {
+    if (gameContainer && p2Controls.parentNode !== gameContainer) gameContainer.appendChild(p2Controls);
+    p2Controls.style.cssText = 'display: none; flex-direction: column; justify-content: flex-end; gap: 6px; z-index: 20; width: 110px;';
+  }
+  if (myWrapper) {
+    if (gameContainer && myWrapper.parentNode !== gameContainer) gameContainer.appendChild(myWrapper);
+    myWrapper.style.cssText = '';
+  }
+  if (rivalsArea) {
+    if (gameContainer && rivalsArea.parentNode !== gameContainer) gameContainer.appendChild(rivalsArea);
+    rivalsArea.style.cssText = 'display: none; gap: 10px; align-items: center; justify-content: center;';
+  }
+  if (rivalsTopArea) {
+    rivalsTopArea.style.cssText = 'display: none;';
+  }
+  opponents.forEach((_, i) => {
+    const el = document.getElementById(`rival-wrapper-${i}`);
+    if (el) {
+      if (rivalsArea && el.parentNode !== rivalsArea) rivalsArea.appendChild(el);
+      el.style.cssText = '';
+    }
+  });
+  if (gameContainer) gameContainer.style.cssText = '';
+  if (handednessWrapper) {
+    handednessWrapper.style.display = 'flex';
+    handednessWrapper.style.marginTop = '0';
+  }
+}
+
 function adjustLayout() {
   updateShareForcePortraitClass();
-  const isPortrait = window.innerHeight > window.innerWidth;
+  const isPortrait = window.innerHeight >= window.innerWidth;
   const W = window.innerWidth, H = window.innerHeight;
   const isLeft = document.getElementById('handedness-toggle')?.checked;
+
+  resetBattleLayoutStyles();
 
   const layoutBtn = document.getElementById('layout-toggle-btn');
   if (layoutBtn) {
@@ -3241,11 +3938,10 @@ function adjustLayout() {
     return;
   }
 
-  cleanupShareDomZones();
-  if (handednessWrapper) handednessWrapper.style.display = 'flex';
-
   if (currentMode === 'local') {
-    if (zoneBgEl) zoneBgEl.style.opacity = '0';
+    if (zoneBgEl) zoneBgEl.style.opacity = '1';
+    updateMyZoneFrameLayout(null);
+
     document.body.classList.toggle('local-force-landscape', isPortrait && isGameShown);
     const effW = isPortrait ? H : W, effH = isPortrait ? W : H;
     rivalsTopArea.style.display = 'none'; controls.style.display = 'none'; rivalsArea.style.display = 'contents';
@@ -3253,98 +3949,181 @@ function adjustLayout() {
     exitBtn.className = 'action-btn retire-btn absolute-top';
     exitBtn.style.cssText = 'left:12px;right:auto;';
 
-    const totalBoards = 1 + oppCount, baseW = 224, baseH = currentSkillEnabled ? 545 : 515;
-    const scale = Math.max(0.32, Math.min(1.0, (effW - 24 - (totalBoards - 1) * 10) / (totalBoards * baseW), (effH - 54) / baseH));
-    gameContainer.style.cssText = 'position:relative;width:100%;height:100%;display:flex;flex-direction:row;flex-wrap:nowrap;align-items:center;align-content:center;justify-content:center;gap:10px;padding:36px 8px 8px 8px;';
+    const totalPlayers = 1 + oppCount;
+    const baseW = 224;
+    const baseH = currentSkillEnabled ? 545 : 515;
+    const portraitH = 468;
+    const portraitW = totalPlayers === 2 ? 150 : (totalPlayers === 3 ? 104 : 74);
+    const showPortraits = (totalPlayers >= 2);
+    const totalPortraits = showPortraits ? totalPlayers : 0;
+    const itemCount = totalPlayers + totalPortraits;
+    const gapPx = totalPlayers >= 4 ? 6 : 8;
+    const baseTotalW = totalPlayers * baseW + totalPortraits * portraitW + Math.max(0, itemCount - 1) * gapPx;
+
+    const scale = Math.max(0.28, Math.min(1.0, (effW - 24) / baseTotalW, (effH - 54) / baseH));
+    gameContainer.style.cssText = `position:relative;width:100%;height:100%;display:flex;flex-direction:row;flex-wrap:nowrap;align-items:center;align-content:center;justify-content:center;gap:${gapPx}px;padding:36px 8px 8px 8px;`;
+
     const mx = (baseW - baseW * scale) / -2, my = (baseH - baseH * scale) / -2;
-    myWrapper.style.order = '0'; myWrapper.style.transformOrigin = 'center'; myWrapper.style.transform = `scale(${scale})`; myWrapper.style.margin = `${my}px ${mx}px`;
-    opponents.forEach((_, i) => {
+    const pmx = (portraitW - portraitW * scale) / -2, pmy = (portraitH - portraitH * scale) / -2;
+
+    myWrapper.style.order = '10';
+    myWrapper.style.transformOrigin = 'center';
+    myWrapper.style.transform = `scale(${scale})`;
+    myWrapper.style.margin = `${my}px ${mx}px`;
+
+    if (showPortraits && myRenderer && myRenderer.theme) {
+      const p0Card = buildInlinePortraitCard(0, totalPlayers, myRenderer.theme, -1);
+      p0Card.style.order = '20';
+      p0Card.style.transformOrigin = 'center';
+      p0Card.style.transform = `scale(${scale})`;
+      p0Card.style.margin = `${pmy}px ${pmx}px`;
+      gameContainer.appendChild(p0Card);
+    }
+
+    opponents.forEach((opp, i) => {
       const el = document.getElementById(`rival-wrapper-${i}`);
       if (el) {
-        if (el.parentNode !== rivalsArea) rivalsArea.appendChild(el);
-        el.style.order = String(i + 1); el.style.position = 'relative'; el.style.width = ''; el.style.flexShrink = '';
+        el.style.position = 'relative'; el.style.width = ''; el.style.flexShrink = '';
         el.style.transformOrigin = 'center'; el.style.transform = `scale(${scale})`; el.style.margin = `${my}px ${mx}px`;
+        if (totalPlayers === 2) {
+          el.style.order = '40';
+        } else {
+          el.style.order = String((i + 1) * 20 + 10);
+        }
+      }
+      if (showPortraits && opp.renderer && opp.renderer.theme) {
+        const pCard = buildInlinePortraitCard(i + 1, totalPlayers, opp.renderer.theme, i);
+        pCard.style.order = (totalPlayers === 2) ? '30' : String((i + 1) * 20 + 20);
+        pCard.style.transformOrigin = 'center';
+        pCard.style.transform = `scale(${scale})`;
+        pCard.style.margin = `${pmy}px ${pmx}px`;
+        gameContainer.appendChild(pCard);
       }
     });
+    updateAllPortraitHUDs();
     return;
   }
 
   if (zoneBgEl) zoneBgEl.style.opacity = '1';
   document.body.classList.remove('local-force-landscape');
-  controls.style.display = 'flex'; controls.style.alignItems = 'center';
-  gameContainer.style.maxWidth = ''; gameContainer.style.flexWrap = 'nowrap'; gameContainer.style.alignContent = ''; gameContainer.style.gap = '10px';
 
   if (isLandscapeLarge) {
-    rivalsTopArea.style.display = 'none'; rivalsArea.style.display = oppCount > 0 ? 'flex' : 'none';
+    rivalsTopArea.style.display = 'none';
     if (exitBtn.parentNode !== gameArea) gameArea.appendChild(exitBtn);
-    exitBtn.className = 'action-btn retire-btn absolute-top'; exitBtn.style.position = ''; exitBtn.style.top = ''; exitBtn.style.width = ''; exitBtn.style.margin = '';
+    exitBtn.className = 'action-btn retire-btn absolute-top';
     if (isLeft) { exitBtn.style.right = '15px'; exitBtn.style.left = 'auto'; } else { exitBtn.style.left = '15px'; exitBtn.style.right = 'auto'; }
-    opponents.forEach((_, i) => {
-      const el = document.getElementById(`rival-wrapper-${i}`);
-      if (el) { if (el.parentNode !== rivalsArea) rivalsArea.appendChild(el); el.style.order = ''; el.style.position = ''; el.style.transform = ''; el.style.margin = '0'; el.style.width = ''; el.style.flexShrink = ''; }
-    });
-    rivalsArea.style.flexDirection = 'row'; rivalsArea.style.gap = '10px';
-    controls.style.height = ''; controls.style.justifyContent = 'flex-end';
-    if (handednessWrapper) handednessWrapper.style.marginTop = '0';
 
-    const sideMargin = (W >= 920) ? 168 : 10;
-    gameContainer.style.cssText = `position:relative;width:100%;height:100%;display:flex;flex-direction:row;align-items:center;justify-content:center;padding:10px ${sideMargin}px 34px ${sideMargin}px;`;
-    if (isLeft) { controls.style.order = 1; myWrapper.style.order = 2; rivalsArea.style.order = 3; }
-    else { rivalsArea.style.order = 1; myWrapper.style.order = 2; controls.style.order = 3; }
+    if (oppCount >= 1) {
+      const totalPlayers = 1 + oppCount;
+      const baseBoardW = 224, baseBoardH = 515, ctrlW = 110;
+      const portraitW = totalPlayers === 2 ? 150 : (totalPlayers === 3 ? 104 : 74);
+      const portraitH = 468;
+      const gapPx = totalPlayers >= 4 ? 6 : 8;
+      const itemCount = totalPlayers * 2 + 1;
+      const totalBaseW = totalPlayers * baseBoardW + totalPlayers * portraitW + ctrlW + (itemCount - 1) * gapPx;
 
-    const availableW = Math.max(300, W - sideMargin * 2 - 140);
-    const baseBoardW = 224;
-    let myScale = Math.min(1.0, (H - 84) / 515);
+      const availW = Math.max(300, W - 24);
+      const availH = Math.max(240, H - 56);
+      const scale = Math.max(0.28, Math.min(1.0, availW / totalBaseW, availH / baseBoardH));
 
-    if (oppCount >= 2) {
-      const oppScale = Math.max(0.42, Math.min(myScale * 0.78, (availableW - baseBoardW * myScale - 40) / (oppCount * baseBoardW + oppCount * 12)));
-      if ((baseBoardW * myScale + oppCount * baseBoardW * oppScale + 36) > availableW) {
-        myScale = Math.max(0.55, (availableW - oppCount * baseBoardW * oppScale - 36) / baseBoardW);
+      rivalsArea.style.display = 'contents';
+      gameContainer.style.cssText = `position:relative;width:100%;height:100%;display:flex;flex-direction:row;flex-wrap:nowrap;align-items:center;justify-content:center;gap:${gapPx}px;padding:24px 10px 24px 10px;`;
+
+      const mx = (baseBoardW - baseBoardW * scale) / -2, my = (baseBoardH - baseBoardH * scale) / -2;
+      const pmx = (portraitW - portraitW * scale) / -2, pmy = (portraitH - portraitH * scale) / -2;
+      const ctrlMx = (ctrlW - ctrlW * scale) / -2;
+
+      controls.style.order = isLeft ? '2' : '99';
+      controls.style.transformOrigin = 'center';
+      controls.style.transform = `scale(${scale})`;
+      controls.style.margin = `0 ${ctrlMx}px`;
+
+      myWrapper.style.order = '10';
+      myWrapper.style.transformOrigin = 'center';
+      myWrapper.style.transform = `scale(${scale})`;
+      myWrapper.style.margin = `${my}px ${mx}px`;
+
+      if (myRenderer && myRenderer.theme) {
+        const p0Card = buildInlinePortraitCard(0, totalPlayers, myRenderer.theme, -1);
+        p0Card.style.order = '20';
+        p0Card.style.transformOrigin = 'center';
+        p0Card.style.transform = `scale(${scale})`;
+        p0Card.style.margin = `${pmy}px ${pmx}px`;
+        gameContainer.appendChild(p0Card);
       }
-      myWrapper.style.transform = `scale(${myScale})`;
-      myWrapper.style.margin = `0 ${(baseBoardW - baseBoardW * myScale) / -2}px`;
-      opponents.forEach((_, i) => {
+
+      opponents.forEach((opp, i) => {
         const el = document.getElementById(`rival-wrapper-${i}`);
-        if (el) { el.style.transform = `scale(${oppScale})`; el.style.margin = `0 ${(baseBoardW - baseBoardW * oppScale) / -2}px`; }
+        if (el) {
+          el.style.transformOrigin = 'center';
+          el.style.transform = `scale(${scale})`;
+          el.style.margin = `${my}px ${mx}px`;
+          el.style.order = (totalPlayers === 2) ? '40' : String((i + 1) * 20 + 10);
+        }
+        if (opp.renderer && opp.renderer.theme) {
+          const pCard = buildInlinePortraitCard(i + 1, totalPlayers, opp.renderer.theme, i);
+          pCard.style.order = (totalPlayers === 2) ? '30' : String((i + 1) * 20 + 20);
+          pCard.style.transformOrigin = 'center';
+          pCard.style.transform = `scale(${scale})`;
+          pCard.style.margin = `${pmy}px ${pmx}px`;
+          gameContainer.appendChild(pCard);
+        }
       });
-      controls.style.transform = `scale(${Math.max(0.6, myScale)})`;
-    } else {
-      const totalBoards = 1 + oppCount;
-      if ((baseBoardW * totalBoards + 20 * totalBoards) * myScale > availableW) {
-        myScale = availableW / (baseBoardW * totalBoards + 20 * totalBoards);
-      }
-      myScale = Math.max(0.4, myScale);
-      myWrapper.style.transform = `scale(${myScale})`; myWrapper.style.margin = `0 ${(baseBoardW - baseBoardW * myScale) / -2}px`;
-      opponents.forEach((_, i) => {
-        const el = document.getElementById(`rival-wrapper-${i}`);
-        if (el) { el.style.transform = `scale(${myScale})`; el.style.margin = `0 ${(baseBoardW - baseBoardW * myScale) / -2}px`; }
-      });
-      controls.style.transform = `scale(${myScale})`;
+
+      updateTargetUI();
+      updateAllPortraitHUDs();
+      updateMyZoneFrameLayout(null);
+      return;
     }
 
-    if (oppCount === 0) updateMyZoneFrameLayout(null);
-    else requestAnimationFrame(() => {
-      const areaRect = gameArea.getBoundingClientRect(), myRect = myWrapper.getBoundingClientRect(), ctrlRect = controls.getBoundingClientRect();
-      if (myRect.width === 0) return;
-      if (isLeft) updateMyZoneFrameLayout({ top: 0, left: 0, width: Math.min(W, Math.max(myRect.right, ctrlRect.right) - areaRect.left + 16), height: H, radius: '0 16px 16px 0' });
-      else { const leftEdge = Math.max(0, Math.min(myRect.left, ctrlRect.left) - areaRect.left - 16); updateMyZoneFrameLayout({ top: 0, left: leftEdge, width: W - leftEdge, height: H, radius: '16px 0 0 16px' }); }
-    });
+    // 1人練習（oppCount === 0）横画面
+    rivalsArea.style.display = 'none';
+    const sideMargin = (W >= 760) ? 168 : 10;
+    gameContainer.style.cssText = `position:relative;width:100%;height:100%;display:flex;flex-direction:row;align-items:center;justify-content:center;padding:10px ${sideMargin}px 34px ${sideMargin}px;gap:10px;`;
+    if (isLeft) { controls.style.order = '1'; myWrapper.style.order = '2'; }
+    else { myWrapper.style.order = '2'; controls.style.order = '3'; }
+
+    const availableW = Math.max(260, W - sideMargin * 2 - 140);
+    const baseBoardW = 224;
+    let myScale = Math.min(1.0, (H - 84) / 515);
+    if (baseBoardW * myScale > availableW) myScale = Math.max(0.4, availableW / baseBoardW);
+
+    myWrapper.style.transform = `scale(${myScale})`;
+    myWrapper.style.margin = `0 ${(baseBoardW - baseBoardW * myScale) / -2}px`;
+    controls.style.transform = `scale(${myScale})`;
+    controls.style.margin = `0 ${(110 - 110 * myScale) / -2}px`;
+    updateAllPortraitHUDs();
+    updateMyZoneFrameLayout(null);
   } else if (oppCount <= 1) {
     const bottomReserve = isPortrait ? 56 : 0;
     rivalsTopArea.style.display = 'none'; rivalsArea.style.display = 'none';
     if (exitBtn.parentNode !== gameArea) gameArea.appendChild(exitBtn);
-    exitBtn.className = 'action-btn retire-btn absolute-top'; exitBtn.style.position = ''; exitBtn.style.top = ''; exitBtn.style.width = ''; exitBtn.style.margin = '';
+    exitBtn.className = 'action-btn retire-btn absolute-top';
     if (isLeft) { exitBtn.style.right = '12px'; exitBtn.style.left = 'auto'; } else { exitBtn.style.left = '12px'; exitBtn.style.right = 'auto'; }
-    gameContainer.style.cssText = `position:relative;width:100%;height:100%;display:flex;flex-direction:${isLeft ? 'row' : 'row-reverse'};align-items:center;justify-content:center;padding:0 0 ${bottomReserve}px 0;`;
-    controls.style.order = ''; myWrapper.style.order = '';
+    gameContainer.style.cssText = `position:relative;width:100%;height:100%;display:flex;flex-direction:${isLeft ? 'row' : 'row-reverse'};align-items:center;justify-content:center;padding:0 0 ${bottomReserve}px 0;gap:10px;`;
 
+    controls.style.alignItems = 'center';
     if (oppCount === 1) {
       const rivalWrapper = document.getElementById('rival-wrapper-0');
       if (rivalWrapper) {
         if (rivalWrapper.parentNode !== controls) controls.insertBefore(rivalWrapper, controls.firstChild);
         rivalWrapper.style.setProperty('order', '-1', 'important');
-        const rivalScale = 110 / 224, originalRivalH = 510;
-        rivalWrapper.style.cssText += `;transform:scale(${rivalScale});transform-origin:top center;position:relative;top:0;left:auto;right:auto;z-index:25;width:224px;flex-shrink:0;margin-bottom:${originalRivalH * rivalScale - originalRivalH}px;`;
+        const rivalScale = 110 / 224;
+        const originalRivalH = rivalWrapper.offsetHeight || 510;
+        const horizCenterOffset = (110 - 224) / 2;
+        rivalWrapper.style.transformOrigin = 'top center';
+        rivalWrapper.style.transform = `scale(${rivalScale})`;
+        rivalWrapper.style.position = 'relative';
+        rivalWrapper.style.top = '0';
+        rivalWrapper.style.left = 'auto';
+        rivalWrapper.style.right = 'auto';
+        rivalWrapper.style.zIndex = '25';
+        rivalWrapper.style.width = '224px';
+        rivalWrapper.style.flexShrink = '0';
+        rivalWrapper.style.alignSelf = 'center';
+        rivalWrapper.style.marginLeft = `${horizCenterOffset}px`;
+        rivalWrapper.style.marginRight = `${horizCenterOffset}px`;
+        rivalWrapper.style.marginBottom = `${originalRivalH * rivalScale - originalRivalH}px`;
       }
       controls.style.height = '515px'; controls.style.justifyContent = 'flex-start';
       if (handednessWrapper) handednessWrapper.style.marginTop = 'auto';
@@ -3375,7 +4154,7 @@ function adjustLayout() {
       const el = document.getElementById(`rival-wrapper-${i}`);
       if (el) {
         if (el.parentNode !== rivalsTopArea) rivalsTopArea.appendChild(el);
-        el.style.order = ''; el.style.position = 'relative'; el.style.transform = `scale(${miniScale})`; el.style.transformOrigin = 'center center';
+        el.style.position = 'relative'; el.style.transform = `scale(${miniScale})`; el.style.transformOrigin = 'center center';
         el.style.margin = `${(510 - 510 * miniScale) / -2}px ${(224 - 224 * miniScale) / -2}px`;
         el.style.width = '224px'; el.style.flexShrink = '0';
       }
@@ -3384,10 +4163,9 @@ function adjustLayout() {
     exitBtn.className = 'action-btn retire-btn';
     exitBtn.style.cssText = 'position:static;width:100%;padding:8px 4px;font-size:0.85rem;margin-bottom:4px;';
     controls.style.height = 'auto'; controls.style.justifyContent = 'center'; controls.style.width = '110px';
-    controls.style.order = ''; myWrapper.style.order = '';
     if (handednessWrapper) handednessWrapper.style.marginTop = '0';
 
-    gameContainer.style.cssText = `display:flex;flex-direction:${isLeft ? 'row' : 'row-reverse'};align-items:center;justify-content:center;position:absolute;top:${maxTopH + 6}px;left:0;width:100vw;height:${H - maxTopH - 6 - bottomReserve}px;padding:0;`;
+    gameContainer.style.cssText = `display:flex;flex-direction:${isLeft ? 'row' : 'row-reverse'};align-items:center;justify-content:center;position:absolute;top:${maxTopH + 6}px;left:0;width:100vw;height:${H - maxTopH - 6 - bottomReserve}px;padding:0;gap:10px;`;
     const maxCenterH = H - maxTopH - 18 - bottomReserve, contentW = 344;
     let myScale = Math.min(1.0, maxCenterH / 515);
     if (contentW * myScale > W - 10) myScale = (W - 10) / contentW;
@@ -3446,4 +4224,5 @@ window.addEventListener('DOMContentLoaded', () => {
   if (typeof initAssetsSystem === 'function') initAssetsSystem();
   if (typeof initStorySystem === 'function') initStorySystem();
   if (typeof setupInput === 'function') setupInput();
+  focusPrimaryMenuElement('main-menu-actions');
 });

@@ -23,7 +23,7 @@ class PonEngine {
     this.isPractice = false;
     this.isSacrifice = false;
     this.chainGraceTimer = 0;
-    this.chainGraceMax = 90;
+    this.chainGraceMax = 68;
     this.nextGroupId = 1;
     
     this.baseRiseSpeed = 0.0012 - (handicap - 3) * 0.0003;
@@ -299,7 +299,6 @@ class PonEngine {
        this.grid[r][c+1].swapAnim = { dir: 1, timer: 6 };
     }
 
-    // ブロック落下開始までの時間は通常状態（14フレーム）を維持
     if (this.grid[r][c] && r+1 < this.rows && this.grid[r+1][c] === null) { this.grid[r][c].state = 'hover'; this.grid[r][c].timer = 14; }
     if (this.grid[r][c+1] && r+1 < this.rows && this.grid[r+1][c+1] === null) { this.grid[r][c+1].state = 'hover'; this.grid[r][c+1].timer = 14; }
 
@@ -615,8 +614,8 @@ class PonEngine {
     
     this.timeElapsed += deltaTime;
 
-    // スキル「代償」：5分（300,000ms）経過で自動敗北
-    if (this.isSacrifice && !this.isPractice && this.timeElapsed >= 300000 && !this.gameOver) {
+    // スキル「代償」：3分（180,000ms）経過で自動敗北
+    if (this.isSacrifice && !this.isPractice && this.timeElapsed >= 180000 && !this.gameOver) {
       this.gameOver = true;
       this.startGameOverFillAnim();
       if (this.onStateChange) this.onStateChange('gameover');
@@ -693,7 +692,6 @@ class PonEngine {
       }
     }
 
-    // ブロックの落下開始までの時間（hover）は常に通常通り維持
     transformGroups.forEach((blocks) => {
       const hasTransforming = blocks.some(b => b.state === 'transforming');
       if (!hasTransforming) {
@@ -1150,12 +1148,12 @@ class PonEngine {
 
       let totalBlocks = 0;
       if (this.isSacrifice) {
-        if (this.chain >= 3) {
-          totalBlocks += (this.chain - 2) * 6;
+        // 代償：送信お邪魔2段階低下（4連鎖〜 / 同時消し6個〜）
+        if (this.chain >= 4) {
+          totalBlocks += (this.chain - 3) * 6;
         }
-        if (matchedPositions.size === 5) totalBlocks += 3;
-        else if (matchedPositions.size === 6) totalBlocks += 4;
-        else if (matchedPositions.size >= 7) totalBlocks += 5;
+        if (matchedPositions.size === 6) totalBlocks += 3;
+        else if (matchedPositions.size >= 7) totalBlocks += 4;
       } else {
         if (this.chain >= 2) {
           totalBlocks += (this.chain - 1) * 6;
@@ -1231,7 +1229,7 @@ class BoardRenderer {
 
     // 連鎖猶予発動中は上端に薄いゴールドの猶予ゲージを表示
     if (engine.chain >= 1 && engine.chainGraceTimer > 0 && !engine.hasAnyMovingBlock()) {
-      const ratio = Math.max(0, Math.min(1, engine.chainGraceTimer / (engine.chainGraceMax || 90)));
+      const ratio = Math.max(0, Math.min(1, engine.chainGraceTimer / (engine.chainGraceMax || 68)));
       ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
       ctx.fillRect(4, 3, W - 8, 4);
       ctx.fillStyle = '#ffd700';
@@ -1597,7 +1595,7 @@ class BoardRenderer {
   }
 }
 
-// --- COM(AI) エンジン（盤面全体一括把握・最大5手先ビームサーチ・予告お邪魔把握・停止防止） ---
+// --- COM(AI) エンジン（盤面全体一括把握・最大5手先ビームサーチ・予告お邪魔把握・思考停止防止） ---
 class ComAI {
   constructor(engine, level, id) {
     this.engine = engine;
@@ -1606,8 +1604,8 @@ class ComAI {
     this.target = null;
 
     if (this.level <= 50) {
-      this.thinkInterval = Math.max(2, Math.round(28 - ((this.level - 1) / 49) * 25));
-      this.moveInterval = Math.max(1, Math.round(8 - ((this.level - 1) / 49) * 6.5));
+      this.thinkInterval = Math.max(2, Math.round(16 - ((this.level - 1) / 49) * 13));
+      this.moveInterval = Math.max(1, Math.round(7 - ((this.level - 1) / 49) * 5.5));
     } else {
       this.thinkInterval = Math.max(1, Math.round(3 - ((this.level - 50) / 49) * 2));
       this.moveInterval = 1;
@@ -1636,8 +1634,8 @@ class ComAI {
     this.engine.baseRiseSpeed = 0.0009 + this.level * 0.000018;
     this.engine.riseSpeed = this.engine.baseRiseSpeed;
 
-    this.riseTryProb = Math.min(0.98, 0.25 + (this.level / 50) * 0.65);
-    this.topChoiceNoise = Math.max(0, (45 - this.level) * 0.006);
+    this.riseTryProb = Math.min(0.98, 0.30 + (this.level / 50) * 0.62);
+    this.topChoiceNoise = Math.max(0, (40 - this.level) * 0.005);
 
     const patterns = ['small_chain', 'big_chain', 'multi_match', 'survival'];
     this.pattern = patterns[Math.floor(Math.random() * patterns.length)];
@@ -2104,7 +2102,8 @@ class ComAI {
     if (bestClearNode && bestClearNode.moves.length > 0) {
       return { type: 'clear', moves: bestClearNode.moves, score: bestClearNode.score };
     }
-    if (bestPrepNode && bestPrepNode.score > baseEval + 12 && bestPrepNode.moves.length > 0) {
+    const prepThreshold = this.level <= 20 ? 2 : 12;
+    if (bestPrepNode && bestPrepNode.score > baseEval + prepThreshold && bestPrepNode.moves.length > 0) {
       return { type: 'prep', moves: [bestPrepNode.moves[0]], score: bestPrepNode.score };
     }
     return null;
@@ -2243,8 +2242,24 @@ class ComAI {
       return;
     }
 
+    // 消し手や段差整地が見つからない場合も長時間停止せず安全な組み替えを行う
+    const explore = this.findExploratorySwap(snap);
+    if (explore) {
+      this.target = explore;
+      this.moveTimer = Math.max(0, this.moveInterval - 1);
+      return;
+    }
+
+    if (canSafeRise) {
+      this.risingTargetMaxH = Math.min(7, snap.maxH + 1);
+      this.engine.isRisingManualPad = true;
+      this.riseCooldown = 28;
+      this.target = null;
+      return;
+    }
+
     this.target = null;
-    this.actionTimer = Math.max(this.thinkInterval, 5);
+    this.actionTimer = Math.min(8, this.thinkInterval);
   }
 
   findFlattenOrSafeMove(snap) {
@@ -2270,5 +2285,27 @@ class ComAI {
     }
 
     return best;
+  }
+
+  findExploratorySwap(snap) {
+    const candidates = [];
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS - 1; c++) {
+        if (!this.canSwapAt(r, c)) continue;
+        if (this.isSwapRecentlyDone(r, c)) continue;
+
+        const b1 = this.engine.grid[r][c];
+        const b2 = this.engine.grid[r][c + 1];
+        if (!b1 || !b2) continue;
+
+        const dist = Math.abs(this.engine.cursor.x - c) + Math.abs(this.engine.cursor.y - r);
+        const sc = -dist * 3 + (ROWS - r) * 2 + Math.random() * 14;
+        candidates.push({ x: c, y: r, sc });
+      }
+    }
+    if (candidates.length === 0) return null;
+    candidates.sort((a, b) => b.sc - a.sc);
+    const pickIdx = Math.floor(Math.random() * Math.min(3, candidates.length));
+    return { x: candidates[pickIdx].x, y: candidates[pickIdx].y };
   }
 }

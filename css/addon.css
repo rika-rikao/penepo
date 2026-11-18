@@ -196,6 +196,39 @@
   border: 1px solid #f59e0b;
 }
 
+/* オンライン対戦：各プレイヤー等分フレーム背景（シームレス・クロスフェード） */
+#online-split-frames-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  display: none;
+  overflow: hidden;
+  background: var(--bg-color);
+}
+.online-split-frame-slot {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  overflow: hidden;
+  background: rgba(8, 12, 24, 0.6);
+}
+.online-split-frame-slot.has-left-feather {
+  -webkit-mask-image: linear-gradient(to right, transparent 0, rgba(0, 0, 0, 0.45) 3.2vw, #000 7vw);
+  mask-image: linear-gradient(to right, transparent 0, rgba(0, 0, 0, 0.45) 3.2vw, #000 7vw);
+}
+.online-split-frame-slot img {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  height: 100%;
+  width: auto;
+  min-width: 100%;
+  object-fit: cover;
+  display: block;
+}
+
 /* 大きな画面遷移用ロードトランジション */
 #scene-transition-overlay {
   position: fixed;
@@ -551,7 +584,7 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
 }
 .local-top-bar {
   width: 100%;
@@ -675,7 +708,7 @@
   align-items: center;
   justify-content: center;
   gap: 2px;
-  min-height: 54px;
+  min-height: 50px;
   overflow: visible;
   transition: transform 0.1s ease, border-color 0.15s ease;
 }
@@ -687,7 +720,7 @@
 }
 .local-tile-img-wrap {
   width: 100%;
-  height: 36px;
+  height: 34px;
   border-radius: 7px;
   overflow: hidden;
   background: #070b14;
@@ -766,7 +799,6 @@
   flex-direction: column;
   gap: 4px;
   min-width: 0;
-  min-height: 185px;
   overflow: hidden;
 }
 .local-dock-slot.p0 { border-color: rgba(16, 185, 129, 0.75); }
@@ -778,6 +810,7 @@
   border-style: dashed;
   justify-content: center;
   align-items: center;
+  min-height: 175px;
 }
 .local-dock-slot.is-active-touch {
   box-shadow: 0 0 14px rgba(255, 215, 0, 0.55);
@@ -788,47 +821,48 @@
   align-items: center;
   justify-content: space-between;
   gap: 3px;
+  min-height: 24px;
 }
 .local-slot-tag {
-  font-size: 0.78rem;
+  font-size: 0.74rem;
   font-weight: 900;
   color: #ffd700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .local-slot-type-btn {
   padding: 2px 6px;
-  font-size: 0.65rem;
+  font-size: 0.64rem;
   font-weight: 800;
   border-radius: 8px;
   background: #0f3460;
   color: #fff;
   border: 1px solid #4ecca3;
   cursor: pointer;
+  flex-shrink: 0;
 }
-.local-slot-com-lv {
+.local-slot-edit-btn {
+  position: relative;
+  width: 100%;
+  background: rgba(7, 11, 20, 0.58);
+  border: 1.5px solid rgba(148, 163, 184, 0.28);
+  border-radius: 9px;
+  padding: 4px;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  font-size: 0.65rem;
-  font-weight: 800;
-  color: #00d4ff;
-}
-.local-slot-lv-btn {
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  border: 1px solid #3282b8;
-  background: #162447;
-  color: #fff;
-  font-size: 0.7rem;
-  font-weight: 900;
+  flex-direction: column;
+  gap: 3px;
+  color: inherit;
+  text-align: center;
   cursor: pointer;
-  line-height: 1;
+}
+.local-slot-edit-btn:active {
+  transform: scale(0.98);
 }
 .local-slot-portrait {
   width: 100%;
-  height: 76px;
-  border-radius: 8px;
+  height: 64px;
+  border-radius: 7px;
   overflow: hidden;
   background: radial-gradient(circle at 50% 30%, rgba(255, 255, 255, 0.1), rgba(7, 11, 20, 0.94));
   border: 1px solid rgba(255, 255, 255, 0.12);
@@ -843,7 +877,7 @@
   object-position: 50% 8%;
 }
 .local-slot-char-name {
-  font-size: 0.76rem;
+  font-size: 0.74rem;
   font-weight: 900;
   color: #f8fafc;
   text-align: center;
@@ -852,17 +886,16 @@
   text-overflow: ellipsis;
 }
 .local-slot-skill-box {
-  background: rgba(7, 11, 20, 0.65);
+  background: rgba(7, 11, 20, 0.7);
   border: 1px solid rgba(255, 0, 127, 0.35);
-  border-radius: 8px;
-  padding: 4px 5px;
+  border-radius: 7px;
+  padding: 3px 4px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  flex: 1;
+  gap: 1px;
 }
 .local-slot-skill-name {
-  font-size: 0.68rem;
+  font-size: 0.65rem;
   font-weight: 900;
   color: #ffd700;
   white-space: nowrap;
@@ -870,16 +903,50 @@
   text-overflow: ellipsis;
 }
 .local-slot-skill-desc {
-  font-size: 0.58rem;
-  line-height: 1.25;
+  font-size: 0.56rem;
+  line-height: 1.22;
   color: #cbd5e1;
   display: -webkit-box;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
-.local-slot-phase-hint {
+.local-slot-slider-row {
+  width: 100%;
+  background: rgba(7, 11, 20, 0.68);
+  border: 1px solid rgba(78, 204, 163, 0.28);
+  border-radius: 8px;
+  padding: 3px 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.local-slot-slider-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   font-size: 0.62rem;
+  font-weight: 800;
+  color: #94a3b8;
+}
+.local-slot-slider-val {
+  color: #00d4ff;
+  font-weight: 900;
+}
+.local-slot-slider-val.com-lv {
+  color: #ff007f;
+}
+.local-slot-range {
+  width: 100%;
+  height: 16px;
+  margin: 0;
+  accent-color: #4ecca3;
+}
+.local-slot-range.com-lv-range {
+  accent-color: #ff007f;
+}
+.local-slot-phase-hint {
+  font-size: 0.6rem;
   font-weight: 800;
   color: #4ecca3;
   text-align: center;
@@ -888,15 +955,15 @@
   position: absolute;
   left: -6px;
   right: -6px;
-  top: 44%;
+  top: 38%;
   transform: translateY(-50%) rotate(-5deg);
   background: linear-gradient(90deg, #059669, #10b981, #34d399);
   color: #06121e;
-  font-size: 1.15rem;
+  font-size: 1.05rem;
   font-weight: 900;
   letter-spacing: 0.14em;
   text-align: center;
-  padding: 3px 0;
+  padding: 2px 0;
   border-top: 2px solid #fff;
   border-bottom: 2px solid #fff;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.8);
@@ -913,10 +980,12 @@
   }
   .local-dock-slot {
     padding: 4px;
-    min-height: 155px;
   }
   .local-slot-portrait {
-    height: 54px;
+    height: 46px;
+  }
+  .local-slot-slider-head {
+    font-size: 0.56rem;
   }
 }
 
@@ -1317,9 +1386,6 @@
 
 /* ==========================================
    横画面複数人対戦用：盤面隣接インライン立ち絵カード
-   2人: 1P盤面・1P立ち絵・2P立ち絵・2P盤面
-   3人: 1P盤面・1P細長立ち絵・2P盤面・2P細長立ち絵・3P盤面・3P細長立ち絵
-   4人: 1P盤面・1P細長立ち絵・2P盤面・2P細長立ち絵・3P盤面・3P細長立ち絵・4P盤面・4P細長立ち絵
    ========================================== */
 .inline-player-portrait {
   position: relative;
@@ -1797,7 +1863,7 @@
   box-shadow: 0 0 6px rgba(255, 215, 0, 0.8);
 }
 
-/* カスタム＆初期フレーム用レイヤー（アス比を保って画面いっぱいに拡大縮小・余白なし） */
+/* カスタム＆初期フレーム用レイヤー（透け・暗幕なし） */
 .board-wrapper > .garbage-preview-box,
 .board-wrapper > .board-header,
 .board-wrapper > .canvas-container,
@@ -1826,17 +1892,11 @@
   z-index: 0;
   pointer-events: none;
   display: none;
+  background-color: var(--bg-color);
   background-size: cover;
   background-repeat: no-repeat;
   background-position: center;
   overflow: hidden;
-}
-#my-zone-frame-bg::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: rgba(8, 10, 22, 0.28);
-  pointer-events: none;
 }
 body.has-custom-frame #my-zone-frame-bg {
   display: block;
@@ -1848,19 +1908,12 @@ body.has-custom-frame #menu-overlay::before {
   inset: 0;
   z-index: 0;
   pointer-events: none;
+  background-color: var(--bg-color);
   background-image: var(--custom-frame-url);
   background-size: cover;
   background-repeat: no-repeat;
   background-position: center;
-  opacity: 0.85;
-}
-body.has-custom-frame #menu-overlay::after {
-  content: '';
-  position: fixed;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  background: rgba(8, 10, 22, 0.36);
+  opacity: 1;
 }
 body.has-custom-frame #menu-overlay > * {
   position: relative;

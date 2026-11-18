@@ -524,7 +524,16 @@ function resetGameLogicOnline(config) {
     applyBoardFrame('my-wrapper', null);
   }
   if (typeof applyGlobalFrameTheme === 'function') {
-    applyGlobalFrameTheme(CustomAssets.frame ? CustomAssets.frame.dataUrl : null);
+    applyGlobalFrameTheme(myRenderer.theme.frameSrc);
+  }
+  if (!myRenderer.theme.frameSrc && myRenderer.theme.charId !== 'custom' && myRenderer.theme.voiceName && typeof resolveCharacterImage === 'function') {
+    const targetTheme = myRenderer.theme;
+    resolveCharacterImage('frame', targetTheme.voiceName).then((url) => {
+      if (url && myRenderer && myRenderer.theme === targetTheme && document.getElementById('game-area')?.style.display !== 'none') {
+        targetTheme.frameSrc = url;
+        if (!CustomAssets.frame && typeof applyGlobalFrameTheme === 'function') applyGlobalFrameTheme(url);
+      }
+    });
   }
   document.getElementById('player-label').innerText = myRenderer.theme.name;
 
@@ -626,6 +635,20 @@ function resetGameLogicOnline(config) {
 
     const fallbackCharId = p.type === 'com' ? CHARACTERS[(index + 1) % CHARACTERS.length].id : 'main00';
     rRenderer.theme = buildThemeForCharacter(p.charId || fallbackCharId, null, false);
+    if (typeof applyBoardFrame === 'function') {
+      applyBoardFrame(`rival-wrapper-${index}`, rRenderer.theme.frameSrc);
+    }
+    if (!rRenderer.theme.frameSrc && rRenderer.theme.charId !== 'custom' && rRenderer.theme.voiceName && typeof resolveCharacterImage === 'function') {
+      const targetRTheme = rRenderer.theme;
+      const rivalWrapId = `rival-wrapper-${index}`;
+      resolveCharacterImage('frame', targetRTheme.voiceName).then((url) => {
+        if (url && document.getElementById(rivalWrapId)) {
+          targetRTheme.frameSrc = url;
+          applyBoardFrame(rivalWrapId, url);
+        }
+      });
+    }
+
     const initialSkillRem = (p.type === 'com')
       ? (p.useCheat ? 3 : undefined)
       : (config.skillEnabled ? PLAYER_SKILL_MAX : undefined);
@@ -773,7 +796,17 @@ async function applyReceivedAppearance(senderId, payload) {
       customFrameUrl
     );
     if (typeof applyBoardFrame === 'function') {
-      applyBoardFrame(`rival-wrapper-${targetOpp.index}`, customFrameUrl);
+      applyBoardFrame(`rival-wrapper-${targetOpp.index}`, targetOpp.renderer.theme.frameSrc);
+    }
+    if (!targetOpp.renderer.theme.frameSrc && targetOpp.renderer.theme.charId !== 'custom' && targetOpp.renderer.theme.voiceName && typeof resolveCharacterImage === 'function') {
+      const targetRTheme = targetOpp.renderer.theme;
+      const rivalWrapId = `rival-wrapper-${targetOpp.index}`;
+      resolveCharacterImage('frame', targetRTheme.voiceName).then((url) => {
+        if (url && document.getElementById(rivalWrapId)) {
+          targetRTheme.frameSrc = url;
+          applyBoardFrame(rivalWrapId, url);
+        }
+      });
     }
     const nameEl = targetOpp.renderer.canvas.closest('.board-wrapper')?.querySelector('.board-header span');
     if (nameEl) {

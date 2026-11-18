@@ -378,7 +378,6 @@ function handleMenuStartAction() {
     return true;
   }
 
-  // メイン/ハブメニュー時はフォーカスされているボタンを押下
   const activeEl = document.activeElement;
   if (activeEl && activeEl.classList.contains('menu-card-btn') && typeof activeEl.click === 'function') {
     activeEl.click();
@@ -879,10 +878,11 @@ function pollLocalMenuGamepads(pads) {
     const cfg = playerConfigs[slotIdx].pad;
     const just = (btnIdx) => btnIdx !== null && btnIdx !== undefined && cur[btnIdx] && !prev[btnIdx];
     const isRep = (dir, btnIdx) => {
-      if (btnIdx === null || btnIdx === undefined || !cur[btnIdx]) {
+      if (btnIdx === null || btnIdx !== undefined && !cur[btnIdx]) {
         localMenuPadHold[slotIdx][dir] = 0;
         return false;
       }
+      if (btnIdx === null || btnIdx === undefined) return false;
       const f = localMenuPadHold[slotIdx][dir]++;
       return f === 0 || (f >= 10 && (f - 10) % 3 === 0);
     };
@@ -2951,8 +2951,32 @@ function resetGameLogic() {
     true,
     resolvedCharId === 'custom' ? getPlayerDisplayName() : null
   );
-  if (typeof applyBoardFrame === 'function') applyBoardFrame('my-wrapper', currentMode === 'share' ? myRenderer.theme.frameSrc : null);
-  if (typeof applyGlobalFrameTheme === 'function') applyGlobalFrameTheme(CustomAssets.frame ? CustomAssets.frame.dataUrl : null);
+
+  const isSharedScreenMode = (currentMode === 'share' || currentMode === 'local');
+  if (typeof applyBoardFrame === 'function') {
+    applyBoardFrame('my-wrapper', isSharedScreenMode ? myRenderer.theme.frameSrc : null);
+  }
+  if (currentMode !== 'story') {
+    if (typeof applyGlobalFrameTheme === 'function') {
+      const globalFrame = isSharedScreenMode
+        ? (CustomAssets.frame ? CustomAssets.frame.dataUrl : null)
+        : myRenderer.theme.frameSrc;
+      applyGlobalFrameTheme(globalFrame);
+    }
+    if (!myRenderer.theme.frameSrc && myRenderer.theme.charId !== 'custom' && myRenderer.theme.voiceName && typeof resolveCharacterImage === 'function') {
+      const targetTheme = myRenderer.theme;
+      const isSharedCap = isSharedScreenMode;
+      resolveCharacterImage('frame', targetTheme.voiceName).then((url) => {
+        if (url && currentMode !== 'story' && myRenderer && myRenderer.theme === targetTheme && document.getElementById('game-area')?.style.display !== 'none') {
+          targetTheme.frameSrc = url;
+          if (!CustomAssets.frame) {
+            if (isSharedCap && typeof applyBoardFrame === 'function') applyBoardFrame('my-wrapper', url);
+            else if (!isSharedCap && typeof applyGlobalFrameTheme === 'function') applyGlobalFrameTheme(url);
+          }
+        }
+      });
+    }
+  }
   document.getElementById('player-label').innerText = (currentMode === 'local' || currentMode === 'share') ? `1P: ${myRenderer.theme.name}` : myRenderer.theme.name;
 
   myEngine.onChainEnd = (chain) => {
@@ -3011,6 +3035,30 @@ function resetGameLogic() {
     const oppId = isShareMode ? 'share_p2' : (currentMode === 'local' ? `local_${i + 1}` : `com_${i}`);
     const rRenderer = new BoardRenderer(`rival-canvas-${i}`);
     rRenderer.theme = buildThemeForCharacter(oppChar.id, (oppChar.id === 'custom' && CustomAssets.chara) ? CustomAssets.chara.dataUrl : null, false, oppChar.id === 'custom' ? getPlayerDisplayName() : null);
+
+    if (typeof applyBoardFrame === 'function') {
+      applyBoardFrame(`rival-wrapper-${i}`, rRenderer.theme.frameSrc);
+    }
+    if (currentMode === 'story' && i === 0) {
+      const storyEnemyFrame = rRenderer.theme.frameSrc || (CustomAssets.frame ? CustomAssets.frame.dataUrl : null);
+      if (typeof applyGlobalFrameTheme === 'function') {
+        applyGlobalFrameTheme(storyEnemyFrame);
+      }
+    }
+    if (!rRenderer.theme.frameSrc && rRenderer.theme.charId !== 'custom' && rRenderer.theme.voiceName && typeof resolveCharacterImage === 'function') {
+      const targetRTheme = rRenderer.theme;
+      const rivalWrapId = `rival-wrapper-${i}`;
+      const isStoryEnemy = (currentMode === 'story' && i === 0);
+      resolveCharacterImage('frame', targetRTheme.voiceName).then((url) => {
+        if (url && document.getElementById(rivalWrapId)) {
+          targetRTheme.frameSrc = url;
+          applyBoardFrame(rivalWrapId, url);
+          if (isStoryEnemy && currentMode === 'story' && typeof applyGlobalFrameTheme === 'function') {
+            applyGlobalFrameTheme(url);
+          }
+        }
+      });
+    }
 
     const oppHandicap = isShareMode ? (sharePrepConfig.p2.handicap || 3) : 3;
     const rEngine = new PonEngine(
@@ -3150,6 +3198,10 @@ function performExitGame(silent = false) {
   if (typeof VOICE !== 'undefined' && VOICE.clearRemoteVoices) VOICE.clearRemoteVoices();
   cleanupShareDomZones();
   document.getElementById('my-wrapper')?.classList.remove('sacrifice-aura');
+  if (typeof applyBoardFrame === 'function') applyBoardFrame('my-wrapper', null);
+  if (typeof applyGlobalFrameTheme === 'function') {
+    applyGlobalFrameTheme(typeof CustomAssets !== 'undefined' && CustomAssets.frame ? CustomAssets.frame.dataUrl : null);
+  }
   document.body.classList.remove('local-force-landscape', 'share-force-portrait');
   try { screen.orientation?.unlock?.(); } catch (e) {}
   myEngine = null; opponents = [];

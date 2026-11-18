@@ -487,7 +487,30 @@ const StoryManager = {
     const overlay = document.getElementById('story-overlay');
     const bgEl = document.getElementById('story-stage-bg');
     if (bgEl) {
-      bgEl.style.backgroundImage = CustomAssets.bg ? `url("${CustomAssets.bg.dataUrl}")` : 'none';
+      const fallbackBg = (typeof CustomAssets !== 'undefined' && CustomAssets.bg)
+        ? `url("${CustomAssets.bg.dataUrl}")`
+        : 'none';
+      const stageEnemy = this.activeStage && typeof getCharacterById === 'function'
+        ? getCharacterById(this.activeStage.enemyId)
+        : null;
+      const bgCharName = stageEnemy ? stageEnemy.name : '';
+      const cacheKey = bgCharName ? `story_back::${bgCharName}` : '';
+
+      if (cacheKey && typeof ResolvedCharImgCache !== 'undefined' && Object.prototype.hasOwnProperty.call(ResolvedCharImgCache, cacheKey)) {
+        bgEl.style.backgroundImage = ResolvedCharImgCache[cacheKey]
+          ? `url("${ResolvedCharImgCache[cacheKey]}")`
+          : fallbackBg;
+      } else if (bgCharName && typeof resolveCharacterImage === 'function') {
+        bgEl.style.backgroundImage = fallbackBg;
+        const targetStageId = this.activeStage.id;
+        resolveCharacterImage('story_back', bgCharName).then((url) => {
+          if (this.activeStage && this.activeStage.id === targetStageId) {
+            bgEl.style.backgroundImage = url ? `url("${url}")` : fallbackBg;
+          }
+        });
+      } else {
+        bgEl.style.backgroundImage = fallbackBg;
+      }
     }
     if (overlay) overlay.style.display = 'flex';
     if (typeof syncPadSnapshotsAll === 'function') {

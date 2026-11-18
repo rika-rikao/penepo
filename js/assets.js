@@ -1,7 +1,7 @@
 // ==========================================
 // キャラクター定義 & ループ型3Dカバーフロー & ハブ立ち絵設定 & カスタム画像・ボイス・SE・ZIP一括読込 & 描画補助
 // ==========================================
-const IMG_EXTS = ['png', 'webp', 'gif', 'jpg', 'jpeg'];
+const IMG_EXTS = ['webp', 'png', 'gif', 'jpg', 'jpeg'];
 
 const CHARACTERS = [
   { id: 'main00', name: 'フレア',   role: 'main',  file: 'assets/img/chara/nomal/フレア.png',   color: '#ff3366' },
@@ -62,14 +62,26 @@ const SKILL_COLORS = {
 };
 
 const AssetCache = new Map();
-const ResolvedCharImgCache = {}; // { 'normal::フレア': url | null, 'lose::フレア': url | null }
-const ResolvingCharImgMap = {};  // { 'normal::フレア': Promise<string|null> }
+const ResolvedCharImgCache = {}; // { 'normal::フレア': url | null, 'lose::フレア': url | null, 'frame::フレア': url | null, 'pazzle_back::フレア': url | null, 'story_back::フレア': url | null }
+const ResolvingCharImgMap = {};  // { 'variant::key': Promise<string|null> }
 const CustomAssets = { chara: null, bg: null, frame: null };
 let selectedCharId = localStorage.getItem('pdw_char_id') || 'main00';
 let storySelectedCharId = localStorage.getItem('pdw_story_char_id') || (selectedCharId === 'custom' ? 'custom' : 'main00');
 let playerCustomName = localStorage.getItem('pdw_player_name') || '';
 let hubPortraitMode = localStorage.getItem('pdw_hub_char') || 'random';
 let currentHubRandomCharId = null;
+
+function toAbsoluteAssetUrl(url) {
+  if (!url) return url;
+  if (url.startsWith('data:') || url.startsWith('blob:') || /^https?:\/\//i.test(url) || /^file:\/\//i.test(url)) {
+    return url;
+  }
+  try {
+    return new URL(url, document.baseURI).href;
+  } catch (_) {
+    return url;
+  }
+}
 
 function pickHubPortraitCharId(reroll = false) {
   if (hubPortraitMode && hubPortraitMode !== 'random') {
@@ -198,10 +210,26 @@ function buildCharImageCandidates(variant, charName) {
       ...IMG_EXTS.map(ext => `assets/chara/lose/${safeLoseName}.${ext}`)
     ];
   }
+  if (variant === 'frame') {
+    const safeFrameName = isFileProto ? `${charName}_フレーム` : encodeURIComponent(`${charName}_フレーム`);
+    return IMG_EXTS.map(ext => `assets/img/chara_frame/${safeFrameName}.${ext}`);
+  }
+  if (variant === 'pazzle_back') {
+    const safeBgName = isFileProto ? `${charName}_背景` : encodeURIComponent(`${charName}_背景`);
+    return IMG_EXTS.map(ext => `assets/img/chara_pazzle_back/${safeBgName}.${ext}`);
+  }
+  if (variant === 'story_back') {
+    const safeStoryBgName = isFileProto ? `${charName}_s背景` : encodeURIComponent(`${charName}_s背景`);
+    return IMG_EXTS.map(ext => `assets/img/chara_story_back/${safeStoryBgName}.${ext}`);
+  }
   return [
     ...IMG_EXTS.map(ext => `assets/img/chara/nomal/${safeName}.${ext}`),
     ...IMG_EXTS.map(ext => `assets/img/chara/normal/${safeName}.${ext}`)
   ];
+}
+
+function buildSystemMainImageCandidates() {
+  return IMG_EXTS.map(ext => `assets/img/system/main.${ext}`);
 }
 
 function probeCharImageUrl(url) {
@@ -249,6 +277,80 @@ function resolveCharacterImage(variant, charName) {
 
   ResolvingCharImgMap[cacheKey] = task;
   return task;
+}
+
+function resolveSystemMainImage() {
+  const cacheKey = 'system::main';
+  if (Object.prototype.hasOwnProperty.call(ResolvedCharImgCache, cacheKey)) {
+    return Promise.resolve(ResolvedCharImgCache[cacheKey]);
+  }
+  if (ResolvingCharImgMap[cacheKey]) {
+    return ResolvingCharImgMap[cacheKey];
+  }
+
+  const candidates = buildSystemMainImageCandidates();
+  const task = (async () => {
+    for (const url of candidates) {
+      const ok = await probeCharImageUrl(url);
+      if (ok) {
+        ResolvedCharImgCache[cacheKey] = url;
+        applySystemMainBackground(url);
+        return url;
+      }
+    }
+    ResolvedCharImgCache[cacheKey] = null;
+    applySystemMainBackground(null);
+    return null;
+  })().finally(() => {
+    delete ResolvingCharImgMap[cacheKey];
+  });
+
+  ResolvingCharImgMap[cacheKey] = task;
+  return task;
+}
+
+function applySystemMainBackground(url) {
+  const absUrl = toAbsoluteAssetUrl(url);
+  const menuOverlay = document.getElementById('menu-overlay');
+  if (absUrl) {
+    document.documentElement.style.setProperty('--menu-bg-image', `url("${absUrl}")`);
+    if (menuOverlay) {
+      menuOverlay.style.backgroundImage = `url("${absUrl}"), var(--scene-bg-pattern), var(--scene-bg-base)`;
+      menuOverlay.style.backgroundSize = 'cover, 32px 32px, 100% 100%';
+      menuOverlay.style.backgroundPosition = 'center, center, center';
+      menuOverlay.style.backgroundRepeat = 'no-repeat, repeat, no-repeat';
+    }
+    document.body.classList.add('has-system-main-bg');
+  } else {
+    document.documentElement.style.removeProperty('--menu-bg-image');
+    if (menuOverlay) {
+      menuOverlay.style.backgroundImage = '';
+      menuOverlay.style.backgroundSize = '';
+      menuOverlay.style.backgroundPosition = '';
+      menuOverlay.style.backgroundRepeat = '';
+    }
+    document.body.classList.remove('has-system-main-bg');
+  }
+}
+
+function getResolvedDefaultFrame(charName) {
+  if (!charName) return null;
+  const key = `frame::${charName}`;
+  if (Object.prototype.hasOwnProperty.call(ResolvedCharImgCache, key)) {
+    return ResolvedCharImgCache[key];
+  }
+  return undefined;
+}
+
+function getResolvedDefaultPazzleBack(charName) {
+  if (!charName) return null;
+  const bgKey = `pazzle_back::${charName}`;
+  if (Object.prototype.hasOwnProperty.call(ResolvedCharImgCache, bgKey)) {
+    if (ResolvedCharImgCache[bgKey]) return ResolvedCharImgCache[bgKey];
+    const frameRes = getResolvedDefaultFrame(charName);
+    return frameRes !== undefined ? frameRes : null;
+  }
+  return undefined;
 }
 
 function applyCharacterImageToElement(imgEl, charId, variant = 'normal', options = {}) {
@@ -350,21 +452,55 @@ function getThemeNormalImage(theme) {
   return theme.charSrc ? getCachedImage(theme.charSrc) : null;
 }
 
-function preloadDefaultCharImages(onProgress = null) {
-  const total = CHARACTERS.length * 2;
+async function preloadDefaultCharImages(onProgress = null) {
+  const variants = ['normal', 'frame', 'pazzle_back', 'story_back', 'lose'];
+  const total = CHARACTERS.length * variants.length + 1;
   let done = 0;
-  const tasks = [];
+  const tick = () => {
+    done++;
+    if (typeof onProgress === 'function') onProgress(done, total);
+  };
+
+  // 最優先：メイン画面背景を先行解決
+  await resolveSystemMainImage().finally(tick);
+
+  // 優先順：選択中キャラ & 主人公(フレア)を先に並べ、残りを6並列で安全に解決
+  const priorityChars = [];
+  const addedNames = new Set();
+  const pushCharById = (cid) => {
+    if (!cid || cid === 'custom' || cid === 'random') return;
+    const ch = CHARACTERS.find(c => c.id === cid);
+    if (ch && !addedNames.has(ch.name)) {
+      addedNames.add(ch.name);
+      priorityChars.push(ch);
+    }
+  };
+  pushCharById(selectedCharId);
+  pushCharById(storySelectedCharId);
+  pushCharById('main00');
   CHARACTERS.forEach(c => {
-    ['normal', 'lose'].forEach(variant => {
-      tasks.push(
-        resolveCharacterImage(variant, c.name).finally(() => {
-          done++;
-          if (typeof onProgress === 'function') onProgress(done, total);
-        })
-      );
+    if (!addedNames.has(c.name)) {
+      addedNames.add(c.name);
+      priorityChars.push(c);
+    }
+  });
+
+  const jobQueue = [];
+  priorityChars.forEach(c => {
+    variants.forEach(variant => {
+      jobQueue.push(() => resolveCharacterImage(variant, c.name).finally(tick));
     });
   });
-  return Promise.all(tasks);
+
+  const CONCURRENCY = 6;
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(CONCURRENCY, jobQueue.length) }, async () => {
+    while (cursor < jobQueue.length) {
+      const idx = cursor++;
+      await jobQueue[idx]();
+    }
+  });
+  await Promise.all(workers);
 }
 
 // ==========================================
@@ -1413,10 +1549,31 @@ function buildThemeForCharacter(charId, customCharaDataUrl = null, includeMyGlob
   }
   if (charSrc) getCachedImage(charSrc);
 
-  const bgSrc = includeMyGlobalBgFrame && CustomAssets.bg ? CustomAssets.bg.dataUrl : null;
-  const frameSrc = customFrameDataUrl !== null
-    ? customFrameDataUrl
-    : (includeMyGlobalBgFrame && CustomAssets.frame ? CustomAssets.frame.dataUrl : null);
+  let defaultFrameSrc = null;
+  let defaultBgSrc = null;
+  if (charDef.id !== 'custom') {
+    const resolvedFrame = getResolvedDefaultFrame(charDef.name);
+    if (resolvedFrame) defaultFrameSrc = resolvedFrame;
+    else if (resolvedFrame === undefined) resolveCharacterImage('frame', charDef.name);
+
+    const resolvedBg = getResolvedDefaultPazzleBack(charDef.name);
+    if (resolvedBg) defaultBgSrc = resolvedBg;
+    else if (resolvedBg === undefined) resolveCharacterImage('pazzle_back', charDef.name);
+  }
+
+  const bgSrc = (includeMyGlobalBgFrame && CustomAssets.bg)
+    ? CustomAssets.bg.dataUrl
+    : defaultBgSrc;
+
+  let frameSrc = null;
+  if (customFrameDataUrl) {
+    frameSrc = customFrameDataUrl;
+  } else if (includeMyGlobalBgFrame && CustomAssets.frame) {
+    frameSrc = CustomAssets.frame.dataUrl;
+  } else {
+    frameSrc = defaultFrameSrc;
+  }
+
   if (bgSrc) getCachedImage(bgSrc);
   if (frameSrc) getCachedImage(frameSrc);
   return {
@@ -1426,7 +1583,8 @@ function buildThemeForCharacter(charId, customCharaDataUrl = null, includeMyGlob
     color: charDef.color,
     charSrc,
     bgSrc,
-    frameSrc
+    frameSrc,
+    hasCustomBg: !!(includeMyGlobalBgFrame && CustomAssets.bg)
   };
 }
 
@@ -1440,8 +1598,12 @@ function applyBoardFrame(wrapperId, frameSrc) {
     frameLayer.className = 'board-frame-layer';
     wrapper.insertBefore(frameLayer, wrapper.firstChild);
   }
-  if (frameSrc) {
-    frameLayer.style.backgroundImage = `url("${frameSrc}")`;
+  const absUrl = toAbsoluteAssetUrl(frameSrc);
+  if (absUrl) {
+    frameLayer.style.backgroundImage = `url("${absUrl}")`;
+    frameLayer.style.backgroundSize = 'cover';
+    frameLayer.style.backgroundPosition = 'center';
+    frameLayer.style.backgroundRepeat = 'no-repeat';
     frameLayer.style.display = 'block';
     wrapper.classList.add('has-custom-frame');
   } else {
@@ -1451,18 +1613,31 @@ function applyBoardFrame(wrapperId, frameSrc) {
   }
 }
 
-// 各種ボタンの背景となる部分へのフレーム適用
+// 各種ボタンの背景となる部分・画面全体へのフレーム適用
 function applyGlobalFrameTheme(frameSrc) {
-  if (frameSrc) {
-    document.documentElement.style.setProperty('--custom-frame-url', `url("${frameSrc}")`);
+  const absUrl = toAbsoluteAssetUrl(frameSrc);
+  const zoneBgEl = document.getElementById('my-zone-frame-bg');
+  if (absUrl) {
+    document.documentElement.style.setProperty('--custom-frame-url', `url("${absUrl}")`);
+    if (zoneBgEl) {
+      zoneBgEl.style.backgroundImage = `url("${absUrl}")`;
+      zoneBgEl.style.backgroundSize = 'cover';
+      zoneBgEl.style.backgroundPosition = 'center';
+      zoneBgEl.style.backgroundRepeat = 'no-repeat';
+      zoneBgEl.style.display = 'block';
+    }
     document.body.classList.add('has-custom-frame');
   } else {
     document.documentElement.style.removeProperty('--custom-frame-url');
+    if (zoneBgEl) {
+      zoneBgEl.style.backgroundImage = '';
+      zoneBgEl.style.display = '';
+    }
     document.body.classList.remove('has-custom-frame');
   }
 }
 
-// --- Canvas 描画補助（縦横アス比対応） ---
+// --- Canvas 描画補助（縦横アス比対応・高さ基準トリミング） ---
 function drawImageCover(ctx, img, x, y, w, h) {
   const iw = img.naturalWidth || img.width;
   const ih = img.naturalHeight || img.height;
@@ -1473,16 +1648,48 @@ function drawImageCover(ctx, img, x, y, w, h) {
   ctx.drawImage(img, x + (w - dw) / 2, y + (h - dh) / 2, dw, dh);
 }
 
+function drawImageFitHeight(ctx, img, x, y, w, h) {
+  const iw = img.naturalWidth || img.width;
+  const ih = img.naturalHeight || img.height;
+  if (!iw || !ih) return;
+  const scale = h / ih;
+  const dw = iw * scale;
+  const dh = h;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x, y, w, h);
+  ctx.clip();
+  ctx.drawImage(img, x + (w - dw) / 2, y, dw, dh);
+  ctx.restore();
+}
+
 function drawBoardBgAddon(ctx, canvas, engine, renderer) {
   const theme = renderer.theme;
   if (!theme) return;
   const W = canvas.width;
   const H = canvas.height;
 
+  if (!theme.hasCustomBg && !theme.bgSrc && theme.charId && theme.charId !== 'custom' && theme.voiceName) {
+    const resolvedBg = getResolvedDefaultPazzleBack(theme.voiceName);
+    if (resolvedBg) {
+      theme.bgSrc = resolvedBg;
+    } else if (resolvedBg === undefined) {
+      resolveCharacterImage('pazzle_back', theme.voiceName).then((url) => {
+        if (url) {
+          theme.bgSrc = url;
+        } else {
+          resolveCharacterImage('frame', theme.voiceName).then((fUrl) => {
+            if (fUrl && !theme.bgSrc) theme.bgSrc = fUrl;
+          });
+        }
+      });
+    }
+  }
+
   if (theme.bgSrc) {
     const bgImg = getCachedImage(theme.bgSrc);
     if (bgImg) {
-      drawImageCover(ctx, bgImg, 0, 0, W, H);
+      drawImageFitHeight(ctx, bgImg, 0, 0, W, H);
     }
   }
 
@@ -1556,18 +1763,18 @@ async function initAssetsSystem() {
 
   const safetyTimer = setTimeout(() => {
     if (typeof AppLoader !== 'undefined') AppLoader.hide();
-  }, 3500);
+  }, 4500);
 
   try {
     await loadAllCustomAssets();
     if (typeof AppLoader !== 'undefined') {
-      AppLoader.setProgress(35, 'キャラクター画像を読み込み中...');
+      AppLoader.setProgress(30, 'キャラクター・背景画像を読み込み中...');
     }
 
     const preloadPromise = preloadDefaultCharImages((done, total) => {
       if (typeof AppLoader !== 'undefined' && total > 0) {
-        const pct = 35 + Math.round((done / total) * 55);
-        AppLoader.setProgress(pct, `キャラクター画像を読み込み中... (${done}/${total})`);
+        const pct = 30 + Math.round((done / total) * 60);
+        AppLoader.setProgress(pct, `キャラクター・背景画像を読み込み中... (${done}/${total})`);
       }
     });
 
@@ -1577,7 +1784,7 @@ async function initAssetsSystem() {
 
     await Promise.race([
       Promise.all([preloadPromise, seWait]),
-      new Promise(resolve => setTimeout(resolve, 3000))
+      new Promise(resolve => setTimeout(resolve, 4000))
     ]);
 
     refreshCustomAssetsUI();

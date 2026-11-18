@@ -8,7 +8,8 @@
   --accent-pink: #ff007f;
   --accent-gold: #ffd700;
 
-  /* 将来背景画像を差し替える時はここを url('../assets/img/bg.png') 等にするだけで全体に反映 */
+  /* メイン画面～モード選択画面の背景画像 & 将来の盤面外背景差し替え用変数 */
+  --menu-bg-image: none;
   --scene-bg-image: none;
   --scene-bg-base:
     radial-gradient(circle at 18% 20%, rgba(0, 212, 255, 0.14), transparent 44%),
@@ -85,7 +86,7 @@ body {
   -webkit-overflow-scrolling: touch;
   touch-action: auto !important;
   background-color: var(--bg-color);
-  background-image: var(--scene-bg-image), var(--scene-bg-pattern), var(--scene-bg-base);
+  background-image: var(--menu-bg-image), var(--scene-bg-pattern), var(--scene-bg-base);
   background-size: cover, 32px 32px, 100% 100%;
   background-position: center, center, center;
   background-repeat: no-repeat, repeat, no-repeat;

@@ -7,6 +7,8 @@ let serverUpdateCheckPromise = null;
 
 let isSwapVibrateEnabled = (localStorage.getItem('pdw_swap_vibrate') !== 'false');
 let isGbMode = (localStorage.getItem('pdw_gb_mode') === 'true');
+let isAppExiting = false;
+const padVibrateResetTimers = {};
 const lastVibrateAtByKind = { swap: 0, confirm: 0, garbage: 0 };
 let lastShortVibrateAt = 0;
 
@@ -51,6 +53,27 @@ function isShareModeActiveForVibration() {
   return false;
 }
 
+function stopAllVibration() {
+  Object.keys(padVibrateResetTimers).forEach((k) => {
+    clearTimeout(padVibrateResetTimers[k]);
+    delete padVibrateResetTimers[k];
+  });
+  if (isBodyVibrationCapable()) {
+    try {
+      navigator.vibrate(0);
+    } catch (_) {}
+  }
+  try {
+    const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()) : [];
+    for (let i = 0; i < pads.length; i++) {
+      const p = pads[i];
+      if (p && p.connected && p.vibrationActuator && typeof p.vibrationActuator.reset === 'function') {
+        p.vibrationActuator.reset().catch(() => {});
+      }
+    }
+  } catch (_) {}
+}
+
 function applyGbMode(enabled) {
   isGbMode = !!enabled;
   if (document.body) {
@@ -60,6 +83,9 @@ function applyGbMode(enabled) {
   if (el && el.checked !== isGbMode) el.checked = isGbMode;
 }
 
+// 最初のロード画面表示前から即座にGB風モードを反映する
+applyGbMode(isGbMode);
+
 function onGbModeToggle(checked) {
   applyGbMode(checked);
   if (typeof SE !== 'undefined') SE.play('select');
@@ -68,6 +94,9 @@ function onGbModeToggle(checked) {
 function onSwapVibrateToggle(checked) {
   isSwapVibrateEnabled = !!checked;
   syncVisualControlSettingToggles();
+  if (!isSwapVibrateEnabled) {
+    stopAllVibration();
+  }
   if (typeof SE !== 'undefined') SE.play('select');
   if (isSwapVibrateEnabled) {
     triggerSwapVibration(true);
@@ -78,6 +107,9 @@ function onBoardVibrateToggle(checked) {
   isSwapVibrateEnabled = !!checked;
   localStorage.setItem('pdw_swap_vibrate', String(!!isSwapVibrateEnabled));
   syncVisualControlSettingToggles();
+  if (!isSwapVibrateEnabled) {
+    stopAllVibration();
+  }
   if (typeof SE !== 'undefined') SE.play('select');
   if (isSwapVibrateEnabled) {
     triggerSwapVibration(true);
@@ -105,6 +137,16 @@ function syncVisualControlSettingToggles() {
 }
 
 function triggerGameVibration(kind = 'swap', force = false, targetPadSlot = null) {
+  if (isAppExiting) return;
+  const termOverlay = document.getElementById('app-terminated-overlay');
+  if (termOverlay && termOverlay.style.display === 'flex') return;
+  if (kind !== 'confirm') {
+    const exitModal = document.getElementById('exit-confirm-modal');
+    const appExitModal = document.getElementById('app-exit-confirm-modal');
+    if ((exitModal && exitModal.style.display === 'flex') || (appExitModal && appExitModal.style.display === 'flex')) {
+      return;
+    }
+  }
   if (isShareModeActiveForVibration()) return;
   if (!isSwapVibrateEnabled) return;
 
@@ -140,12 +182,29 @@ function triggerGameVibration(kind = 'swap', force = false, targetPadSlot = null
       const p = pads[i];
       if (p && p.connected && p.vibrationActuator && typeof p.vibrationActuator.playEffect === 'function') {
         padRumbled = true;
+        if (padVibrateResetTimers[i]) {
+          clearTimeout(padVibrateResetTimers[i]);
+          delete padVibrateResetTimers[i];
+        }
         p.vibrationActuator.playEffect('dual-rumble', {
           startDelay: 0,
           duration: padParams.duration,
           weakMagnitude: padParams.weakMagnitude,
           strongMagnitude: padParams.strongMagnitude
         }).catch(() => {});
+        if (typeof p.vibrationActuator.reset === 'function') {
+          const padIdx = i;
+          padVibrateResetTimers[padIdx] = setTimeout(() => {
+            delete padVibrateResetTimers[padIdx];
+            try {
+              const curPads = navigator.getGamepads ? Array.from(navigator.getGamepads()) : [];
+              const curPad = curPads[padIdx];
+              if (curPad && curPad.connected && curPad.vibrationActuator && typeof curPad.vibrationActuator.reset === 'function') {
+                curPad.vibrationActuator.reset().catch(() => {});
+              }
+            } catch (_) {}
+          }, padParams.duration + 25);
+        }
       }
     }
   } catch (_) {}
@@ -181,6 +240,12 @@ window.addEventListener('gamepadconnected', () => {
 
 window.addEventListener('gamepaddisconnected', () => {
   syncBoardVibrateToggleUI();
+});
+
+window.addEventListener('pagehide', stopAllVibration);
+window.addEventListener('beforeunload', stopAllVibration);
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) stopAllVibration();
 });
 
 function isRunningAsPwa() {
@@ -775,8 +840,8 @@ const SE = {
     }
     this.play(key);
   },
-  play(key) {
-    if (key === 'select' && typeof triggerConfirmVibration === 'function') {
+  play(key, options = null) {
+    if (key === 'select' && !(options && options.skipVibrate) && typeof triggerConfirmVibration === 'function') {
       triggerConfirmVibration();
     }
     const buf = this.customBuffers[key] || this.buffers[key];
@@ -968,6 +1033,21 @@ const VOICE = {
   }
 };
 
+function playCharacterConfirmVoice(charId) {
+  if (!charId || charId === 'random' || typeof VOICE === 'undefined') return;
+  if (charId === 'custom') {
+    VOICE.play('attack', {
+      charId: 'custom',
+      name: (typeof getPlayerDisplayName === 'function') ? getPlayerDisplayName() : 'マイキャラ'
+    });
+    return;
+  }
+  const ch = (typeof getCharacterById === 'function') ? getCharacterById(charId) : null;
+  if (ch && ch.name) {
+    VOICE.play('attack', { charId: ch.id, voiceName: ch.name, name: ch.name });
+  }
+}
+
 class WebAudioBGMPlayer {
   constructor(ctx, src = '') {
     this.ctx = ctx;
@@ -1126,7 +1206,9 @@ class WebAudioBGMPlayer {
         const response = await fetch(targetSrc);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const arrayBuffer = await response.arrayBuffer();
-        const decoded = await this.ctx.decodeAudioData(arrayBuffer);
+        const decoded = await new Promise((resolve, reject) => {
+          audioCtx.decodeAudioData(arrayBuffer, resolve, reject);
+        });
         if (this._src === targetSrc) {
           this.buffer = decoded;
         }
@@ -1245,7 +1327,6 @@ class WebAudioBGMPlayer {
     }
   }
 }
-
 // ==========================================
 // OP / メニュー〜モードセレクト用BGM制御（拡張子非依存・シームレスループ・1ループ目のみ0.5秒フェードイン）
 // ==========================================
@@ -2275,7 +2356,6 @@ function updateRangeDigitHUD() {
   hud.appendChild(hint);
   hud.style.display = 'flex';
 }
-
 // --- コンフィグ・ゲームパッド管理（1P〜4P対応：初期値は方向・決定・キャンセル・ポーズのみ） ---
 const ACTION_LABELS = {
   Up: '上', Down: '下', Left: '左', Right: '右',
@@ -2580,6 +2660,7 @@ async function cancelSettings() {
 
     applyGbMode(!!snap.gbMode);
     isSwapVibrateEnabled = !!snap.swapVibrate;
+    if (!isSwapVibrateEnabled) stopAllVibration();
     syncVisualControlSettingToggles();
 
     const seEl = document.getElementById('se-volume');
@@ -2825,6 +2906,8 @@ function getConnectedPadsSummaryText() {
 
 function getActiveMenuFocusScope() {
   const modalIds = [
+    'app-terminated-overlay',
+    'app-exit-confirm-modal',
     'key-reset-confirm-modal',
     'exit-confirm-modal',
     'pwa-guide-modal',
@@ -2847,6 +2930,10 @@ function getActiveMenuFocusScope() {
   }
   const menuOverlay = document.getElementById('menu-overlay');
   if (menuOverlay && window.getComputedStyle(menuOverlay).display !== 'none') {
+    const storyStageStep = document.getElementById('story-stage-step');
+    if (storyStageStep && window.getComputedStyle(storyStageStep).display !== 'none') {
+      return storyStageStep;
+    }
     return menuOverlay;
   }
   return document;
@@ -2869,6 +2956,28 @@ function getMenuFocusables(scope) {
       const rect = el.getBoundingClientRect();
       return rect.width > 0 && rect.height > 0;
     });
+}
+
+function findDirectHorizontalCoverFlowInScope(scope) {
+  if (!scope || typeof scope.querySelectorAll !== 'function') return null;
+  const list = Array.from(scope.querySelectorAll('.cf-stage-wrap[data-cf-direct="1"]'));
+  for (const el of list) {
+    let parent = el.parentElement;
+    let hidden = false;
+    while (parent) {
+      if (window.getComputedStyle(parent).display === 'none') {
+        hidden = true;
+        break;
+      }
+      parent = parent.parentElement;
+    }
+    if (hidden) continue;
+    const rect = el.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0 && typeof el._cfStep === 'function') {
+      return el;
+    }
+  }
+  return null;
 }
 
 function moveMenuFocus(dir) {
@@ -3048,6 +3157,7 @@ function processMenuNavigationInput(input) {
   const isSelect = activeEl && activeEl.tagName === 'SELECT';
   const isRange = activeEl && activeEl.tagName === 'INPUT' && activeEl.type === 'range';
   const isCoverFlowEl = activeEl && (activeEl.classList.contains('cf-stage-wrap') || activeEl.classList.contains('cf-slider'));
+  const isDirectCoverFlowEl = isCoverFlowEl && activeEl.dataset && activeEl.dataset.cfDirect === '1';
   const isCheckbox = activeEl && activeEl.tagName === 'INPUT' && activeEl.type === 'checkbox';
 
   if (rangeEditState.el && rangeEditState.el !== activeEl) {
@@ -3068,7 +3178,7 @@ function processMenuNavigationInput(input) {
       SE.play('cancel');
       return true;
     }
-    if (isCoverFlowEl && typeof activeEl._cfIsEngaged === 'function' && activeEl._cfIsEngaged()) {
+    if (isCoverFlowEl && !isDirectCoverFlowEl && typeof activeEl._cfIsEngaged === 'function' && activeEl._cfIsEngaged()) {
       activeEl._cfSetEngaged(false);
       SE.play('cancel');
       return true;
@@ -3099,6 +3209,29 @@ function processMenuNavigationInput(input) {
   }
 
   if (isCoverFlowEl) {
+    if (isDirectCoverFlowEl) {
+      if (input.left && typeof activeEl._cfStep === 'function') {
+        activeEl._cfStep(-1);
+        return true;
+      }
+      if (input.right && typeof activeEl._cfStep === 'function') {
+        activeEl._cfStep(1);
+        return true;
+      }
+      if (input.up) { moveMenuFocus2D(0, -1); return true; }
+      if (input.down) { moveMenuFocus2D(0, 1); return true; }
+      if (input.confirm) {
+        if (typeof activeEl._cfConfirm === 'function') {
+          SE.play('select');
+          activeEl._cfConfirm();
+        } else {
+          advanceFromCoverFlow(activeEl);
+        }
+        return true;
+      }
+      return false;
+    }
+
     const isEngaged = (typeof activeEl._cfIsEngaged === 'function') ? activeEl._cfIsEngaged() : true;
     if (isEngaged) {
       if (input.left && typeof activeEl._cfStep === 'function') {
@@ -3259,11 +3392,23 @@ function processMenuNavigationInput(input) {
     return true;
   }
   if (input.left) {
-    moveMenuFocus2D(-1, 0);
+    if (!moveMenuFocus2D(-1, 0)) {
+      const directCf = findDirectHorizontalCoverFlowInScope(scope);
+      if (directCf) {
+        directCf._cfStep(-1);
+        return true;
+      }
+    }
     return true;
   }
   if (input.right) {
-    moveMenuFocus2D(1, 0);
+    if (!moveMenuFocus2D(1, 0)) {
+      const directCf = findDirectHorizontalCoverFlowInScope(scope);
+      if (directCf) {
+        directCf._cfStep(1);
+        return true;
+      }
+    }
     return true;
   }
   if (input.confirm) {
@@ -3339,32 +3484,33 @@ function handleMenuKeyDown(e) {
   if (handled) e.preventDefault();
   return handled;
 }
-
 // ==========================================
-// ゲームパッド統一ポーリング・二重操作完全防止・時間ベースDAS/ARR
+// ゲームパッド統一ポーリング・二重操作完全防止・時間ベースDAS/ARR＋リリースデバウンス
 // ==========================================
 let globalPadPrevState = {};
 let globalPadWaitRelease = {};
 let globalPadLastPressAt = {};
 let globalPadDirState = {
-  Up:    { held: false, startAt: 0, lastAt: 0 },
-  Down:  { held: false, startAt: 0, lastAt: 0 },
-  Left:  { held: false, startAt: 0, lastAt: 0 },
-  Right: { held: false, startAt: 0, lastAt: 0 }
+  Up:    { held: false, startAt: 0, lastAt: 0, releaseAt: 0 },
+  Down:  { held: false, startAt: 0, lastAt: 0, releaseAt: 0 },
+  Left:  { held: false, startAt: 0, lastAt: 0, releaseAt: 0 },
+  Right: { held: false, startAt: 0, lastAt: 0, releaseAt: 0 }
 };
 let lastPadContextKey = '';
 let padInputLockUntil = 0;
 let padActionLastTime = {};
-const GLOBAL_PAD_DAS_MS = 230;
-const GLOBAL_PAD_ARR_MS = 65;
-const GLOBAL_PAD_BOUNCE_MS = 95;
+const GLOBAL_PAD_DAS_MS = 270;
+const GLOBAL_PAD_ARR_MS = 75;
+const GLOBAL_PAD_BOUNCE_MS = 100;
+const GLOBAL_PAD_RELEASE_MS = 30;
+const GLOBAL_PAD_DIR_MIN_INTERVAL_MS = 95;
 
 function resetGlobalPadDirState() {
   globalPadDirState = {
-    Up:    { held: false, startAt: 0, lastAt: 0 },
-    Down:  { held: false, startAt: 0, lastAt: 0 },
-    Left:  { held: false, startAt: 0, lastAt: 0 },
-    Right: { held: false, startAt: 0, lastAt: 0 }
+    Up:    { held: false, startAt: 0, lastAt: 0, releaseAt: 0 },
+    Down:  { held: false, startAt: 0, lastAt: 0, releaseAt: 0 },
+    Left:  { held: false, startAt: 0, lastAt: 0, releaseAt: 0 },
+    Right: { held: false, startAt: 0, lastAt: 0, releaseAt: 0 }
   };
 }
 
@@ -3389,6 +3535,8 @@ function readPadButtonsMap(pad) {
 
 function getCurrentPadContextKey() {
   if (document.getElementById('op-overlay')?.style.display === 'flex') return 'op';
+  if (document.getElementById('app-terminated-overlay')?.style.display === 'flex') return 'app-terminated';
+  if (document.getElementById('app-exit-confirm-modal')?.style.display === 'flex') return 'app-exit-confirm';
   if (document.getElementById('key-reset-confirm-modal')?.style.display === 'flex') return 'key-reset-confirm';
   if (document.getElementById('exit-confirm-modal')?.style.display === 'flex') return 'exit-confirm';
   if (document.getElementById('pwa-guide-modal')?.style.display === 'flex') return 'pwa-guide';
@@ -3431,10 +3579,10 @@ function syncPadSnapshotsAll(lockMs = 150) {
     p1InputState.padState = { ...pressed0 };
     p1InputState.padHoldFrames = { Up: 0, Down: 0, Left: 0, Right: 0 };
     p1InputState.padDirTime = {
-      Up: { held: false, startAt: 0, lastAt: 0 },
-      Down: { held: false, startAt: 0, lastAt: 0 },
-      Left: { held: false, startAt: 0, lastAt: 0 },
-      Right: { held: false, startAt: 0, lastAt: 0 }
+      Up:    { held: false, startAt: 0, lastAt: 0, releaseAt: 0 },
+      Down:  { held: false, startAt: 0, lastAt: 0, releaseAt: 0 },
+      Left:  { held: false, startAt: 0, lastAt: 0, releaseAt: 0 },
+      Right: { held: false, startAt: 0, lastAt: 0, releaseAt: 0 }
     };
     p1InputState.padWaitRelease = {};
     Object.keys(pressed0).forEach(k => {
@@ -3596,9 +3744,16 @@ setInterval(() => {
   const isDirRepeat = (dirName, btnIdx) => {
     const st = globalPadDirState[dirName];
     if (btnIdx === null || btnIdx === undefined || !pressed[btnIdx]) {
-      st.held = false;
+      if (st.held) {
+        if (!st.releaseAt) st.releaseAt = now;
+        if ((now - st.releaseAt) >= GLOBAL_PAD_RELEASE_MS) {
+          st.held = false;
+          st.releaseAt = 0;
+        }
+      }
       return false;
     }
+    st.releaseAt = 0;
     if (globalPadWaitRelease[btnIdx]) {
       st.held = true;
       st.startAt = now;
@@ -3610,7 +3765,7 @@ setInterval(() => {
       st.held = true;
       st.startAt = now;
       st.lastAt = now;
-      if (now - lastBtnT < 55) return false;
+      if (now - lastBtnT < GLOBAL_PAD_DIR_MIN_INTERVAL_MS) return false;
       globalPadLastPressAt[`dir_${dirName}`] = now;
       return true;
     }
@@ -3621,7 +3776,7 @@ setInterval(() => {
     return false;
   };
 
-  const canMenuPadControl = (ctxKey !== 'game') && (typeof matchState === 'undefined' || matchState !== 'playing' || ctxKey === 'result' || ctxKey === 'exit-confirm' || ctxKey === 'key-reset-confirm' || ctxKey === 'settings' || ctxKey === 'select-picker' || ctxKey === 'custom-skill-modal' || ctxKey === 'pwa-guide' || (ctxKey === 'local-menu' && !!rangeEditState.el));
+  const canMenuPadControl = (ctxKey !== 'game') && (typeof matchState === 'undefined' || matchState !== 'playing' || ctxKey === 'result' || ctxKey === 'exit-confirm' || ctxKey === 'app-exit-confirm' || ctxKey === 'app-terminated' || ctxKey === 'key-reset-confirm' || ctxKey === 'settings' || ctxKey === 'select-picker' || ctxKey === 'custom-skill-modal' || ctxKey === 'pwa-guide' || (ctxKey === 'local-menu' && !!rangeEditState.el));
 
   if (canMenuPadControl) {
     let cancelTrig = justPressed(padConfig.Skill, 'cancel');

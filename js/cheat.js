@@ -1,10 +1,11 @@
 // ==========================================
-// COM用 Cheat AI クラス & プレイヤー共用スキルロジック（ランダム・自作スキル対応）
+// COM用 Cheat AI クラス & プレイヤー共用スキルロジック（リフレクション・多段階浄化・自作スキル対応）
 // ==========================================
 const SKILL_IDS = [
   'erase_color',
   'erase_rows',
   'purify_garbage',
+  'reflection',
   'corrupt_enemy_row',
   'seal_skill',
   'convert_blocks',
@@ -16,6 +17,7 @@ const ACTIVE_COM_SKILLS = [
   'erase_color',
   'erase_rows',
   'purify_garbage',
+  'reflection',
   'corrupt_enemy_row',
   'seal_skill',
   'convert_blocks'
@@ -24,6 +26,7 @@ const SKILL_LABELS = {
   erase_color: 'マーク全消し',
   erase_rows: '1・5・9段消し',
   purify_garbage: 'お邪魔浄化',
+  reflection: 'リフレクション',
   corrupt_enemy_row: 'お邪魔侵食',
   seal_skill: 'スキル封印',
   convert_blocks: 'ブロック変換',
@@ -227,6 +230,12 @@ class cheat extends ComAI {
       } else if (skill === 'purify_garbage') {
         const res = execSkillPurifyGarbage(this.engine);
         if (res.success) { this.triggerSkillBanner(res.text); return true; }
+      } else if (skill === 'reflection') {
+        const preferred = this.level >= 40 ? this.pickStrongestOrTallestEnemyId() : -1;
+        const senderOpp = (typeof opponents !== 'undefined') ? opponents.find(o => o.id === this.id) : null;
+        if (senderOpp && preferred !== -1) senderOpp.targetId = preferred;
+        const res = execSkillReflection(this.engine, this.id, preferred);
+        if (res.success) { this.triggerSkillBanner(res.text); return true; }
       } else if (skill === 'corrupt_enemy_row') {
         const preferred = this.level >= 40 ? this.pickStrongestOrTallestEnemyId() : -1;
         const res = execSkillCorruptEnemyRow(this.id, preferred);
@@ -249,6 +258,7 @@ class cheat extends ComAI {
     const isAppropriate = (skill) => {
       if (!strictQuality) return true;
       if (skill === 'purify_garbage') return analysis.garbageCount >= (analysis.isPinch ? 2 : 4);
+      if (skill === 'reflection') return analysis.hasLiveEnemy && analysis.garbageCount >= (analysis.isPinch ? 2 : 4);
       if (skill === 'erase_color') return analysis.bestColorCount >= (analysis.isPinch ? 3 : 5);
       if (skill === 'erase_rows') return analysis.rowClearCount >= (analysis.isPinch ? 3 : 5);
       if (skill === 'convert_blocks') return analysis.normalColorKinds >= 3;
@@ -263,6 +273,9 @@ class cheat extends ComAI {
     const scored = [];
     if (analysis.garbageCount > 0 && isAppropriate('purify_garbage')) {
       scored.push({ skill: 'purify_garbage', score: analysis.garbageCount * 10 + (analysis.isPinch ? 80 : 15) });
+    }
+    if (analysis.garbageCount > 0 && analysis.hasLiveEnemy && isAppropriate('reflection')) {
+      scored.push({ skill: 'reflection', score: analysis.garbageCount * 11 + (analysis.isPinch ? 75 : 22) });
     }
     if (analysis.bestColorCount > 0 && isAppropriate('erase_color')) {
       scored.push({ skill: 'erase_color', score: analysis.bestColorCount * 8 + (analysis.isPinch ? 45 : 0) });
@@ -412,12 +425,14 @@ function executeCustomPlayerSkill(engine, senderId, preferredTarget, customConfi
 
   const purifyLv = parseInt(m.purify_garbage || 0, 10);
   if (purifyLv > 0) {
-    const riseSteps = purifyLv === 1 ? 1 : 2;
-    const res = execSkillPurifyGarbage(engine, riseSteps);
-    if (res && res.success) {
-      anySuccess = true;
-      if (purifyLv >= 3) engine.score += 200;
-    }
+    const riseStepsMap = { 1: 4, 2: 3, 3: 2 };
+    const fractionMap = { 1: 1 / 3, 2: 2 / 3, 3: 1.0 };
+    const res = execSkillPurifyGarbage(
+      engine,
+      riseStepsMap[purifyLv] !== undefined ? riseStepsMap[purifyLv] : 2,
+      fractionMap[purifyLv] !== undefined ? fractionMap[purifyLv] : 1.0
+    );
+    if (res && res.success) anySuccess = true;
   }
 
   const corruptLv = parseInt(m.corrupt_enemy || 0, 10);
@@ -504,7 +519,10 @@ function executePlayerCheatSkill(engine, senderId, preferredTarget = -1, chosenS
     return { success: false };
   }
   if (skill === 'purify_garbage') {
-    return execSkillPurifyGarbage(engine);
+    return execSkillPurifyGarbage(engine, 2, 1.0);
+  }
+  if (skill === 'reflection') {
+    return execSkillReflection(engine, senderId, preferredTarget);
   }
   if (skill === 'corrupt_enemy_row') {
     return execSkillCorruptEnemyRow(senderId, preferredTarget);
@@ -609,11 +627,43 @@ function execSkillEraseRows(engine, senderId, targetRows) {
   return { success: true, text: 'SKILL: 1・5・9段消し!' };
 }
 
-function execSkillPurifyGarbage(engine, riseSteps = 2) {
+function execSkillPurifyGarbage(engine, riseSteps = 2, purifyFraction = 1.0) {
   if (!engine || typeof engine.startPurifySkill !== 'function') return { success: false };
-  const started = engine.startPurifySkill(riseSteps);
+  const started = engine.startPurifySkill(riseSteps, purifyFraction);
   if (!started) return { success: false };
   return { success: true, text: 'SKILL: お邪魔浄化!' };
+}
+
+function execSkillReflection(engine, senderId, preferredTarget = -1) {
+  if (!engine) return { success: false };
+
+  // 現在盤面に落下済みのお邪魔ブロックのみをカウント＆消去（予告キューは対象外）
+  let garbageCount = 0;
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const b = engine.grid[r][c];
+      if (b && b.type === 'garbage' && b.state !== 'match') {
+        b.state = 'match';
+        b.timer = 32;
+        b.skillErase = true;
+        delete b.groupId;
+        delete b.isHard;
+        delete b.transformGroupId;
+        garbageCount++;
+      }
+    }
+  }
+  if (garbageCount === 0) return { success: false };
+
+  const reflectTotal = Math.max(1, Math.floor(garbageCount * 0.75));
+  SE.play('garbageErase');
+  engine.stopTimer = Math.max(engine.stopTimer, 45);
+  engine.score += garbageCount * 10;
+
+  if (engine.onSendGarbage) {
+    engine.onSendGarbage(reflectTotal, false);
+  }
+  return { success: true, text: 'SKILL: リフレクション!' };
 }
 
 function execSkillConvertBlocks(engine, sourceCount = 3, destCount = 2) {

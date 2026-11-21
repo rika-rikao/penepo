@@ -1,5 +1,5 @@
 // ==========================================
-// ゲームエンジン（落下・浮遊テンポ高速化 / スワップ・お邪魔着地フック / GB風モノクロ・ドット識別描画 / COM個性・ランダム思考対応）
+// ゲームエンジン（入れ替え・落下高速化 / 多段・割合お邪魔浄化 / GB風視認性改善 / COM個性・ランダム思考対応）
 // ==========================================
 function createSeededRng(seed) {
   let s = seed >>> 0;
@@ -165,6 +165,35 @@ class PonEngine {
 
   allocGroupId() {
     return this.nextGroupId++;
+  }
+
+  rebuildRemainingGarbageGroups() {
+    const visited = Array.from({ length: this.rows }, () => Array(this.cols).fill(false));
+    for (let r = 0; r < this.rows; r++) {
+      for (let c = 0; c < this.cols; c++) {
+        const start = this.grid[r][c];
+        if (!start || start.type !== 'garbage' || start.state === 'purify_anim' || start.state === 'match' || visited[r][c]) continue;
+        const origGid = start.groupId;
+        const newGid = this.allocGroupId();
+        const queue = [[r, c]];
+        visited[r][c] = true;
+        while (queue.length > 0) {
+          const [cr, cc] = queue.shift();
+          this.grid[cr][cc].groupId = newGid;
+          [[cr - 1, cc], [cr + 1, cc], [cr, cc - 1], [cr, cc + 1]].forEach(([nr, nc]) => {
+            if (nr >= 0 && nr < this.rows && nc >= 0 && nc < this.cols && !visited[nr][nc]) {
+              const nb = this.grid[nr][nc];
+              if (nb && nb.type === 'garbage' && nb.state !== 'purify_anim' && nb.state !== 'match') {
+                if (!origGid || !nb.groupId || nb.groupId === origGid) {
+                  visited[nr][nc] = true;
+                  queue.push([nr, nc]);
+                }
+              }
+            }
+          });
+        }
+      }
+    }
   }
 
   startGameOverFillAnim(onComplete = null) {
@@ -352,15 +381,15 @@ class PonEngine {
     
     if (this.grid[r][c]) {
        this.grid[r][c].chainEligible = false;
-       this.grid[r][c].swapAnim = { dir: -1, timer: 5 };
+       this.grid[r][c].swapAnim = { dir: -1, timer: 3 };
     }
     if (this.grid[r][c+1]) {
        this.grid[r][c+1].chainEligible = false;
-       this.grid[r][c+1].swapAnim = { dir: 1, timer: 5 };
+       this.grid[r][c+1].swapAnim = { dir: 1, timer: 3 };
     }
 
-    if (this.grid[r][c] && r+1 < this.rows && this.grid[r+1][c] === null) { this.grid[r][c].state = 'hover'; this.grid[r][c].timer = 10; }
-    if (this.grid[r][c+1] && r+1 < this.rows && this.grid[r+1][c+1] === null) { this.grid[r][c+1].state = 'hover'; this.grid[r][c+1].timer = 10; }
+    if (this.grid[r][c] && r+1 < this.rows && this.grid[r+1][c] === null) { this.grid[r][c].state = 'hover'; this.grid[r][c].timer = 6; }
+    if (this.grid[r][c+1] && r+1 < this.rows && this.grid[r+1][c+1] === null) { this.grid[r][c+1].state = 'hover'; this.grid[r][c+1].timer = 6; }
 
     if (this.onSwap) this.onSwap();
     this.checkMatches();
@@ -400,32 +429,46 @@ class PonEngine {
     if (this.onRowPushed) this.onRowPushed();
   }
 
-  startPurifySkill(riseSteps = 2) {
+  startPurifySkill(riseSteps = 2, purifyFraction = 1.0) {
     if (this.purifyState && this.purifyState.active) return false;
-    let garbageCount = 0;
-    for (let r = 0; r < this.rows; r++) {
+    const garbageCells = [];
+    for (let r = this.rows - 1; r >= 0; r--) {
       for (let c = 0; c < this.cols; c++) {
         const b = this.grid[r][c];
         if (b && b.type === 'garbage' && b.state !== 'match') {
-          b.state = 'purify_anim';
-          b.purifyTimer = 46;
-          b.purifyMax = 46;
-          delete b.groupId;
-          delete b.isHard;
-          delete b.transformGroupId;
-          delete b.transformDelay;
-          delete b.isTarget;
-          delete b.transformToNormal;
-          garbageCount++;
+          garbageCells.push(b);
         }
       }
     }
-    if (garbageCount === 0) return false;
+    if (garbageCells.length === 0) return false;
 
+    const clampedFrac = Math.max(0.01, Math.min(1.0, purifyFraction));
+    const targetCount = clampedFrac >= 0.999
+      ? garbageCells.length
+      : Math.max(1, Math.ceil(garbageCells.length * clampedFrac));
+
+    for (let i = 0; i < targetCount; i++) {
+      const b = garbageCells[i];
+      b.state = 'purify_anim';
+      b.purifyTimer = 46;
+      b.purifyMax = 46;
+      delete b.groupId;
+      delete b.isHard;
+      delete b.transformGroupId;
+      delete b.transformDelay;
+      delete b.isTarget;
+      delete b.transformToNormal;
+    }
+
+    if (targetCount < garbageCells.length) {
+      this.rebuildRemainingGarbageGroups();
+    }
+
+    const totalSteps = Math.max(0, Math.round(riseSteps));
     this.purifyState = {
       active: true,
-      step: riseSteps >= 1 ? 'rise1' : 'wait_anim',
-      remainingRises: Math.max(0, riseSteps),
+      step: totalSteps >= 1 ? 'rise' : 'wait_anim',
+      remainingRises: totalSteps,
       stepTimer: 0,
       animTimer: 46,
       overflowRows: []
@@ -455,13 +498,14 @@ class PonEngine {
       });
     });
 
-    if (ps.step === 'rise1') {
-      this.riseOffset += 0.09;
+    if (ps.step === 'rise') {
+      this.riseOffset += 0.11;
       if (this.riseOffset >= 1.0) {
         this.pushRowForPurifySkill();
-        if (ps.remainingRises >= 2) {
+        ps.remainingRises--;
+        if (ps.remainingRises > 0) {
           ps.step = 'pause_between';
-          ps.stepTimer = 8;
+          ps.stepTimer = 5;
         } else {
           ps.step = 'wait_anim';
         }
@@ -469,13 +513,7 @@ class PonEngine {
     } else if (ps.step === 'pause_between') {
       ps.stepTimer--;
       if (ps.stepTimer <= 0) {
-        ps.step = 'rise2';
-      }
-    } else if (ps.step === 'rise2') {
-      this.riseOffset += 0.09;
-      if (this.riseOffset >= 1.0) {
-        this.pushRowForPurifySkill();
-        ps.step = 'wait_anim';
+        ps.step = 'rise';
       }
     } else if (ps.step === 'wait_anim') {
       if (ps.animTimer <= 0) {
@@ -510,7 +548,11 @@ class PonEngine {
           const b = row[c];
           if (!b) continue;
           if (b.state === 'purify_anim') convertToNormalFalling(b);
-          for (let r = 0; r < this.rows; r++) {
+          else if (b.type === 'garbage') {
+            b.state = 'fall';
+            b.fallY = 0;
+          }
+          for (let r = this.rows - 1; r >= 0; r--) {
             if (this.grid[r][c] === null) {
               this.grid[r][c] = b;
               break;
@@ -529,6 +571,7 @@ class PonEngine {
       }
     }
 
+    this.rebuildRemainingGarbageGroups();
     this.purifyState = null;
     SE.play('garbageErase');
     this.checkMatches();
@@ -766,7 +809,7 @@ class PonEngine {
         blocks.forEach(b => {
           if (b.state === 'transformed_wait' || b.state === 'transforming_wait') {
             b.state = 'hover';
-            b.timer = 10;
+            b.timer = 6;
             b.fallY = 0;
             if (typeof b.type === 'number') {
               delete b.groupId;
@@ -887,7 +930,7 @@ class PonEngine {
                   && !ub.transformGroupId
                   && ub.state !== 'transforming' && ub.state !== 'transforming_wait' && ub.state !== 'transformed_wait') {
                 ub.state = 'hover';
-                ub.timer = 11;
+                ub.timer = 7;
                 ub.chainEligible = true;
               } else {
                 break;
@@ -958,7 +1001,7 @@ class PonEngine {
             if (this.onGarbageLanded) this.onGarbageLanded();
           }
         } else {
-          leader.fallY += 0.48;
+          leader.fallY += 0.72;
           cells.forEach(item => item.block.fallY = leader.fallY);
           if (leader.fallY >= 1.0) {
             cells.sort((a, b) => b.r - a.r);
@@ -1008,7 +1051,7 @@ class PonEngine {
         if (!supported) {
           cells.forEach(item => {
             item.block.state = 'hover';
-            item.block.timer = 9;
+            item.block.timer = 6;
           });
         }
       }
@@ -1051,7 +1094,7 @@ class PonEngine {
 
           if (leader.state === 'normal') {
             leader.state = 'hover';
-            leader.timer = 10;
+            leader.timer = 6;
           }
 
           for (const item of stack) item.block.state = leader.state;
@@ -1076,7 +1119,7 @@ class PonEngine {
               for (const item of stack) { item.block.state = 'normal'; item.block.fallY = 0; }
               needsMatchCheck = true;
             } else {
-              leader.fallY += 0.48;
+              leader.fallY += 0.72;
               for (const item of stack) item.block.fallY = leader.fallY;
               
               if (leader.fallY >= 1.0) {
@@ -1265,17 +1308,18 @@ class PonEngine {
     }
   }
 }
+
 // ==========================================
-// GB風モード用：ブロック濃淡＆大柄識別パターン定義
+// GB風モード用：ブロック濃淡＆高視認性識別パターン定義
 // ==========================================
 const GB_BLOCK_PALETTE = {
-  1: { bg: '#101010', text: '#ffffff', textStroke: '#000000', stroke: '#ffffff', accent: 'rgba(255,255,255,0.9)', pattern: 'double_box_dark' },
-  2: { bg: '#f8f8f8', text: '#0a0a0a', textStroke: '#ffffff', stroke: '#111111', accent: '#111111',               pattern: 'corner_triangles' },
-  3: { bg: '#303030', text: '#000000', textStroke: '#ffffff', stroke: '#ffffff', accent: '#ececec',               pattern: 'checker_bold' },
-  4: { bg: '#e2e2e2', text: '#000000', textStroke: '#ffffff', stroke: '#111111', accent: '#222222',               pattern: 'h_stripes_bold' },
-  5: { bg: '#585858', text: '#ffffff', textStroke: '#000000', stroke: '#e8e8e8', accent: '#f0f0f0',               pattern: 'diag_bold' },
-  6: { bg: '#9e9e9e', text: '#ffffff', textStroke: '#000000', stroke: '#141414', accent: '#ffffff',               pattern: 'cross_frame' },
-  7: { bg: '#ffffff', text: '#000000', textStroke: '#ffffff', stroke: '#000000', accent: '#000000',               pattern: 'special_frame' }
+  1: { bg: '#101010', text: '#ffffff', textStroke: '#000000', stroke: '#ffffff', accent: '#ffffff', pattern: 'solid_dark' },
+  2: { bg: '#f8f8f8', text: '#0a0a0a', textStroke: '#ffffff', stroke: '#111111', accent: '#111111', pattern: 'solid_light' },
+  3: { bg: '#424242', text: '#ffffff', textStroke: '#000000', stroke: '#ffffff', accent: '#f4f4f4', pattern: 'inner_white_box' },
+  4: { bg: '#cecece', text: '#0a0a0a', textStroke: '#ffffff', stroke: '#111111', accent: '#141414', pattern: 'top_bottom_bars' },
+  5: { bg: '#141414', text: '#0a0a0a', textStroke: '#f5f5f5', stroke: '#ffffff', accent: '#f5f5f5', pattern: 'white_circle_center' },
+  6: { bg: '#f2f2f2', text: '#0a0a0a', textStroke: '#ffffff', stroke: '#111111', accent: '#111111', pattern: 'corner_triangles' },
+  7: { bg: '#ffffff', text: '#000000', textStroke: '#ffffff', stroke: '#000000', accent: '#000000', pattern: 'special_frame' }
 };
 
 // --- 描画エンジン ---
@@ -1345,60 +1389,34 @@ class BoardRenderer {
     ctx.roundRect(bx + 1, by + 1, bw - 2, bh - 2, Math.max(4, radius - 1));
     ctx.clip();
 
-    if (gbStyle.pattern === 'double_box_dark') {
-      // ID 1 (♥): 濃黒 + 内側白二重枠
+    if (gbStyle.pattern === 'solid_dark' || gbStyle.pattern === 'solid_light') {
+      // ID 1 (♥), ID 2 (★): 中央が完全にクリーンな漆黒・純白ベタ（最速視認）
+    } else if (gbStyle.pattern === 'inner_white_box') {
+      // ID 3 (◆): 濃灰に内側白枠1本（中央はクリーン）
       ctx.strokeStyle = gbStyle.accent;
-      ctx.lineWidth = 2;
-      ctx.strokeRect(bx + 4.5, by + 4.5, bw - 9, bh - 9);
+      ctx.lineWidth = 2.2;
+      ctx.strokeRect(bx + 4, by + 4, bw - 8, bh - 8);
+    } else if (gbStyle.pattern === 'top_bottom_bars') {
+      // ID 4 (♣): 明灰の上下端に太い黒バー（中央はクリーン）
+      ctx.fillStyle = gbStyle.accent;
+      ctx.fillRect(bx, by, bw, 4.5);
+      ctx.fillRect(bx, by + bh - 4.5, bw, 4.5);
+    } else if (gbStyle.pattern === 'white_circle_center') {
+      // ID 5 (▲): 黒ベースの中央にくっきり白丸座布団（黒記号が際立つ）
+      ctx.fillStyle = gbStyle.accent;
+      ctx.beginPath();
+      ctx.arc(bx + bw / 2, by + bh / 2, Math.min(bw, bh) * 0.37, 0, Math.PI * 2);
+      ctx.fill();
     } else if (gbStyle.pattern === 'corner_triangles') {
-      // ID 2 (★): 純白 + 四隅の大きい黒三角コーナーマーク
+      // ID 6 (●): 白ベース＋四隅の黒三角コーナー（中央はクリーン）
       ctx.fillStyle = gbStyle.accent;
       const cSize = 8;
-      // 左上
       ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(bx + cSize, by); ctx.lineTo(bx, by + cSize); ctx.closePath(); ctx.fill();
-      // 右上
       ctx.beginPath(); ctx.moveTo(bx + bw, by); ctx.lineTo(bx + bw - cSize, by); ctx.lineTo(bx + bw, by + cSize); ctx.closePath(); ctx.fill();
-      // 左下
       ctx.beginPath(); ctx.moveTo(bx, by + bh); ctx.lineTo(bx + cSize, by + bh); ctx.lineTo(bx, by + bh - cSize); ctx.closePath(); ctx.fill();
-      // 右下
       ctx.beginPath(); ctx.moveTo(bx + bw, by + bh); ctx.lineTo(bx + bw - cSize, by + bh); ctx.lineTo(bx + bw, by + bh - cSize); ctx.closePath(); ctx.fill();
-    } else if (gbStyle.pattern === 'checker_bold') {
-      // ID 3 (◆): 大きくくっきりした市松模様（チェッカー）
-      ctx.fillStyle = gbStyle.accent;
-      const cell = 6;
-      for (let py = by, r = 0; py < by + bh; py += cell, r++) {
-        for (let px = bx, c = 0; px < bx + bw; px += cell, c++) {
-          if ((r + c) % 2 === 0) {
-            ctx.fillRect(px, py, cell, cell);
-          }
-        }
-      }
-    } else if (gbStyle.pattern === 'h_stripes_bold') {
-      // ID 4 (♣): 明灰に太い横ボーダー帯
-      ctx.fillStyle = gbStyle.accent;
-      ctx.fillRect(bx, by + 4, bw, 4);
-      ctx.fillRect(bx, by + Math.floor(bh / 2) - 2, bw, 4);
-      ctx.fillRect(bx, by + bh - 8, bw, 4);
-    } else if (gbStyle.pattern === 'diag_bold') {
-      // ID 5 (▲): 暗灰に太い斜め45°ストライプ
-      ctx.strokeStyle = gbStyle.accent;
-      ctx.lineWidth = 3.2;
-      for (let d = -bh; d < bw + bh; d += 9) {
-        ctx.beginPath();
-        ctx.moveTo(bx + d, by + bh);
-        ctx.lineTo(bx + d + bh, by);
-        ctx.stroke();
-      }
-    } else if (gbStyle.pattern === 'cross_frame') {
-      // ID 6 (●): 中灰に太い白枠＋縦横の太十字バー
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.58)';
-      ctx.fillRect(bx + bw / 2 - 2.5, by, 5, bh);
-      ctx.fillRect(bx, by + bh / 2 - 2.5, bw, 5);
-      ctx.strokeStyle = '#141414';
-      ctx.lineWidth = 1.6;
-      ctx.strokeRect(bx + 3.5, by + 3.5, bw - 7, bh - 7);
     } else if (gbStyle.pattern === 'special_frame') {
-      // ID 7 (！): 二重太枠＋角ドット
+      // ID 7 (！): 二重太枠
       ctx.strokeStyle = gbStyle.accent;
       ctx.lineWidth = 2.4;
       ctx.strokeRect(bx + 4, by + 4, bw - 8, bh - 8);
@@ -1437,7 +1455,7 @@ class BoardRenderer {
       if (!isFlashing) {
         this.drawGbDotPattern(ctx, bx, by, bw, bh, radius, gbStyle);
         ctx.strokeStyle = gbStyle.stroke;
-        ctx.lineWidth = 2.2;
+        ctx.lineWidth = 2.0;
         ctx.beginPath();
         ctx.roundRect(bx + 0.8, by + 0.8, bw - 1.6, bh - 1.6, Math.max(4, radius - 1));
         ctx.stroke();
@@ -1488,16 +1506,18 @@ class BoardRenderer {
 
     const cx = x + CELL_PX / 2;
     const cy = y + CELL_PX / 2 + bounceY;
-    ctx.font = gb ? '900 19px sans-serif' : 'bold 16px sans-serif';
+    ctx.font = gb ? '900 18px sans-serif' : 'bold 16px sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
 
     if (gb) {
       if (!isFlashing) {
-        ctx.lineJoin = 'round';
-        ctx.lineWidth = 4.2;
-        ctx.strokeStyle = gbStyle.textStroke;
-        ctx.strokeText(conf.symbol, cx, cy);
+        if (gbStyle.pattern === 'inner_white_box') {
+          ctx.lineJoin = 'round';
+          ctx.lineWidth = 3.2;
+          ctx.strokeStyle = gbStyle.textStroke;
+          ctx.strokeText(conf.symbol, cx, cy);
+        }
         ctx.fillStyle = gbStyle.text;
         ctx.fillText(conf.symbol, cx, cy);
       } else {
@@ -1564,13 +1584,12 @@ class BoardRenderer {
     const gb = this.isGbActive();
     ctx.fillStyle = isFlashing
       ? '#ffffff'
-      : (gb ? (b.isHard ? '#cccccc' : '#4a4a4a') : (b.isHard ? '#a8b2bd' : '#5c636a'));
+      : (gb ? (b.isHard ? '#c8c8c8' : '#585858') : (b.isHard ? '#a8b2bd' : '#5c636a'));
     ctx.fillRect(x, y, CELL_PX, CELL_PX);
 
     if (!isFlashing) {
       if (gb) {
-        // GB風お邪魔用：細かなトーン網点（通常ブロックの大柄模様と区別）
-        ctx.fillStyle = b.isHard ? 'rgba(0, 0, 0, 0.22)' : 'rgba(255, 255, 255, 0.20)';
+        ctx.fillStyle = b.isHard ? 'rgba(0, 0, 0, 0.16)' : 'rgba(255, 255, 255, 0.16)';
         for (let py = y + 3; py < y + CELL_PX - 2; py += 4) {
           const sh = (((py - y) / 4) % 2) * 2;
           for (let px = x + 3 + sh; px < x + CELL_PX - 2; px += 4) {
@@ -1697,7 +1716,7 @@ class BoardRenderer {
         if (b) {
           let drawX = c * CELL_PX;
           if (b.swapAnim) {
-             drawX += -(b.swapAnim.dir) * (b.swapAnim.timer / 5) * CELL_PX;
+             drawX += -(b.swapAnim.dir) * (b.swapAnim.timer / 3) * CELL_PX;
           }
           const x = drawX;
           const y = r * CELL_PX - offsetY + (b.fallY * CELL_PX);

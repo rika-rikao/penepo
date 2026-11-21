@@ -263,6 +263,9 @@ const StoryManager = {
 
   confirmPrepAndNext() {
     if (typeof SE !== 'undefined') SE.play('select');
+    if (typeof playCharacterConfirmVoice === 'function') {
+      playCharacterConfirmVoice(this.getSelectedCharId());
+    }
     const skillOn = this.isPlayerSkillEnabled();
     if (!skillOn) {
       this.goToStageStep();
@@ -400,6 +403,7 @@ const StoryManager = {
         title: 'ステージ選択（左右で切替 / 決定で開始）',
         compact: false,
         showDesc: true,
+        directHorizontal: true,
         renderCard: (card, item) => {
           const thumb = document.createElement('div');
           thumb.className = 'cf-card-thumb';

@@ -143,7 +143,7 @@ function focusPrimaryMenuElement(containerId) {
 }
 
 // ==========================================
-// 退出確認モーダル
+// 退出確認モーダル & ゲーム終了確認モーダル
 // ==========================================
 function openExitConfirmModal() {
   const modal = document.getElementById('exit-confirm-modal');
@@ -152,13 +152,14 @@ function openExitConfirmModal() {
     return;
   }
   isExitConfirmOpen = true;
+  if (typeof stopAllVibration === 'function') stopAllVibration();
   clearKeyboardHoldStates();
   if (myEngine) myEngine.isRisingManualBtn = myEngine.isRisingManualKey = myEngine.isRisingManualPad = false;
   opponents.forEach(opp => {
     if (opp.engine) opp.engine.isRisingManualBtn = opp.engine.isRisingManualKey = opp.engine.isRisingManualPad = false;
   });
   modal.style.display = 'flex';
-  SE.play('select');
+  SE.play('select', { skipVibrate: true });
   if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(200);
   const cancelBtn = document.getElementById('exit-confirm-cancel-btn');
   if (cancelBtn) requestAnimationFrame(() => cancelBtn.focus());
@@ -174,8 +175,61 @@ function closeExitConfirmModal(silent = false) {
 }
 
 function confirmExitFromModal() {
+  if (typeof stopAllVibration === 'function') stopAllVibration();
   closeExitConfirmModal(true);
   performExitGame(false);
+}
+
+function openAppExitConfirmModal() {
+  const modal = document.getElementById('app-exit-confirm-modal');
+  if (!modal) return;
+  modal.style.display = 'flex';
+  SE.play('select');
+  if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(180);
+  const cancelBtn = document.getElementById('app-exit-cancel-btn');
+  if (cancelBtn) requestAnimationFrame(() => cancelBtn.focus());
+}
+
+function closeAppExitConfirmModal(silent = false) {
+  const modal = document.getElementById('app-exit-confirm-modal');
+  if (modal) modal.style.display = 'none';
+  if (!silent) SE.play('cancel');
+  if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(180);
+  if (isElementActuallyVisible('main-menu-actions')) {
+    focusPrimaryMenuElement('main-menu-actions');
+  }
+}
+
+function confirmAppExitFromModal() {
+  if (typeof isAppExiting !== 'undefined') isAppExiting = true;
+  if (typeof stopAllVibration === 'function') stopAllVibration();
+  closeAppExitConfirmModal(true);
+  SE.play('select', { skipVibrate: true });
+  if (typeof SceneBgm !== 'undefined') SceneBgm.stop();
+  stopBgm();
+  try { window.close(); } catch (_) {}
+  setTimeout(() => {
+    if (typeof stopAllVibration === 'function') stopAllVibration();
+    const term = document.getElementById('app-terminated-overlay');
+    if (term) {
+      term.style.display = 'flex';
+      const backBtn = document.getElementById('app-terminated-back-btn');
+      if (backBtn) requestAnimationFrame(() => backBtn.focus());
+    }
+    if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(180);
+  }, 180);
+}
+
+function reopenAppFromTerminated() {
+  if (typeof isAppExiting !== 'undefined') isAppExiting = false;
+  const term = document.getElementById('app-terminated-overlay');
+  if (term) term.style.display = 'none';
+  SE.play('select');
+  if (typeof SceneBgm !== 'undefined' && (typeof OpAnimation === 'undefined' || !OpAnimation.isActive())) {
+    SceneBgm.play('mode_select');
+  }
+  focusPrimaryMenuElement('main-menu-actions');
+  if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(180);
 }
 
 // ==========================================
@@ -237,10 +291,11 @@ function renderSkillModalPicker(focusSkillId = null) {
     const isFb = (activeSkillModalTab === 'fallback');
     renderSkillCarousel('skill-modal-picker', {
       allowCustom: !isFb,
+      directHorizontal: true,
       currentSkillId: focusSkillId || (isFb ? selectedFallbackSkill : selectedPlayerSkill),
       title: isFb
         ? '自作スキルOFF時に使うスキルを選択'
-        : '装備スキルを選択（決定で選択 / ◀▶切替 / 再決定で決定）',
+        : '装備スキルを選択（◀▶で切替 / 決定で確定）',
       onSelect: (skId) => {
         if (isFb) onFallbackSkillSelectChange(skId);
         else onPlayerSkillSelectChange(skId);
@@ -345,6 +400,9 @@ function acceptConfirmModal() {
 
 function beginSingleStartFlow() {
   SE.play('select');
+  if (typeof playCharacterConfirmVoice === 'function') {
+    playCharacterConfirmVoice(selectedCharId);
+  }
   const skillOn = !!document.getElementById('single-skill-toggle')?.checked;
   if (!skillOn) {
     startSingleMode();
@@ -363,6 +421,9 @@ function beginSingleStartFlow() {
 
 function beginComStartFlow() {
   SE.play('select');
+  if (typeof playCharacterConfirmVoice === 'function') {
+    playCharacterConfirmVoice(selectedCharId);
+  }
   const skillOn = !!document.getElementById('com-cheat-toggle')?.checked;
   if (!skillOn) {
     startComGameFromSlider();
@@ -381,6 +442,9 @@ function beginComStartFlow() {
 
 function beginOnlineCreateFlow() {
   SE.play('select');
+  if (typeof playCharacterConfirmVoice === 'function') {
+    playCharacterConfirmVoice(selectedCharId);
+  }
   const skillOn = !!document.getElementById('online-skill-toggle')?.checked;
   if (!skillOn) {
     createRoom();
@@ -401,6 +465,9 @@ function beginOnlineJoinFlow() {
   const code = document.getElementById('peer-room-id')?.value.trim();
   if (!code) { SE.play('cancel'); showToast('部屋コードを入力してください'); return; }
   SE.play('select');
+  if (typeof playCharacterConfirmVoice === 'function') {
+    playCharacterConfirmVoice(selectedCharId);
+  }
   const skillOn = !!document.getElementById('online-skill-toggle')?.checked;
   if (!skillOn) {
     joinRoom();
@@ -432,6 +499,14 @@ function syncHandicapFromSlider(val) {
 // START(ポーズ／退出相当)ボタンによるメニュー一括決定
 // ==========================================
 function handleMenuStartAction() {
+  if (isElementActuallyVisible('app-terminated-overlay')) {
+    reopenAppFromTerminated();
+    return true;
+  }
+  if (isElementActuallyVisible('app-exit-confirm-modal')) {
+    closeAppExitConfirmModal();
+    return true;
+  }
   if (isElementActuallyVisible('key-reset-confirm-modal')) {
     if (typeof closeKeyResetConfirmModal === 'function') closeKeyResetConfirmModal();
     return true;
@@ -595,6 +670,7 @@ function navigateFromBottomNav(target) {
   if (typeof closeCustomSkillModal === 'function') closeCustomSkillModal(true);
   if (typeof closePwaGuideModal === 'function') closePwaGuideModal(true);
   if (typeof closeKeyResetConfirmModal === 'function') closeKeyResetConfirmModal(true);
+  closeAppExitConfirmModal(true);
   closeSharePrepMenu(true);
   closeSkillSelectModal(true);
   const cModal = document.getElementById('confirm-match-modal');
@@ -675,9 +751,11 @@ function bindMenuHoverCursorSE() {
     const isConfirmModalVisible = document.getElementById('confirm-match-modal')?.style.display === 'flex';
     const isSelectPickerVisible = document.getElementById('select-picker-modal')?.style.display === 'flex';
     const isExitConfirmVisible = document.getElementById('exit-confirm-modal')?.style.display === 'flex';
+    const isAppExitConfirmVisible = document.getElementById('app-exit-confirm-modal')?.style.display === 'flex';
+    const isAppTerminatedVisible = document.getElementById('app-terminated-overlay')?.style.display === 'flex';
     const isKeyResetVisible = document.getElementById('key-reset-confirm-modal')?.style.display === 'flex';
     const isSharePrepVisible = document.getElementById('share-prep-overlay')?.style.display === 'flex';
-    const isMenuHoverContext = !isGameVisible || isResultVisible || isSettingsVisible || isSkillModalVisible || isCustomSkillModalVisible || isConfirmModalVisible || isSelectPickerVisible || isExitConfirmVisible || isKeyResetVisible || isSharePrepVisible;
+    const isMenuHoverContext = !isGameVisible || isResultVisible || isSettingsVisible || isSkillModalVisible || isCustomSkillModalVisible || isConfirmModalVisible || isSelectPickerVisible || isExitConfirmVisible || isAppExitConfirmVisible || isAppTerminatedVisible || isKeyResetVisible || isSharePrepVisible;
     if (!isMenuHoverContext) {
       lastHoveredEl = null;
       return;
@@ -713,19 +791,19 @@ let localMenuPadPrev = [{}, {}, {}, {}];
 let localMenuPadWaitRelease = [{}, {}, {}, {}];
 let localMenuPadLastPressAt = [{}, {}, {}, {}];
 let localMenuPadDirState = Array.from({ length: 4 }, () => ({
-  Up:    { held: false, startAt: 0, lastAt: 0 },
-  Down:  { held: false, startAt: 0, lastAt: 0 },
-  Left:  { held: false, startAt: 0, lastAt: 0 },
-  Right: { held: false, startAt: 0, lastAt: 0 }
+  Up:    { held: false, startAt: 0, lastAt: 0, releaseAt: 0 },
+  Down:  { held: false, startAt: 0, lastAt: 0, releaseAt: 0 },
+  Left:  { held: false, startAt: 0, lastAt: 0, releaseAt: 0 },
+  Right: { held: false, startAt: 0, lastAt: 0, releaseAt: 0 }
 }));
 
 function resetLocalMenuPadDir(padIdx) {
   if (!localMenuPadDirState[padIdx]) return;
   localMenuPadDirState[padIdx] = {
-    Up:    { held: false, startAt: 0, lastAt: 0 },
-    Down:  { held: false, startAt: 0, lastAt: 0 },
-    Left:  { held: false, startAt: 0, lastAt: 0 },
-    Right: { held: false, startAt: 0, lastAt: 0 }
+    Up:    { held: false, startAt: 0, lastAt: 0, releaseAt: 0 },
+    Down:  { held: false, startAt: 0, lastAt: 0, releaseAt: 0 },
+    Left:  { held: false, startAt: 0, lastAt: 0, releaseAt: 0 },
+    Right: { held: false, startAt: 0, lastAt: 0, releaseAt: 0 }
   };
 }
 
@@ -1012,6 +1090,10 @@ function confirmLocalCharForSlot(slotIdx, tileIdx, ownerKey = null) {
   cancelLocalAutoStart();
   slot.charCursorIdx = tileIdx;
   slot.charId = cid;
+
+  if (typeof playCharacterConfirmVoice === 'function') {
+    playCharacterConfirmVoice(cid);
+  }
 
   if (isLocalSkillRuleOn()) {
     slot.phase = 'skill';
@@ -1418,9 +1500,11 @@ function checkLocalAllReady() {
 function pollLocalMenuGamepads(pads) {
   const now = performance.now();
   const isLocked = (typeof padInputLockUntil !== 'undefined' && now < padInputLockUntil);
-  const LOCAL_DAS_MS = (typeof GLOBAL_PAD_DAS_MS !== 'undefined') ? GLOBAL_PAD_DAS_MS : 230;
-  const LOCAL_ARR_MS = (typeof GLOBAL_PAD_ARR_MS !== 'undefined') ? GLOBAL_PAD_ARR_MS : 65;
-  const LOCAL_BOUNCE_MS = (typeof GLOBAL_PAD_BOUNCE_MS !== 'undefined') ? GLOBAL_PAD_BOUNCE_MS : 95;
+  const LOCAL_DAS_MS = (typeof GLOBAL_PAD_DAS_MS !== 'undefined') ? GLOBAL_PAD_DAS_MS : 270;
+  const LOCAL_ARR_MS = (typeof GLOBAL_PAD_ARR_MS !== 'undefined') ? GLOBAL_PAD_ARR_MS : 75;
+  const LOCAL_BOUNCE_MS = (typeof GLOBAL_PAD_BOUNCE_MS !== 'undefined') ? GLOBAL_PAD_BOUNCE_MS : 100;
+  const LOCAL_RELEASE_MS = (typeof GLOBAL_PAD_RELEASE_MS !== 'undefined') ? GLOBAL_PAD_RELEASE_MS : 30;
+  const LOCAL_DIR_MIN_INTERVAL_MS = (typeof GLOBAL_PAD_DIR_MIN_INTERVAL_MS !== 'undefined') ? GLOBAL_PAD_DIR_MIN_INTERVAL_MS : 95;
 
   for (let padIdx = 0; padIdx < 4; padIdx++) {
     const padObj = pads[padIdx];
@@ -1435,10 +1519,10 @@ function pollLocalMenuGamepads(pads) {
     const waitRel = localMenuPadWaitRelease[padIdx] || (localMenuPadWaitRelease[padIdx] = {});
     const pressAt = localMenuPadLastPressAt[padIdx] || (localMenuPadLastPressAt[padIdx] = {});
     const dirSt = localMenuPadDirState[padIdx] || (localMenuPadDirState[padIdx] = {
-      Up: { held: false, startAt: 0, lastAt: 0 },
-      Down: { held: false, startAt: 0, lastAt: 0 },
-      Left: { held: false, startAt: 0, lastAt: 0 },
-      Right: { held: false, startAt: 0, lastAt: 0 }
+      Up:    { held: false, startAt: 0, lastAt: 0, releaseAt: 0 },
+      Down:  { held: false, startAt: 0, lastAt: 0, releaseAt: 0 },
+      Left:  { held: false, startAt: 0, lastAt: 0, releaseAt: 0 },
+      Right: { held: false, startAt: 0, lastAt: 0, releaseAt: 0 }
     });
 
     const cur = {};
@@ -1466,9 +1550,16 @@ function pollLocalMenuGamepads(pads) {
     const isRep = (dir, btnIdx) => {
       const st = dirSt[dir];
       if (btnIdx === null || btnIdx === undefined || !cur[btnIdx]) {
-        st.held = false;
+        if (st.held) {
+          if (!st.releaseAt) st.releaseAt = now;
+          if ((now - st.releaseAt) >= LOCAL_RELEASE_MS) {
+            st.held = false;
+            st.releaseAt = 0;
+          }
+        }
         return false;
       }
+      st.releaseAt = 0;
       if (waitRel[btnIdx]) {
         st.held = true;
         st.startAt = now;
@@ -1479,7 +1570,7 @@ function pollLocalMenuGamepads(pads) {
         st.held = true;
         st.startAt = now;
         st.lastAt = now;
-        if (now - (pressAt[`dir_${dir}`] || 0) < 55) return false;
+        if (now - (pressAt[`dir_${dir}`] || 0) < LOCAL_DIR_MIN_INTERVAL_MS) return false;
         pressAt[`dir_${dir}`] = now;
         return true;
       }
@@ -2088,6 +2179,9 @@ function renderSharePrepSide(playerNum) {
       if (isCustomEmpty) { SE.play('cancel'); showToast('設定からマイ立ち絵を登録すると選べます'); return; }
       cfg.charId = cid; cfg.ready = false;
       SE.play('select');
+      if (typeof playCharacterConfirmVoice === 'function') {
+        playCharacterConfirmVoice(cid);
+      }
       renderSharePrepUI();
     });
     grid.appendChild(btn);
@@ -2148,8 +2242,9 @@ function renderSharePrepSide(playerNum) {
     skRow.appendChild(ruleBadge);
   }
   const skillShort = {
-    erase_color: '2色消', erase_rows: '1・5・9段', purify_garbage: '浄化', corrupt_enemy_row: '侵食',
-    seal_skill: '封印', convert_blocks: '変換', sacrifice: '代償', no_skill: '無', random: '乱'
+    erase_color: '2色消', erase_rows: '1・5・9段', purify_garbage: '浄化', reflection: '反射',
+    corrupt_enemy_row: '侵食', seal_skill: '封印', convert_blocks: '変換',
+    sacrifice: '代償', no_skill: '無', random: '乱'
   };
   const availSkills = (typeof getSelectableSkillIds === 'function') ? getSelectableSkillIds(allowCustom) : SKILL_IDS;
   const activeSkId = getEffectivePlayerSkillId(cfg.skillId, allowCustom, cfg.fallbackSkillId);
@@ -2239,6 +2334,7 @@ function backToMainMenu(playSe = true) {
   if (typeof closeCustomSkillModal === 'function') closeCustomSkillModal(true);
   if (typeof closePwaGuideModal === 'function') closePwaGuideModal(true);
   if (typeof closeKeyResetConfirmModal === 'function') closeKeyResetConfirmModal(true);
+  closeAppExitConfirmModal(true);
   closeSharePrepMenu(true);
   closeSkillSelectModal(true);
   const cModal = document.getElementById('confirm-match-modal');
@@ -2277,6 +2373,14 @@ function backToMultiHubMenu(playSe = true) {
 }
 
 function handleMenuCancelAction() {
+  if (isElementActuallyVisible('app-terminated-overlay')) {
+    reopenAppFromTerminated();
+    return true;
+  }
+  if (isElementActuallyVisible('app-exit-confirm-modal')) {
+    closeAppExitConfirmModal();
+    return true;
+  }
   if (isElementActuallyVisible('key-reset-confirm-modal')) {
     if (typeof closeKeyResetConfirmModal === 'function') closeKeyResetConfirmModal();
     return true;
@@ -2340,6 +2444,10 @@ function handleMenuCancelAction() {
   }
   if (isElementActuallyVisible('solo-hub-menu') || isElementActuallyVisible('multi-hub-menu') || isElementActuallyVisible('ranking-menu')) {
     backToMainMenu(true);
+    return true;
+  }
+  if (isElementActuallyVisible('main-menu-actions')) {
+    openAppExitConfirmModal();
     return true;
   }
   return false;
@@ -3110,7 +3218,6 @@ function switchBgmToPanic(toPanic) {
     bgmAudio.muted = false;
   }
 }
-
 const PLAYER_SKILL_MAX = 3;
 const PLAYER_SKILL_SCORE_STEP = 300;
 let playerSkillState = {
@@ -3501,7 +3608,6 @@ function refreshOnlineSplitFrames() {
     container.appendChild(slot);
   });
 }
-
 // ==========================================
 // バトル中サイド演出枠（1人時）& インライン立ち絵（横複数人対戦時）
 // ==========================================
@@ -3829,10 +3935,13 @@ function updateBottomStatusBar() {
     }
   }
 }
+
 function startGame(mode, level = 1, totalPlayers = 2, skillEnabled = false, customSkillEnabled = true) {
+  if (typeof isAppExiting !== 'undefined') isAppExiting = false;
   cancelLocalAutoStart();
   clearLocalSliderAdjusting();
   closeExitConfirmModal(true);
+  closeAppExitConfirmModal(true);
   if (typeof SceneBgm !== 'undefined') SceneBgm.stop();
   if (typeof closeRangeDigitEdit === 'function') closeRangeDigitEdit();
   if (typeof closeSelectPickerModal === 'function') closeSelectPickerModal(true);
@@ -4230,7 +4339,9 @@ function exitGame(silent = false) {
 }
 
 function performExitGame(silent = false) {
+  if (typeof stopAllVibration === 'function') stopAllVibration();
   closeExitConfirmModal(true);
+  closeAppExitConfirmModal(true);
   clearKeyboardHoldStates();
   if (myEngine && !currentMode.startsWith('single')) {
     onlineConnections.forEach(c => { if(c && c.open) c.send({ type: 'leave', senderId: myOnlineId }); });
@@ -4283,7 +4394,6 @@ function performExitGame(silent = false) {
   }
   if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(220);
 }
-
 function toggleContinuousSwipe() {
   const cb = document.getElementById('continuous-swipe');
   if (!cb) return;
@@ -4297,10 +4407,10 @@ function createPlayerInputState() {
     padState: {}, prevPadState: {},
     padHoldFrames: { Up: 0, Down: 0, Left: 0, Right: 0 },
     padDirTime: {
-      Up:    { held: false, startAt: 0, lastAt: 0 },
-      Down:  { held: false, startAt: 0, lastAt: 0 },
-      Left:  { held: false, startAt: 0, lastAt: 0 },
-      Right: { held: false, startAt: 0, lastAt: 0 }
+      Up:    { held: false, startAt: 0, lastAt: 0, releaseAt: 0 },
+      Down:  { held: false, startAt: 0, lastAt: 0, releaseAt: 0 },
+      Left:  { held: false, startAt: 0, lastAt: 0, releaseAt: 0 },
+      Right: { held: false, startAt: 0, lastAt: 0, releaseAt: 0 }
     },
     padLastPressAt: {},
     padWaitRelease: {},
@@ -4321,8 +4431,8 @@ let p1InputState = createPlayerInputState();
 let padState = p1InputState.padState, prevPadState = p1InputState.prevPadState;
 let padHoldFrames = p1InputState.padHoldFrames, padGrabState = p1InputState.padGrabState, keyGrabState = p1InputState.keyGrabState;
 let touchRowFollowCallback = null, shareP2RowFollowCallback = null;
-const PAD_DAS_MS = 210, PAD_ARR_MS = 45, PAD_BOUNCE_MS = 55;
-const KEY_DAS_MS = 210, KEY_ARR_MS = 45;
+const PAD_DAS_MS = 205, PAD_ARR_MS = 32, PAD_BOUNCE_MS = 65, PAD_DIR_RELEASE_MS = 28, PAD_DIR_MIN_INTERVAL_MS = 75;
+const KEY_DAS_MS = 145, KEY_ARR_MS = 26;
 
 function resetAllLocalInputStates() {
   p1InputState = createPlayerInputState();
@@ -4374,6 +4484,7 @@ function resetPadDirTimeState(stateObj) {
   if (!stateObj || !stateObj.padDirTime) return;
   ['Up', 'Down', 'Left', 'Right'].forEach(d => {
     stateObj.padDirTime[d].held = false;
+    stateObj.padDirTime[d].releaseAt = 0;
   });
 }
 
@@ -4447,10 +4558,18 @@ function pollSingleGamepad(engine, cfgPad, stateObj, padObj, isMainPlayer, oppRe
 
   const checkDirTrigger = (dirName, btnIdx) => {
     const dt = stateObj.padDirTime[dirName];
-    if (!isPressed(btnIdx)) {
-      dt.held = false;
+    const down = isPressed(btnIdx);
+    if (!down) {
+      if (dt.held) {
+        if (!dt.releaseAt) dt.releaseAt = now;
+        if ((now - dt.releaseAt) >= PAD_DIR_RELEASE_MS) {
+          dt.held = false;
+          dt.releaseAt = 0;
+        }
+      }
       return false;
     }
+    dt.releaseAt = 0;
     if (stateObj.padWaitRelease && stateObj.padWaitRelease[btnIdx]) {
       dt.held = true;
       dt.startAt = now;
@@ -4462,7 +4581,7 @@ function pollSingleGamepad(engine, cfgPad, stateObj, padObj, isMainPlayer, oppRe
       dt.held = true;
       dt.startAt = now;
       dt.lastAt = now;
-      if (now - lastDirT < 45) return false;
+      if (now - lastDirT < PAD_DIR_MIN_INTERVAL_MS) return false;
       if (stateObj.padLastPressAt) stateObj.padLastPressAt[`dir_${dirName}`] = now;
       return true;
     }
@@ -4476,6 +4595,7 @@ function pollSingleGamepad(engine, cfgPad, stateObj, padObj, isMainPlayer, oppRe
   let moved = false;
   if (isPressed(cfgPad.Up) && isPressed(cfgPad.Down)) {
     stateObj.padDirTime.Up.held = stateObj.padDirTime.Down.held = false;
+    stateObj.padDirTime.Up.releaseAt = stateObj.padDirTime.Down.releaseAt = 0;
   } else {
     if (checkDirTrigger('Up', cfgPad.Up) && engine.cursor.y > 0) {
       engine.cursor.y--; moved = true;
@@ -4488,6 +4608,7 @@ function pollSingleGamepad(engine, cfgPad, stateObj, padObj, isMainPlayer, oppRe
   }
   if (isPressed(cfgPad.Left) && isPressed(cfgPad.Right)) {
     stateObj.padDirTime.Left.held = stateObj.padDirTime.Right.held = false;
+    stateObj.padDirTime.Left.releaseAt = stateObj.padDirTime.Right.releaseAt = 0;
   } else {
     if (checkDirTrigger('Left', cfgPad.Left)) {
       if (stateObj.padGrabState.active) executeGrabMoveForEngine(engine, stateObj.padGrabState, -1);
@@ -4653,11 +4774,11 @@ function updateGarbagePreview(engine, containerId) {
     const block = document.createElement('div');
     const bgCol = gb ? (g.isHard ? '#cccccc' : '#4a4a4a') : (g.isHard ? '#a8b2bd' : '#5c636a');
     const brCol = idx === 0 ? (gb ? '#ffffff' : '#ffd700') : '#dee2e6';
-    block.style.cssText = `background:${bgCol};border:1px solid ${brCol};border-radius:2px;width:${Math.min(34,Math.max(14,g.w*5))}px;height:${Math.min(18,Math.max(10,g.h*4))}px;flex-shrink:0;display:flex;align-items:center;justify-content:center;${idx>0?'opacity:0.55;':''}`;
+    block.style.cssText = `background:${bgCol};border:1.5px solid ${brCol};border-radius:3px;width:${Math.min(48,Math.max(18,g.w*7))}px;height:${Math.min(26,Math.max(14,g.h*6))}px;flex-shrink:0;display:flex;align-items:center;justify-content:center;${idx>0?'opacity:0.58;':''}`;
     if (g.count > 1) {
       const span = document.createElement('span');
       span.innerText = `×${g.count}`;
-      span.style.cssText = 'color:#fff;font-size:9px;font-weight:bold;line-height:1;text-shadow:1px 1px 1px #000;';
+      span.style.cssText = 'color:#fff;font-size:11px;font-weight:900;line-height:1;text-shadow:1px 1px 1px #000;';
       block.appendChild(span);
     }
     container.appendChild(block);
@@ -5100,6 +5221,8 @@ function setupInput() {
     const isConfirmModalVisible = isElementActuallyVisible('confirm-match-modal');
     const isSelectPickerVisible = isElementActuallyVisible('select-picker-modal');
     const isExitConfirmVisible = isElementActuallyVisible('exit-confirm-modal');
+    const isAppExitConfirmVisible = isElementActuallyVisible('app-exit-confirm-modal');
+    const isAppTerminatedVisible = isElementActuallyVisible('app-terminated-overlay');
     const isKeyResetConfirmVisible = isElementActuallyVisible('key-reset-confirm-modal');
     const isPwaGuideVisible = isElementActuallyVisible('pwa-guide-modal');
     const isStoryOverlayVisible = isElementActuallyVisible('story-overlay');
@@ -5112,7 +5235,7 @@ function setupInput() {
       return;
     }
 
-    if (!isGameVisible || isResultVisible || isSettingsVisible || isSkillModalVisible || isCustomSkillModalVisible || isConfirmModalVisible || isSelectPickerVisible || isExitConfirmVisible || isKeyResetConfirmVisible || isPwaGuideVisible) {
+    if (!isGameVisible || isResultVisible || isSettingsVisible || isSkillModalVisible || isCustomSkillModalVisible || isConfirmModalVisible || isSelectPickerVisible || isExitConfirmVisible || isAppExitConfirmVisible || isAppTerminatedVisible || isKeyResetConfirmVisible || isPwaGuideVisible) {
       const tag = document.activeElement?.tagName;
       const isTextInput = tag === 'INPUT' && document.activeElement?.type === 'text';
       const isLocalMenuOpen = isElementActuallyVisible('local-menu');
@@ -5122,6 +5245,8 @@ function setupInput() {
                        || isConfirmModalVisible
                        || isSelectPickerVisible
                        || isExitConfirmVisible
+                       || isAppExitConfirmVisible
+                       || isAppTerminatedVisible
                        || isKeyResetConfirmVisible
                        || isPwaGuideVisible
                        || isSettingsVisible
@@ -5329,7 +5454,7 @@ function adjustLayout() {
     }
     gameContainer.style.cssText = 'position:relative;width:100%;height:100%;display:flex;flex-direction:column;flex-wrap:nowrap;padding:0;gap:0;';
 
-    const baseBoardH = Math.max(522, myWrapper.offsetHeight || 522, rivalWrapper ? (rivalWrapper.offsetHeight || 522) : 522);
+    const baseBoardH = Math.max(532, myWrapper.offsetHeight || 532, rivalWrapper ? (rivalWrapper.offsetHeight || 532) : 532);
     const p1CtrlH = Math.max(160, controls.offsetHeight || 180);
     const p2CtrlH = p2Controls ? Math.max(160, p2Controls.offsetHeight || 180) : 180;
     const baseTotalW = 224 + 110 + 10;
@@ -5390,7 +5515,7 @@ function adjustLayout() {
 
     const totalPlayers = 1 + oppCount;
     const baseW = 224;
-    const baseH = currentSkillEnabled ? 545 : 515;
+    const baseH = currentSkillEnabled ? 555 : 525;
     const portraitH = 468;
     const portraitW = totalPlayers === 2 ? 150 : (totalPlayers === 3 ? 104 : 74);
     const showPortraits = (totalPlayers >= 2);
@@ -5452,7 +5577,7 @@ function adjustLayout() {
 
     if (oppCount >= 1) {
       const totalPlayers = 1 + oppCount;
-      const baseBoardW = 224, baseBoardH = 515, ctrlW = 110;
+      const baseBoardW = 224, baseBoardH = 525, ctrlW = 110;
       const portraitW = totalPlayers === 2 ? 150 : (totalPlayers === 3 ? 104 : 74);
       const portraitH = 468;
       const gapPx = totalPlayers >= 4 ? 6 : 8;
@@ -5519,7 +5644,7 @@ function adjustLayout() {
     if (isLeft) { controls.style.order = '1'; myWrapper.style.order = '2'; }
     else { myWrapper.style.order = '2'; controls.style.order = '3'; }
 
-    const baseBoardW = 224, baseBoardH = 515, ctrlW = 110;
+    const baseBoardW = 224, baseBoardH = 525, ctrlW = 110;
     const availableW = Math.max(260, W - sideMargin * 2 - 20);
     const availableH = Math.max(240, H - 84);
     const myScale = Math.max(0.4, Math.min(largeScreenMaxScale, availableH / baseBoardH, availableW / (baseBoardW + ctrlW + 16)));
@@ -5547,7 +5672,7 @@ function adjustLayout() {
         if (rivalWrapper.parentNode !== controls) controls.insertBefore(rivalWrapper, controls.firstChild);
         rivalWrapper.style.setProperty('order', '-1', 'important');
         const rivalScale = 110 / 224;
-        const originalRivalH = rivalWrapper.offsetHeight || 510;
+        const originalRivalH = rivalWrapper.offsetHeight || 520;
         const horizCenterOffset = (110 - 224) / 2;
         rivalWrapper.style.transformOrigin = 'top center';
         rivalWrapper.style.transform = `scale(${rivalScale})`;
@@ -5563,7 +5688,7 @@ function adjustLayout() {
         rivalWrapper.style.marginRight = `${horizCenterOffset}px`;
         rivalWrapper.style.marginBottom = `${originalRivalH * rivalScale - originalRivalH}px`;
       }
-      controls.style.height = '515px'; controls.style.justifyContent = 'flex-start';
+      controls.style.height = '525px'; controls.style.justifyContent = 'flex-start';
       const vibVisible = document.getElementById('vibrate-wrapper')?.style.display !== 'none';
       if (vibVisible) controls.style.gap = '4px';
       if (handednessWrapper) handednessWrapper.style.marginTop = 'auto';
@@ -5572,7 +5697,7 @@ function adjustLayout() {
       if (handednessWrapper) handednessWrapper.style.marginTop = '0';
     }
 
-    const baseBoardH = 515, availH = H - 72 - bottomReserve, contentW = 344;
+    const baseBoardH = 525, availH = H - 72 - bottomReserve, contentW = 344;
     let myScale = Math.min(1.0, availH / baseBoardH);
     if (contentW * myScale > W - 10) myScale = (W - 10) / contentW;
     myScale = Math.max(0.4, myScale);
@@ -5587,7 +5712,7 @@ function adjustLayout() {
     rivalsArea.style.display = 'none';
     const maxTopH = H * 0.22;
     rivalsTopArea.style.cssText = `display:flex;position:absolute;top:4px;left:0;width:100vw;height:${maxTopH}px;flex-direction:row;align-items:center;justify-content:center;gap:6px;z-index:30;overflow:hidden;`;
-    const availW = W - 12, scaleH = (maxTopH - 6) / 510, scaleW = availW / (oppCount * 224 + (oppCount - 1) * 6);
+    const availW = W - 12, scaleH = (maxTopH - 6) / 520, scaleW = availW / (oppCount * 224 + (oppCount - 1) * 6);
     const miniScale = Math.min(scaleH, scaleW, 0.42);
 
     opponents.forEach((_, i) => {
@@ -5595,7 +5720,7 @@ function adjustLayout() {
       if (el) {
         if (el.parentNode !== rivalsTopArea) rivalsTopArea.appendChild(el);
         el.style.position = 'relative'; el.style.transform = `scale(${miniScale})`; el.style.transformOrigin = 'center center';
-        el.style.margin = `${(510 - 510 * miniScale) / -2}px ${(224 - 224 * miniScale) / -2}px`;
+        el.style.margin = `${(520 - 520 * miniScale) / -2}px ${(224 - 224 * miniScale) / -2}px`;
         el.style.width = '224px'; el.style.flexShrink = '0';
       }
     });
@@ -5607,7 +5732,7 @@ function adjustLayout() {
 
     gameContainer.style.cssText = `display:flex;flex-direction:${isLeft ? 'row' : 'row-reverse'};align-items:center;justify-content:center;position:absolute;top:${maxTopH + 6}px;left:0;width:100vw;height:${H - maxTopH - 6 - bottomReserve}px;padding:0;gap:10px;`;
     const maxCenterH = H - maxTopH - 18 - bottomReserve, contentW = 344;
-    let myScale = Math.min(1.0, maxCenterH / 515);
+    let myScale = Math.min(1.0, maxCenterH / 525);
     if (contentW * myScale > W - 10) myScale = (W - 10) / contentW;
     myScale = Math.max(0.32, myScale);
     myWrapper.style.transform = `scale(${myScale})`; controls.style.transform = `scale(${myScale})`;

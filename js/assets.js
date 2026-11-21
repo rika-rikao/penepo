@@ -1,3 +1,4 @@
+
 // ==========================================
 // キャラクター定義 & ループ型3Dカバーフロー & スキル定義/自作ラボ & カスタムアセット管理
 // ==========================================
@@ -31,6 +32,7 @@ const SKILL_DESCRIPTIONS = {
   erase_color: '盤面にあるマークの中から、ランダムで2種類の色をまとめて消します！ピンチの打開や連鎖のきっかけにぴったりです。',
   erase_rows: '下から1段目・5段目・9段目の横一列をすべて消します！お邪魔ブロックもまとめて消せるのでピンチに強いです。',
   purify_garbage: '盤面のお邪魔ブロックをすべて消して、下の段を2段せり上げたあと通常のブロックに変えます！大逆転が狙えます。',
+  reflection: '現在盤面に落下済みのお邪魔ブロックをすべて跳ね返し、その0.75倍の量を相手にお邪魔ブロックとして送ります！(予告ブロックは対象外・ターゲット時は2/4を標的に集中)',
   corrupt_enemy_row: '相手のブロックがある段をランダムで1段お邪魔に変え、さらに上から幅3のお邪魔ブロックを1段降らせます！',
   seal_skill: '相手（ターゲット優先）のスキル発動までに必要な残りスコアを300点追加して、スキルを遠ざけます！',
   convert_blocks: '盤面にあるマークの中からランダムで3色のブロックを、別の2色のブロックに一斉変換します！大連鎖の大チャンス！',
@@ -43,6 +45,7 @@ const SKILL_ICONS = {
   erase_color: '🎨',
   erase_rows: '⚡',
   purify_garbage: '✨',
+  reflection: '🪞',
   corrupt_enemy_row: '👾',
   seal_skill: '🔒',
   convert_blocks: '🔄',
@@ -55,6 +58,7 @@ const SKILL_COLORS = {
   erase_color: '#00d4ff',
   erase_rows: '#ffd700',
   purify_garbage: '#4ecca3',
+  reflection: '#22d3ee',
   corrupt_enemy_row: '#ff007f',
   seal_skill: '#a855f7',
   convert_blocks: '#38bdf8',
@@ -88,8 +92,8 @@ const CUSTOM_SKILL_MERITS = [
     id: 'purify_garbage',
     name: 'お邪魔浄化',
     isActive: true,
-    costs: [0, 50, 90, 130],
-    levelTexts: ['OFF', 'Lv1: 1段せり上げ浄化', 'Lv2: 2段せり上げ浄化', 'Lv3: 2段浄化+200点']
+    costs: [0, 55, 95, 140],
+    levelTexts: ['OFF', 'Lv1: 4段上昇+下1/3浄化', 'Lv2: 3段上昇+下2/3浄化', 'Lv3: 2段上昇+全お邪魔浄化']
   },
   {
     id: 'corrupt_enemy',
@@ -270,6 +274,7 @@ function getBaseSkillIdsList() {
     'erase_color',
     'erase_rows',
     'purify_garbage',
+    'reflection',
     'corrupt_enemy_row',
     'seal_skill',
     'convert_blocks',
@@ -297,6 +302,7 @@ function getSkillLabel(skillId) {
     erase_color: 'マーク全消し',
     erase_rows: '1・5・9段消し',
     purify_garbage: 'お邪魔浄化',
+    reflection: 'リフレクション',
     corrupt_enemy_row: 'お邪魔侵食',
     seal_skill: 'スキル封印',
     convert_blocks: 'ブロック変換',
@@ -343,6 +349,7 @@ function resolvePlayableSkillId(skillId, allowCustom = true, fallbackId = 'erase
       'erase_color',
       'erase_rows',
       'purify_garbage',
+      'reflection',
       'corrupt_enemy_row',
       'seal_skill',
       'convert_blocks',
@@ -494,6 +501,7 @@ function syncSkillPickersAfterCustomChange(focusSkillId = null) {
       renderSkillCarousel('skill-modal-picker', {
         currentSkillId: focusSkillId || (typeof selectedPlayerSkill !== 'undefined' ? selectedPlayerSkill : 'erase_color'),
         allowCustom: true,
+        directHorizontal: true,
         onSelect: (skId) => { if (typeof onPlayerSkillSelectChange === 'function') onPlayerSkillSelectChange(skId); },
         onCenterClick: () => { if (typeof confirmSkillSelectModal === 'function') confirmSkillSelectModal(); }
       });
@@ -1022,7 +1030,7 @@ async function preloadDefaultCharImages(onProgress = null) {
 
 // ==========================================
 // 汎用・ループ型 CSS 3D カバーフローエンジン
-// （キーボード/ゲームパッド操作時は一度選択＝決定してから左右切替モードに入る）
+// （directHorizontal: true 指定時は決定での選択モード入り不要で直接左右切替可能）
 // ==========================================
 function createCoverFlow(container, config) {
   const items = config.items || [];
@@ -1055,6 +1063,9 @@ function createCoverFlow(container, config) {
   const stageWrap = document.createElement('div');
   stageWrap.className = 'cf-stage-wrap' + (compact ? ' compact' : '');
   stageWrap.tabIndex = 0;
+  if (config.directHorizontal) {
+    stageWrap.dataset.cfDirect = '1';
+  }
   const stage = document.createElement('div');
   stage.className = 'cf-stage';
   stageWrap.appendChild(stage);
@@ -1438,11 +1449,27 @@ function renderCharPicker(containerId, options = {}) {
       if (typeof refreshMenuHeaderAndPreview === 'function') {
         refreshMenuHeaderAndPreview();
       }
+    },
+    onCenterClick: (item) => {
+      if (item.disabled) {
+        showToast('「せってい → がぞう」からマイ立ち絵を登録すると選べます');
+        return;
+      }
+      if (typeof playCharacterConfirmVoice === 'function') {
+        playCharacterConfirmVoice(item.id);
+      }
+      if (typeof options.onCenterClick === 'function') {
+        options.onCenterClick(item.id);
+      } else if (typeof advanceFromCoverFlow === 'function') {
+        const sw = container.querySelector('.cf-stage-wrap');
+        if (sw) advanceFromCoverFlow(sw);
+      }
     }
   });
 
   syncInlineNameBox(currentId);
 }
+
 // --- スキル選択（ループ型3Dカバーフロー・自作スキルON/OFF対応） ---
 function renderSkillCarousel(containerId, options = {}) {
   const container = document.getElementById(containerId);
@@ -1465,6 +1492,10 @@ function renderSkillCarousel(containerId, options = {}) {
     accentColor: getSkillColor(id)
   }));
 
+  const isDirect = options.directHorizontal !== undefined
+    ? !!options.directHorizontal
+    : (containerId === 'skill-modal-picker');
+
   createCoverFlow(container, {
     items,
     initialIndex: idx,
@@ -1472,6 +1503,7 @@ function renderSkillCarousel(containerId, options = {}) {
     compact: true,
     wrapperClass: 'skill-theme',
     showDesc: true,
+    directHorizontal: isDirect,
     renderCard: (card, item) => {
       const iconBox = document.createElement('div');
       iconBox.className = 'cf-skill-icon';
@@ -2205,7 +2237,6 @@ function getToneCanvasForImage(img) {
   try {
     const imgData = tCtx.getImageData(0, 0, tw, th);
     const data = imgData.data;
-    // 4x4 ハーフトーン（網点スクリーン）閾値行列
     const halftoneMatrix = [
       12,  5,  6, 13,
        4,  0,  1,  7,
@@ -2236,7 +2267,6 @@ function getToneCanvasForImage(img) {
     }
     tCtx.putImageData(imgData, 0, 0);
   } catch (_) {
-    // file:// 等で getImageData が制限される場合は高コントラストグレースケール＋網点パターン合成へフォールバック
     tCtx.clearRect(0, 0, tw, th);
     tCtx.save();
     tCtx.filter = 'grayscale(100%) contrast(1.48) brightness(1.06)';

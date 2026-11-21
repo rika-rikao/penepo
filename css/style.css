@@ -516,21 +516,21 @@ input[type="checkbox"].ui-toggle-input:checked::after {
 @keyframes pulse { from { transform: scale(0.95); opacity: 0.85; } to { transform: scale(1.08); opacity: 1; } }
 
 .garbage-preview-box {
-  height: 24px;
+  height: 34px;
   width: 100%;
   max-width: 224px;
   margin-bottom: 4px;
   display: flex;
-  gap: 4px;
+  gap: 5px;
   align-items: center;
-  background: rgba(15, 23, 42, 0.76);
-  border-radius: 8px;
-  padding: 2px 8px;
+  background: rgba(15, 23, 42, 0.8);
+  border-radius: 9px;
+  padding: 3px 8px;
   overflow: hidden;
-  border: 1px solid rgba(148, 163, 184, 0.25);
+  border: 1.5px solid rgba(148, 163, 184, 0.34);
 }
-.preview-label { font-size: 0.7rem; color: #4ecca3; margin-right: 4px; font-weight: 800; flex-shrink: 0; }
-.preview-list { display: flex; gap: 4px; align-items: center; height: 100%; flex: 1; min-width: 0; overflow: hidden; }
+.preview-label { font-size: 0.76rem; color: #4ecca3; margin-right: 3px; font-weight: 900; flex-shrink: 0; }
+.preview-list { display: flex; gap: 5px; align-items: center; height: 100%; flex: 1; min-width: 0; overflow: hidden; }
 
 .action-btn {
   background: linear-gradient(155deg, #f43f5e, #e11d48);

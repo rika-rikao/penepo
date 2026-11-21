@@ -162,10 +162,10 @@ body.is-pwa-standalone .pwa-install-bar {
 }
 
 /* ==========================================
-   ⑤ 縦UI モード選択中専用 ボトムメニュー（5ボタン構成）
+   ⑤ 縦UI モード選択中専用 ボトムメニュー（ホームバー回避余白つき）
    ========================================== */
 #menu-overlay.has-vertical-bottom-nav {
-  padding-bottom: calc(74px + env(safe-area-inset-bottom));
+  padding-bottom: calc(90px + env(safe-area-inset-bottom));
 }
 .vertical-bottom-nav {
   position: fixed;
@@ -176,7 +176,7 @@ body.is-pwa-standalone .pwa-install-bar {
   display: none;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 5px;
-  padding: 6px 8px calc(6px + env(safe-area-inset-bottom)) 8px;
+  padding: 6px 8px calc(16px + env(safe-area-inset-bottom)) 8px;
   background: rgba(10, 15, 32, 0.94);
   backdrop-filter: blur(12px);
   border-top: 1.5px solid rgba(78, 204, 163, 0.55);
@@ -262,6 +262,7 @@ body.is-pwa-standalone .pwa-install-bar {
 }
 
 .loader-card {
+  position: relative;
   width: 100%;
   max-width: 340px;
   background: rgba(15, 23, 42, 0.94);
@@ -371,6 +372,7 @@ body.is-pwa-standalone .pwa-install-bar {
   padding: 20px;
 }
 .room-waiting-card {
+  position: relative;
   width: 100%;
   max-width: 340px;
   background: rgba(15, 23, 42, 0.96);
@@ -485,10 +487,12 @@ body.is-pwa-standalone .pwa-install-bar {
 }
 
 /* ==========================================
-   プルダウン選択モーダル & 退出確認モーダル & キー初期化モーダル & スキル/自作/確認モーダル
+   プルダウン選択モーダル & 退出確認モーダル & キー初期化モーダル & ゲーム終了モーダル & スキル/自作/確認モーダル
    ========================================== */
 #select-picker-modal,
 #exit-confirm-modal,
+#app-exit-confirm-modal,
+#app-terminated-overlay,
 #key-reset-confirm-modal,
 #pwa-guide-modal,
 #skill-select-modal,
@@ -510,8 +514,11 @@ body.is-pwa-standalone .pwa-install-bar {
 #select-picker-modal { z-index: 620; }
 #exit-confirm-modal { z-index: 640; }
 #key-reset-confirm-modal { z-index: 645; }
+#app-exit-confirm-modal { z-index: 646; }
+#app-terminated-overlay { z-index: 760; background: rgba(4, 7, 15, 0.97); }
 
 .select-picker-box {
+  position: relative;
   width: 100%;
   max-width: 340px;
   max-height: 76dvh;
@@ -581,6 +588,7 @@ body.is-pwa-standalone .pwa-install-bar {
 .skill-modal-box,
 .confirm-modal-box,
 .custom-skill-modal-box {
+  position: relative;
   width: 100%;
   max-width: 440px;
   background: rgba(15, 23, 42, 0.97);
@@ -1199,6 +1207,7 @@ body.is-pwa-standalone .pwa-install-bar {
 }
 .local-slot-edit-btn:active { transform: scale(0.98); }
 .local-slot-portrait {
+  position: relative;
   width: 100%;
   height: 64px;
   border-radius: 7px;
@@ -1399,6 +1408,10 @@ input[type="range"].slider-adjusting {
 .cf-stage-wrap:focus .cf-engage-hint::before,
 .cf-stage-wrap:focus-visible .cf-engage-hint::before {
   content: '決定で選択開始';
+}
+.cf-stage-wrap[data-cf-direct="1"]:focus .cf-engage-hint::before,
+.cf-stage-wrap[data-cf-direct="1"]:focus-visible .cf-engage-hint::before {
+  content: '◀▶で切替 / 決定で確定';
 }
 .cf-stage-wrap:focus .cf-engage-hint,
 .cf-stage-wrap:focus-visible .cf-engage-hint {
@@ -2339,7 +2352,7 @@ body.share-force-portrait #toast { top: 50%; left: auto; right: 16px; transform:
   color: #08121f; box-shadow: 0 0 12px rgba(0, 230, 118, 0.8);
 }
 
-/* ① シェア対戦：負マージンなし実寸ラッパー方式（2P盤面消滅防止） */
+/* ① シェア対戦：実寸ラッパー方式（2P盤面消滅防止） */
 #game-area.share-mode { background: #0d1321; }
 #game-area.share-mode #game-container {
   position: relative; display: flex; flex-direction: column; width: 100%; height: 100%; padding: 0; gap: 0;
@@ -2422,14 +2435,40 @@ body.share-force-portrait #toast { top: 50%; left: auto; right: 16px; transform:
 
 /* ==========================================
    ⑧ GB風モード（モノクロ＋スクリーントーン網点＋高コントラスト階調表現）
+   ・初回ロード画面、各種モーダル、ローダー、トーストまで含めて完全反映
    ========================================== */
 .switch-hero-portrait-wrap,
 .confirm-modal-chara {
   position: relative;
 }
 
+body.gb-mode::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 99999;
+  background: #808080;
+  mix-blend-mode: saturation;
+  pointer-events: none;
+}
+
+/* ※背景が透明な状態があるオーバーレイ(#ready-go-overlay, #scene-transition-overlay, #op-overlay)には
+   個別の::afterを付けない（body.gb-mode::afterで全体が脱色され、透明箇所の白飛び・灰色ベタを防ぐ） */
+body.gb-mode #app-loader-overlay::after,
+body.gb-mode #busy-loader-overlay::after,
+body.gb-mode #online-sync-overlay::after,
+body.gb-mode #select-picker-modal::after,
+body.gb-mode #exit-confirm-modal::after,
+body.gb-mode #app-exit-confirm-modal::after,
+body.gb-mode #app-terminated-overlay::after,
+body.gb-mode #key-reset-confirm-modal::after,
+body.gb-mode #pwa-guide-modal::after,
+body.gb-mode #skill-select-modal::after,
+body.gb-mode #custom-skill-modal::after,
+body.gb-mode #confirm-match-modal::after,
+body.gb-mode #room-waiting::after,
+body.gb-mode #countdown-overlay::after,
 body.gb-mode #menu-overlay::after,
-body.gb-mode #op-overlay::after,
 body.gb-mode #story-overlay::after,
 body.gb-mode #settings-overlay::after,
 body.gb-mode #result-overlay::after,
@@ -2442,6 +2481,57 @@ body.gb-mode #share-prep-overlay::after {
   background: #808080;
   mix-blend-mode: saturation;
   pointer-events: none;
+}
+
+body.gb-mode #ready-go-text,
+body.gb-mode #ready-countdown-text {
+  color: #ffffff !important;
+  -webkit-text-stroke: 5px #000000 !important;
+  paint-order: stroke fill;
+  text-shadow:
+    -3px -3px 0 #000000,
+     3px -3px 0 #000000,
+    -3px  3px 0 #000000,
+     3px  3px 0 #000000,
+     0   4px 12px rgba(0, 0, 0, 0.95),
+     0   0   18px rgba(255, 255, 255, 0.85) !important;
+}
+
+/* 初回ロード画面・汎用ローダー・各種モーダル用 GBモノクロ＆網点トーン強調 */
+body.gb-mode #app-loader-overlay,
+body.gb-mode #busy-loader-overlay,
+body.gb-mode #online-sync-overlay,
+body.gb-mode #scene-transition-overlay.active {
+  background: radial-gradient(circle at center, #262626 0%, #0a0a0a 100%) !important;
+}
+body.gb-mode .loader-card,
+body.gb-mode .skill-modal-box,
+body.gb-mode .custom-skill-modal-box,
+body.gb-mode .confirm-modal-box,
+body.gb-mode .select-picker-box,
+body.gb-mode .room-waiting-card,
+body.gb-mode #result-modal-box {
+  background: rgba(16, 16, 16, 0.96) !important;
+  border-color: #e5e5e5 !important;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.9), 0 0 18px rgba(255, 255, 255, 0.16) !important;
+}
+body.gb-mode .loader-logo {
+  background: linear-gradient(180deg, #ffffff 0%, #c8c8c8 55%, #7a7a7a 100%) !important;
+  -webkit-background-clip: text !important;
+  -webkit-text-fill-color: transparent !important;
+}
+body.gb-mode .loader-block.lb-1 { background: #141414 !important; border: 1.5px solid #ffffff; color: #ffffff !important; }
+body.gb-mode .loader-block.lb-2 { background: #f2f2f2 !important; border: 1.5px solid #111111; color: #111111 !important; }
+body.gb-mode .loader-block.lb-3 { background: #4a4a4a !important; border: 1.5px solid #ffffff; color: #ffffff !important; }
+body.gb-mode .loader-block.lb-4 { background: #cfcfcf !important; border: 1.5px solid #111111; color: #111111 !important; }
+body.gb-mode .loader-block.lb-5 { background: #7a7a7a !important; border: 1.5px solid #ffffff; color: #ffffff !important; }
+body.gb-mode .loader-progress-fill {
+  background: linear-gradient(90deg, #737373, #d4d4d4, #ffffff) !important;
+}
+body.gb-mode .loader-ring {
+  border-color: rgba(255, 255, 255, 0.2) !important;
+  border-top-color: #ffffff !important;
+  border-right-color: #a3a3a3 !important;
 }
 
 /* 立ち絵・背景・フレーム画像を単なる白黒ではなく高コントラスト階調へ */
@@ -2472,7 +2562,7 @@ body.gb-mode .share-prep-char-thumb img {
   filter: grayscale(100%) contrast(1.42) brightness(1.06) !important;
 }
 
-/* スクリーントーン（網点）テクスチャを立ち絵・背景枠へ重ねる */
+/* スクリーントーン（網点）テクスチャを立ち絵・背景・モーダルカード枠へ重ねる */
 body.gb-mode .vertical-hub-portrait-wrap::after,
 body.gb-mode .switch-hero-portrait-wrap::after,
 body.gb-mode .story-portrait-slot::after,
@@ -2484,7 +2574,20 @@ body.gb-mode .local-slot-portrait::after,
 body.gb-mode .share-prep-char-thumb::after,
 body.gb-mode .story-stage-bg::after,
 body.gb-mode #my-zone-frame-bg::after,
-body.gb-mode #online-split-frames-bg::after {
+body.gb-mode #online-split-frames-bg::after,
+body.gb-mode .confirm-modal-chara::after,
+body.gb-mode #app-loader-overlay::before,
+body.gb-mode #busy-loader-overlay::before,
+body.gb-mode #online-sync-overlay::before,
+body.gb-mode #skill-select-modal::before,
+body.gb-mode #custom-skill-modal::before,
+body.gb-mode #confirm-match-modal::before,
+body.gb-mode #exit-confirm-modal::before,
+body.gb-mode #app-exit-confirm-modal::before,
+body.gb-mode #app-terminated-overlay::before,
+body.gb-mode #key-reset-confirm-modal::before,
+body.gb-mode #select-picker-modal::before,
+body.gb-mode #pwa-guide-modal::before {
   content: '';
   position: absolute;
   inset: 0;
@@ -2518,7 +2621,6 @@ body.gb-mode .rival-board.targeted .canvas-container {
 
 /* ==========================================
    ② ポップなパズルゲーム OPアニメーション (#op-overlay) & リキッドトランジション
-   （背景・ストライプ・放射線・ブロック・パーティクルは JS Canvas #op-canvas で描画）
    ========================================== */
 #op-overlay {
   position: fixed;
@@ -2534,17 +2636,6 @@ body.gb-mode .rival-board.targeted .canvas-container {
   transition: opacity 0.36s ease;
 }
 #op-overlay.op-fadeout {
-  opacity: 0;
-  pointer-events: none;
-}
-#op-overlay.is-liquid-masked {
-  mask: url(#op-liquid-mask);
-  -webkit-mask: url(#op-liquid-mask);
-  mask-mode: luminance;
-  -webkit-mask-mode: luminance;
-}
-#op-overlay.is-liquid-masked .op-skip-hint,
-#op-overlay.is-liquid-masked .op-skip-btn {
   opacity: 0;
   pointer-events: none;
 }

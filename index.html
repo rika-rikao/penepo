@@ -132,6 +132,29 @@
     </div>
   </div>
 
+  <!-- ゲーム終了確認モーダル（メインメニューでキャンセル時） -->
+  <div id="app-exit-confirm-modal" style="display:none;" aria-hidden="true">
+    <div class="confirm-modal-box exit-confirm-box">
+      <div class="confirm-modal-title" style="color:#ff4081;">ゲーム終了確認</div>
+      <div class="exit-confirm-message">ゲームを終了しますか？</div>
+      <div class="confirm-modal-actions">
+        <button type="button" id="app-exit-cancel-btn" class="small-btn" style="flex:1; padding:10px 14px;" onclick="closeAppExitConfirmModal()">キャンセル</button>
+        <button type="button" id="app-exit-ok-btn" class="btn retire-btn" style="flex:1; min-width:130px; padding:10px 14px;" onclick="confirmAppExitFromModal()">終了する</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ブラウザ仕様等でウィンドウを閉じられない場合の終了待機画面 -->
+  <div id="app-terminated-overlay" style="display:none;" aria-hidden="true">
+    <div class="confirm-modal-box" style="max-width:340px; text-align:center;">
+      <div class="confirm-modal-title" style="color:#4ecca3;">ゲームを終了しました</div>
+      <div class="exit-confirm-message">タブまたはウィンドウを閉じて終了してください。</div>
+      <div class="confirm-modal-actions">
+        <button type="button" id="app-terminated-back-btn" class="btn" style="width:100%;" onclick="reopenAppFromTerminated()">タイトルへ戻る</button>
+      </div>
+    </div>
+  </div>
+
   <!-- PWAインストール案内モーダル（自動プロンプト非対応ブラウザ向け） -->
   <div id="pwa-guide-modal" style="display:none;" aria-hidden="true">
     <div class="confirm-modal-box">
@@ -231,8 +254,8 @@
   </div>
 
   <div id="ready-go-overlay" style="display:none; position:absolute; inset:0; z-index:500; pointer-events:none; flex-direction:column; align-items:center; justify-content:center; gap: 10px;">
-    <div id="ready-go-text" style="font-size: 5rem; font-weight: 900; color: #ff007f; text-shadow: 0 0 15px rgba(255,255,255,0.8), 0 0 30px #e94560; opacity: 0; transform: scale(0.5); font-style: italic;"></div>
-    <div id="ready-countdown-text" style="display:none; font-size: 4.5rem; font-weight: 900; color: #00d4ff; text-shadow: 0 0 15px rgba(255,255,255,0.85), 0 0 28px #00d4ff; opacity: 0; transform: scale(0.5); font-style: italic; line-height: 1;"></div>
+    <div id="ready-go-text" style="font-size: 5rem; font-weight: 900; color: #ff007f; -webkit-text-stroke: 4px #000; paint-order: stroke fill; text-shadow: -2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 2px 2px 0 #000, 0 0 15px rgba(255,255,255,0.8), 0 0 30px #e94560; opacity: 0; transform: scale(0.5); font-style: italic;"></div>
+    <div id="ready-countdown-text" style="display:none; font-size: 4.5rem; font-weight: 900; color: #00d4ff; -webkit-text-stroke: 5px #000; paint-order: stroke fill; text-shadow: -3px -3px 0 #000, 3px -3px 0 #000, -3px 3px 0 #000, 3px 3px 0 #000, 0 4px 10px rgba(0,0,0,0.9), 0 0 16px rgba(255,255,255,0.85), 0 0 28px #00d4ff; opacity: 0; transform: scale(0.5); font-style: italic; line-height: 1;"></div>
   </div>
 
   <div id="countdown-overlay" style="display:none; position:absolute; inset:0; background:rgba(0,0,0,0.92); z-index:450; flex-direction:column; align-items:center; justify-content:center;">

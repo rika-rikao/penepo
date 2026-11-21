@@ -1,6 +1,7 @@
 // --- オンライン対戦 ---
 const PEER_PREFIX = 'pdw-26-';
 let onlineSkillEnabled = false;
+let onlineCustomSkillEnabled = true;
 let expectedAppearanceIds = [];
 let receivedAppearanceIds = {};
 let localAppearanceSent = false;
@@ -19,7 +20,6 @@ function generateShortRoomCode() {
   return res;
 }
 
-// iOS / Android / PC すべてで動作するクリップボードコピー（ユーザー操作の同期タイミング対応）
 function copyTextToClipboardSync(text) {
   if (!text) return false;
   let copied = false;
@@ -88,7 +88,6 @@ function createRoom() {
   currentCreatedRoomCode = codeUpper;
   const fullPeerId = PEER_PREFIX + codeUpper;
 
-  // スマホ（iOS / Android）はユーザー操作直後の同期コンテキスト内でコピーを実行する必要がある
   const preCopied = copyTextToClipboardSync(codeUpper);
 
   if (peer) { try { peer.destroy(); } catch(e){} }
@@ -292,6 +291,7 @@ function forceStartRoom() {
   const maxPlayers = parseInt(document.getElementById('online-max-players').value);
   const comLvl = parseInt(document.getElementById('online-com-level')?.value) || 3;
   onlineSkillEnabled = !!document.getElementById('online-skill-toggle')?.checked;
+  onlineCustomSkillEnabled = !!document.getElementById('online-custom-skill-toggle')?.checked;
   currentComLevel = comLvl;
   let players = [{ id: 'host', type: 'player', name: 'HOST' }];
   
@@ -322,11 +322,25 @@ function startPrepareMatchFromHost() {
   
   onlineConnections.forEach(c => {
     const cId = c._clientId;
-    const config = { players: configBase, myId: cId, matchId: matchId, seed: sharedSeed, skillEnabled: onlineSkillEnabled };
+    const config = {
+      players: configBase,
+      myId: cId,
+      matchId: matchId,
+      seed: sharedSeed,
+      skillEnabled: onlineSkillEnabled,
+      customSkillEnabled: onlineCustomSkillEnabled
+    };
     if (c.open) c.send({ type: 'prepare_match', config });
   });
   
-  const hostConfig = { players: configBase, myId: 'host', matchId: matchId, seed: sharedSeed, skillEnabled: onlineSkillEnabled };
+  const hostConfig = {
+    players: configBase,
+    myId: 'host',
+    matchId: matchId,
+    seed: sharedSeed,
+    skillEnabled: onlineSkillEnabled,
+    customSkillEnabled: onlineCustomSkillEnabled
+  };
   prepareMatchLocal(hostConfig);
 }
 
@@ -414,6 +428,9 @@ function prepareMatchLocal(config) {
   myOnlineId = config.myId;
   matchPlayersConfig = config.players;
   currentSkillEnabled = !!config.skillEnabled;
+  if (typeof currentCustomSkillEnabled !== 'undefined') {
+    currentCustomSkillEnabled = (config.customSkillEnabled !== false);
+  }
   matchState = 'preparing';
   isPracticeMode = false;
 
@@ -553,7 +570,11 @@ function resetGameLogicOnline(config) {
     showPlayerHeaderCutin(myRenderer.theme, `${size}個消し！`, '#00d4ff');
   };
 
-  initPlayerSkillState(!!config.skillEnabled, selectedPlayerSkill);
+  const allowCustom = (config.customSkillEnabled !== false);
+  const effectiveRawSkill = (typeof getEffectivePlayerSkillId === 'function')
+    ? getEffectivePlayerSkillId(selectedPlayerSkill, allowCustom)
+    : selectedPlayerSkill;
+  initPlayerSkillState(!!config.skillEnabled, effectiveRawSkill, allowCustom);
 
   const rivalsArea = document.getElementById('rivals-area');
   const rivalsTopArea = document.getElementById('rivals-top-area');
@@ -622,7 +643,7 @@ function resetGameLogicOnline(config) {
         rEngine.cutinText = `${size}個消し！`;
       };
       if (p.useCheat && CheatClass) {
-        rAI = new CheatClass(rEngine, p.level || 2, p.id, { maxSkillUses: 3 });
+        rAI = new CheatClass(rEngine, p.level || 2, p.id, { maxSkillUses: 3, allowCustom });
       } else {
         rAI = new ComAI(rEngine, p.level || 2, p.id);
       }
@@ -729,7 +750,7 @@ function replaceClientWithCom(leftId) {
          opp.engine.onStateChange = (state) => { if (state === 'gameover') checkMatchEnd(); };
          opp.engine.onSendGarbage = (totalBlocks, isHard) => { distributeGarbageOnline(opp.id, totalBlocks, isHard); };
          opp.ai = (currentSkillEnabled && typeof cheat === 'function')
-           ? new cheat(opp.engine, currentComLevel, opp.id, { maxSkillUses: 3 })
+           ? new cheat(opp.engine, currentComLevel, opp.id, { maxSkillUses: 3, allowCustom: onlineCustomSkillEnabled })
            : new ComAI(opp.engine, currentComLevel, opp.id);
          showToast(`${opp.name} が退出したためCOMが代役に入りました。`);
       } else {
@@ -998,8 +1019,11 @@ function bindConnEvents(c, isHostMode) {
     else if (data.type === 'cheat_corrupt_row') {
       if (data.targetId === myOnlineId && myEngine && !myEngine.gameOver && !isPracticeMode) {
         if (typeof applyCorruptRowToEngine === 'function') applyCorruptRowToEngine(myEngine, data.row);
-        myEngine.addGarbage(3, 1, false);
-        if (myEngine.garbageQueue.length > 0) myEngine.garbageQueue[myEngine.garbageQueue.length - 1].delay = 45;
+        const dropW = data.dropWidth !== undefined ? data.dropWidth : 3;
+        if (dropW > 0) {
+          myEngine.addGarbage(dropW, 1, false);
+          if (myEngine.garbageQueue.length > 0) myEngine.garbageQueue[myEngine.garbageQueue.length - 1].delay = 45;
+        }
       } else if (isHostMode) {
         onlineConnections.forEach(otherC => { if (otherC !== c && otherC.open) otherC.send(data); });
       }

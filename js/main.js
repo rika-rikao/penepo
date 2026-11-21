@@ -1,5 +1,5 @@
 // ==========================================
-// 対戦・ターゲット・ローカルスマブラ風UI・確認モーダル・横複数人立ち絵HUD・シェア対戦統合管理システム
+// 対戦・ターゲット・スマブラ風ローカル選択・自作スキルON/OFF・横複数人立ち絵HUD・シェア対戦・縦UIボトムナビ統合管理
 // ==========================================
 let myEngine, myRenderer;
 let opponents = [];
@@ -25,6 +25,13 @@ let rematchReady = {};
 let boardReady = {};
 
 let selectedPlayerSkill = localStorage.getItem('pdw_player_skill') || 'erase_color';
+let selectedFallbackSkill = localStorage.getItem('pdw_fallback_skill') || 'erase_color';
+if (typeof getCustomSkillSlotIndex === 'function' && getCustomSkillSlotIndex(selectedFallbackSkill) !== -1) {
+  selectedFallbackSkill = 'erase_color';
+}
+let currentSkillEnabled = false;
+let currentCustomSkillEnabled = true;
+
 let selectedSingleMode = 'free';
 let selectedComCount = 2;
 
@@ -45,13 +52,73 @@ const RANKING_MODES = [
 ];
 let rankingModeIdx = 0;
 
+function getMainPlayerPadSlot() {
+  try {
+    const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()) : [];
+    const slot0 = playerConfigs[0]?.padSlot;
+    if (slot0 === undefined || slot0 < 0) return -1;
+    if (pads[slot0] && pads[slot0].connected) return slot0;
+    if (currentMode !== 'local' && currentMode !== 'share' && slot0 === 0) {
+      const usedByOthers = [1, 2, 3].some(i => playerConfigs[i].padSlot === 0);
+      if (!usedByOthers) {
+        const idx = pads.findIndex(p => p && p.connected);
+        if (idx >= 0) return idx;
+      }
+    }
+  } catch (_) {}
+  return -1;
+}
+
+function getConnectedLocalPadSlotIfVibrating(playerSlotIdx) {
+  try {
+    const slot = playerConfigs[playerSlotIdx]?.padSlot;
+    if (slot === undefined || slot < 0) return -1;
+    const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()) : [];
+    const p = pads[slot];
+    if (p && p.connected && p.vibrationActuator && typeof p.vibrationActuator.playEffect === 'function') {
+      return slot;
+    }
+  } catch (_) {}
+  return -1;
+}
+
 function onPlayerSkillSelectChange(val) {
   selectedPlayerSkill = val || 'erase_color';
   localStorage.setItem('pdw_player_skill', selectedPlayerSkill);
 }
 
+function onFallbackSkillSelectChange(val) {
+  let safeVal = val || 'erase_color';
+  if (typeof getCustomSkillSlotIndex === 'function' && getCustomSkillSlotIndex(safeVal) !== -1) {
+    safeVal = 'erase_color';
+  }
+  selectedFallbackSkill = safeVal;
+  localStorage.setItem('pdw_fallback_skill', selectedFallbackSkill);
+}
+
+function getEffectivePlayerSkillId(rawSkillId, allowCustom = true, fallbackOverride = null) {
+  const fb = fallbackOverride || selectedFallbackSkill || 'erase_color';
+  const safeFb = (typeof getCustomSkillSlotIndex === 'function' && getCustomSkillSlotIndex(fb) !== -1) ? 'erase_color' : fb;
+  if (!rawSkillId) return safeFb;
+  if (typeof getCustomSkillSlotIndex === 'function' && getCustomSkillSlotIndex(rawSkillId) !== -1) {
+    if (!allowCustom) return safeFb;
+    if (typeof getCustomSkillConfig === 'function' && !getCustomSkillConfig(rawSkillId)) return safeFb;
+  }
+  return rawSkillId;
+}
+
 function syncPlayerSkillSelects() {
   if (typeof refreshAllSkillCarousels === 'function') refreshAllSkillCarousels();
+}
+
+function isElementActuallyVisible(id) {
+  let el = document.getElementById(id);
+  while (el && el !== document.body && el !== document.documentElement) {
+    const st = window.getComputedStyle(el);
+    if (st.display === 'none' || st.visibility === 'hidden') return false;
+    el = el.parentElement;
+  }
+  return !!el;
 }
 
 function focusPrimaryMenuElement(containerId) {
@@ -85,6 +152,7 @@ function openExitConfirmModal() {
     return;
   }
   isExitConfirmOpen = true;
+  clearKeyboardHoldStates();
   if (myEngine) myEngine.isRisingManualBtn = myEngine.isRisingManualKey = myEngine.isRisingManualPad = false;
   opponents.forEach(opp => {
     if (opp.engine) opp.engine.isRisingManualBtn = opp.engine.isRisingManualKey = opp.engine.isRisingManualPad = false;
@@ -111,18 +179,75 @@ function confirmExitFromModal() {
 }
 
 // ==========================================
-// スキル選択モーダル & 確認モーダル フロー
+// スキル選択モーダル（装備スキル & 自作OFF時スキル） & 最終確認モーダル
 // ==========================================
 let activeSkillConfirmFlow = null;
+let activeSkillModalTab = 'main';
 
 function openSkillAndConfirmFlow(flowCfg) {
+  const allowCustom = flowCfg.allowCustom !== false;
   activeSkillConfirmFlow = {
     charId: flowCfg.charId || resolvePlayableCharId(selectedCharId),
+    allowCustom,
     extraText: flowCfg.extraText || '',
     okLabel: flowCfg.okLabel || 'OK！（開始）',
     onConfirm: flowCfg.onConfirm || null
   };
+  activeSkillModalTab = allowCustom ? 'main' : 'fallback';
   openSkillSelectModal();
+}
+
+function switchSkillModalTab(tabKey) {
+  const allowCustom = !activeSkillConfirmFlow || activeSkillConfirmFlow.allowCustom !== false;
+  if (!allowCustom && tabKey === 'main') {
+    SE.play('cancel');
+    showToast('この対戦では自作スキルがOFFになっています');
+    return;
+  }
+  activeSkillModalTab = (tabKey === 'fallback') ? 'fallback' : 'main';
+  SE.play('cursorMove');
+  renderSkillModalPicker();
+}
+
+function renderSkillModalPicker(focusSkillId = null) {
+  const allowCustom = !activeSkillConfirmFlow || activeSkillConfirmFlow.allowCustom !== false;
+  if (!allowCustom) activeSkillModalTab = 'fallback';
+
+  const tabMain = document.getElementById('skill-tab-main');
+  const tabFb = document.getElementById('skill-tab-fallback');
+  if (tabMain) {
+    tabMain.disabled = !allowCustom;
+    tabMain.classList.toggle('active', activeSkillModalTab === 'main');
+  }
+  if (tabFb) {
+    tabFb.classList.toggle('active', activeSkillModalTab === 'fallback');
+  }
+
+  const charBadge = document.getElementById('skill-modal-char-badge');
+  if (charBadge && activeSkillConfirmFlow) {
+    const ch = getCharacterById(activeSkillConfirmFlow.charId);
+    const fbLabel = (typeof getSkillLabel === 'function') ? getSkillLabel(selectedFallbackSkill) : selectedFallbackSkill;
+    const modeNote = allowCustom
+      ? `自作ON (OFF時: ${fbLabel})`
+      : '自作OFF (通常スキルから選択)';
+    charBadge.innerText = `キャラ: ${ch.name} | ${modeNote}`;
+  }
+
+  if (typeof renderSkillCarousel === 'function') {
+    const isFb = (activeSkillModalTab === 'fallback');
+    renderSkillCarousel('skill-modal-picker', {
+      allowCustom: !isFb,
+      currentSkillId: focusSkillId || (isFb ? selectedFallbackSkill : selectedPlayerSkill),
+      title: isFb
+        ? '自作スキルOFF時に使うスキルを選択'
+        : '装備スキルを選択（決定で選択 / ◀▶切替 / 再決定で決定）',
+      onSelect: (skId) => {
+        if (isFb) onFallbackSkillSelectChange(skId);
+        else onPlayerSkillSelectChange(skId);
+      },
+      onCenterClick: () => confirmSkillSelectModal()
+    });
+  }
 }
 
 function openSkillSelectModal() {
@@ -131,19 +256,8 @@ function openSkillSelectModal() {
   const confirmModal = document.getElementById('confirm-match-modal');
   if (confirmModal) confirmModal.style.display = 'none';
 
-  const charBadge = document.getElementById('skill-modal-char-badge');
-  const ch = getCharacterById(activeSkillConfirmFlow.charId);
-  if (charBadge) {
-    charBadge.innerText = `選択キャラ: ${ch.name}` + (activeSkillConfirmFlow.extraText ? `  |  ${activeSkillConfirmFlow.extraText}` : '');
-  }
+  renderSkillModalPicker();
 
-  if (typeof renderSkillCarousel === 'function') {
-    renderSkillCarousel('skill-modal-picker', {
-      currentSkillId: selectedPlayerSkill,
-      onSelect: (skId) => onPlayerSkillSelectChange(skId),
-      onCenterClick: () => confirmSkillSelectModal()
-    });
-  }
   if (modal) {
     modal.style.display = 'flex';
     if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(160);
@@ -176,6 +290,7 @@ function openConfirmMatchModal() {
     return;
   }
   const charId = activeSkillConfirmFlow.charId;
+  const allowCustom = activeSkillConfirmFlow.allowCustom !== false;
   const ch = getCharacterById(charId);
   const imgEl = document.getElementById('confirm-modal-char-img');
   const nameEl = document.getElementById('confirm-modal-char-name');
@@ -190,10 +305,11 @@ function openConfirmMatchModal() {
   }
   if (nameEl) nameEl.innerText = ch.name;
 
-  const skId = selectedPlayerSkill;
-  const skIcon = (typeof SKILL_ICONS !== 'undefined' && SKILL_ICONS[skId]) ? SKILL_ICONS[skId] : '⚡';
-  const skName = (typeof SKILL_LABELS !== 'undefined' && SKILL_LABELS[skId]) ? SKILL_LABELS[skId] : skId;
-  const skDesc = (typeof SKILL_DESCRIPTIONS !== 'undefined' && SKILL_DESCRIPTIONS[skId]) ? SKILL_DESCRIPTIONS[skId] : '';
+  const rawSk = allowCustom ? selectedPlayerSkill : selectedFallbackSkill;
+  const skId = getEffectivePlayerSkillId(rawSk, allowCustom);
+  const skIcon = (typeof getSkillIcon === 'function') ? getSkillIcon(skId) : '⚡';
+  const skName = (typeof getSkillLabel === 'function') ? getSkillLabel(skId) : skId;
+  const skDesc = (typeof getSkillDesc === 'function') ? getSkillDesc(skId) : '';
   document.getElementById('confirm-modal-skill-icon').innerText = skIcon;
   document.getElementById('confirm-modal-skill-name').innerText = skName;
   document.getElementById('confirm-modal-skill-desc').innerText = skDesc;
@@ -234,10 +350,12 @@ function beginSingleStartFlow() {
     startSingleMode();
     return;
   }
+  const allowCustom = !!document.getElementById('single-custom-skill-toggle')?.checked;
   const modeNames = { free: 'フリー', ta: 'タイムアタック', sa: 'スコアアタック', survival: '勝ち抜き' };
   openSkillAndConfirmFlow({
     charId: selectedCharId,
-    extraText: `練習: ${modeNames[selectedSingleMode] || 'フリー'}`,
+    allowCustom,
+    extraText: `練習: ${modeNames[selectedSingleMode] || 'フリー'} / 自作:${allowCustom ? 'ON' : 'OFF'}`,
     okLabel: 'OK！スタート',
     onConfirm: () => startSingleMode()
   });
@@ -250,10 +368,12 @@ function beginComStartFlow() {
     startComGameFromSlider();
     return;
   }
+  const allowCustom = !!document.getElementById('com-custom-skill-toggle')?.checked;
   const lv = parseInt(document.getElementById('com-level-slider')?.value, 10) || 2;
   openSkillAndConfirmFlow({
     charId: selectedCharId,
-    extraText: `COM対戦 (${selectedComCount}人 / Lv.${lv})`,
+    allowCustom,
+    extraText: `COM対戦 (${selectedComCount}人 / Lv.${lv} / 自作:${allowCustom ? 'ON' : 'OFF'})`,
     okLabel: 'OK！対戦開始',
     onConfirm: () => startComGameFromSlider()
   });
@@ -266,10 +386,12 @@ function beginOnlineCreateFlow() {
     createRoom();
     return;
   }
+  const allowCustom = !!document.getElementById('online-custom-skill-toggle')?.checked;
   const maxP = document.getElementById('online-max-players')?.value || '2';
   openSkillAndConfirmFlow({
     charId: selectedCharId,
-    extraText: `オンライン部屋作成 (${maxP}人 / スキルON)`,
+    allowCustom,
+    extraText: `オンライン部屋作成 (${maxP}人 / 自作:${allowCustom ? 'ON' : 'OFF'})`,
     okLabel: 'OK！部屋を作る',
     onConfirm: () => createRoom()
   });
@@ -284,9 +406,11 @@ function beginOnlineJoinFlow() {
     joinRoom();
     return;
   }
+  const allowCustom = !!document.getElementById('online-custom-skill-toggle')?.checked;
   openSkillAndConfirmFlow({
     charId: selectedCharId,
-    extraText: `部屋参加: ${code.toUpperCase()}`,
+    allowCustom,
+    extraText: `部屋参加: ${code.toUpperCase()}（自作可否はホスト準拠）`,
     okLabel: 'OK！部屋に入る',
     onConfirm: () => joinRoom()
   });
@@ -308,32 +432,39 @@ function syncHandicapFromSlider(val) {
 // START(ポーズ／退出相当)ボタンによるメニュー一括決定
 // ==========================================
 function handleMenuStartAction() {
-  const isVis = (id) => {
-    const el = document.getElementById(id);
-    return !!(el && window.getComputedStyle(el).display !== 'none');
-  };
-
-  if (isVis('exit-confirm-modal')) {
+  if (isElementActuallyVisible('key-reset-confirm-modal')) {
+    if (typeof closeKeyResetConfirmModal === 'function') closeKeyResetConfirmModal();
+    return true;
+  }
+  if (isElementActuallyVisible('exit-confirm-modal')) {
     closeExitConfirmModal();
     return true;
   }
-  if (isVis('confirm-match-modal')) {
+  if (isElementActuallyVisible('pwa-guide-modal')) {
+    closePwaGuideModal();
+    return true;
+  }
+  if (isElementActuallyVisible('custom-skill-modal')) {
+    saveCurrentCustomSkillSlot();
+    return true;
+  }
+  if (isElementActuallyVisible('confirm-match-modal')) {
     acceptConfirmModal();
     return true;
   }
-  if (isVis('skill-select-modal')) {
+  if (isElementActuallyVisible('skill-select-modal')) {
     confirmSkillSelectModal();
     return true;
   }
-  if (isVis('settings-overlay')) {
+  if (isElementActuallyVisible('settings-overlay')) {
     closeSettings();
     return true;
   }
-  if (isVis('result-overlay')) {
+  if (isElementActuallyVisible('result-overlay')) {
     requestRematch();
     return true;
   }
-  if (isVis('countdown-overlay')) {
+  if (isElementActuallyVisible('countdown-overlay')) {
     const startBtn = document.getElementById('countdown-start-btn');
     if (startBtn && window.getComputedStyle(startBtn).display !== 'none') {
       forceStartRoom();
@@ -341,7 +472,7 @@ function handleMenuStartAction() {
     }
     return false;
   }
-  if (isVis('room-waiting')) {
+  if (isElementActuallyVisible('room-waiting')) {
     const forceBtn = document.getElementById('force-start-btn');
     if (forceBtn && window.getComputedStyle(forceBtn).display !== 'none') {
       startCountdown();
@@ -349,31 +480,31 @@ function handleMenuStartAction() {
     }
     return false;
   }
-  if (isVis('story-menu')) {
-    if (isVis('story-stage-step')) {
+  if (isElementActuallyVisible('story-menu')) {
+    if (isElementActuallyVisible('story-stage-step')) {
       StoryManager.startSelectedStage();
       return true;
     }
-    if (isVis('story-prep-step')) {
+    if (isElementActuallyVisible('story-prep-step')) {
       StoryManager.confirmPrepAndNext();
       return true;
     }
   }
-  if (isVis('single-menu')) {
+  if (isElementActuallyVisible('single-menu')) {
     beginSingleStartFlow();
     return true;
   }
-  if (isVis('com-menu')) {
+  if (isElementActuallyVisible('com-menu')) {
     beginComStartFlow();
     return true;
   }
-  if (isVis('online-menu')) {
+  if (isElementActuallyVisible('online-menu')) {
     const code = document.getElementById('peer-room-id')?.value.trim();
     if (code) beginOnlineJoinFlow();
     else beginOnlineCreateFlow();
     return true;
   }
-  if (isVis('local-menu')) {
+  if (isElementActuallyVisible('local-menu')) {
     forceConfirmAllAndStartLocal();
     return true;
   }
@@ -387,7 +518,7 @@ function handleMenuStartAction() {
 }
 
 // ==========================================
-// 縦UIハブ大型立ち絵（ランダム/固定） & Switch風メニュー2ペイン制御
+// 縦UIハブ大型立ち絵（ランダム/固定） & Switch風メニュー2ペイン & 縦ボトムメニュー制御
 // ==========================================
 function refreshMenuHeaderAndPreview(rerollHubChar = false) {
   const charId = resolvePlayableCharId(selectedCharId);
@@ -420,6 +551,74 @@ function setSwitchHeroPreview(title, desc, badge = 'PUZZLE ACTION') {
   if (bEl && badge) bEl.innerText = badge;
 }
 
+function updateVerticalBottomNav() {
+  const nav = document.getElementById('vertical-bottom-nav');
+  const menuOverlay = document.getElementById('menu-overlay');
+  if (!nav || !menuOverlay) return;
+
+  const isPortrait = window.innerHeight >= window.innerWidth;
+  const isVis = (id) => {
+    const el = document.getElementById(id);
+    return el && window.getComputedStyle(el).display !== 'none';
+  };
+  const isMenuOpen = isVis('menu-overlay');
+  const isMainHub = isVis('main-menu') && isVis('main-menu-actions');
+  const isWaiting = isVis('room-waiting');
+  const isSharePrep = isVis('share-prep-overlay');
+  const isSettingsOpen = isVis('settings-overlay');
+
+  let activeModeKey = null;
+  if (isSettingsOpen) activeModeKey = 'settings';
+  else if (isVis('solo-hub-menu') || isVis('story-menu') || isVis('com-menu') || isVis('single-menu')) activeModeKey = 'solo';
+  else if (isVis('multi-hub-menu') || isVis('local-menu') || isVis('online-menu')) activeModeKey = 'multi';
+  else if (isVis('ranking-menu')) activeModeKey = 'ranking';
+  else if (isMainHub) activeModeKey = 'home';
+
+  const shouldShow = isPortrait && isMenuOpen && !isMainHub && !isWaiting && !isSharePrep && !isSettingsOpen && (activeModeKey !== null);
+
+  nav.style.display = shouldShow ? 'grid' : 'none';
+  menuOverlay.classList.toggle('has-vertical-bottom-nav', shouldShow);
+
+  if (shouldShow) {
+    nav.querySelectorAll('.v-bottom-btn').forEach(btn => {
+      const target = btn.dataset.nav;
+      btn.classList.toggle('active', target === activeModeKey);
+    });
+  }
+}
+
+function navigateFromBottomNav(target) {
+  cancelLocalAutoStart();
+  clearLocalSliderAdjusting();
+  if (typeof closeRangeDigitEdit === 'function') closeRangeDigitEdit();
+  if (typeof closeSelectPickerModal === 'function') closeSelectPickerModal(true);
+  if (typeof closeCustomSkillModal === 'function') closeCustomSkillModal(true);
+  if (typeof closePwaGuideModal === 'function') closePwaGuideModal(true);
+  if (typeof closeKeyResetConfirmModal === 'function') closeKeyResetConfirmModal(true);
+  closeSharePrepMenu(true);
+  closeSkillSelectModal(true);
+  const cModal = document.getElementById('confirm-match-modal');
+  if (cModal) cModal.style.display = 'none';
+
+  switch (target) {
+    case 'home':
+      backToMainMenu(true);
+      break;
+    case 'solo':
+      showSoloHubMenu();
+      break;
+    case 'multi':
+      showMultiHubMenu();
+      break;
+    case 'settings':
+      openSettings();
+      break;
+    case 'ranking':
+      showRankingMenu();
+      break;
+  }
+}
+
 function refreshMenuLayoutState(rerollHubChar = false) {
   const menuOverlay = document.getElementById('menu-overlay');
   if (!menuOverlay) return;
@@ -448,6 +647,7 @@ function refreshMenuLayoutState(rerollHubChar = false) {
   if (heroPanel) {
     heroPanel.style.display = (isSwitchLandscape && isHub) ? 'flex' : 'none';
   }
+  updateVerticalBottomNav();
   refreshMenuHeaderAndPreview(rerollHubChar);
 }
 
@@ -471,11 +671,13 @@ function bindMenuHoverCursorSE() {
     const isResultVisible = document.getElementById('result-overlay')?.style.display === 'flex';
     const isSettingsVisible = document.getElementById('settings-overlay')?.style.display === 'block';
     const isSkillModalVisible = document.getElementById('skill-select-modal')?.style.display === 'flex';
+    const isCustomSkillModalVisible = document.getElementById('custom-skill-modal')?.style.display === 'flex';
     const isConfirmModalVisible = document.getElementById('confirm-match-modal')?.style.display === 'flex';
     const isSelectPickerVisible = document.getElementById('select-picker-modal')?.style.display === 'flex';
     const isExitConfirmVisible = document.getElementById('exit-confirm-modal')?.style.display === 'flex';
+    const isKeyResetVisible = document.getElementById('key-reset-confirm-modal')?.style.display === 'flex';
     const isSharePrepVisible = document.getElementById('share-prep-overlay')?.style.display === 'flex';
-    const isMenuHoverContext = !isGameVisible || isResultVisible || isSettingsVisible || isSkillModalVisible || isConfirmModalVisible || isSelectPickerVisible || isExitConfirmVisible || isSharePrepVisible;
+    const isMenuHoverContext = !isGameVisible || isResultVisible || isSettingsVisible || isSkillModalVisible || isCustomSkillModalVisible || isConfirmModalVisible || isSelectPickerVisible || isExitConfirmVisible || isKeyResetVisible || isSharePrepVisible;
     if (!isMenuHoverContext) {
       lastHoveredEl = null;
       return;
@@ -495,25 +697,43 @@ function bindMenuHoverCursorSE() {
 }
 
 // ==========================================
-// ローカル対戦：スマブラ風 上半分タイル＆下半分4等分ドック（見た目一致2Dナビ・ハンデ/Lvスライダー・コントローラー未接続枠編集対応）
+// ローカル対戦：スマブラ風 上半分タイル選択＆下半分4等分ドックUI
 // ==========================================
 let localSlotsConfig = [
-  { isCom: false, comLevel: 3, handicap: 3, charId: 'main00', skillId: 'erase_color',       phase: 'char', cursorStage: 'char', charCursorIdx: 0, skillCursorIdx: 0 },
-  { isCom: false, comLevel: 3, handicap: 3, charId: 'sub01',  skillId: 'erase_rows',        phase: 'char', cursorStage: 'char', charCursorIdx: 1, skillCursorIdx: 1 },
-  { isCom: true,  comLevel: 3, handicap: 3, charId: 'sub02',  skillId: 'purify_garbage',    phase: 'ready', cursorStage: 'char', charCursorIdx: 2, skillCursorIdx: 2 },
-  { isCom: true,  comLevel: 3, handicap: 3, charId: 'sub03',  skillId: 'corrupt_enemy_row', phase: 'ready', cursorStage: 'char', charCursorIdx: 3, skillCursorIdx: 3 }
+  { isCom: false, comLevel: 3, handicap: 3, charId: 'main00', skillId: 'erase_color',       fallbackSkillId: 'erase_color',       phase: 'char',  cursorStage: 'char', charCursorIdx: 0, skillCursorIdx: 0 },
+  { isCom: false, comLevel: 3, handicap: 3, charId: 'sub01',  skillId: 'erase_rows',        fallbackSkillId: 'erase_rows',        phase: 'char',  cursorStage: 'char', charCursorIdx: 1, skillCursorIdx: 1 },
+  { isCom: true,  comLevel: 3, handicap: 3, charId: 'sub02',  skillId: 'purify_garbage',    fallbackSkillId: 'purify_garbage',    phase: 'ready', cursorStage: 'char', charCursorIdx: 2, skillCursorIdx: 2 },
+  { isCom: true,  comLevel: 3, handicap: 3, charId: 'sub03',  skillId: 'corrupt_enemy_row', fallbackSkillId: 'corrupt_enemy_row', phase: 'ready', cursorStage: 'char', charCursorIdx: 3, skillCursorIdx: 3 }
 ];
 let activeLocalTouchActor = 0;
 let localPadTargetSlot = [0, 1, 2, 3];
 let localDomNavOwner = null;
 let localAutoStartTimer = null;
 let localMenuPadPrev = [{}, {}, {}, {}];
-let localMenuPadHold = [
-  { Up: 0, Down: 0, Left: 0, Right: 0 },
-  { Up: 0, Down: 0, Left: 0, Right: 0 },
-  { Up: 0, Down: 0, Left: 0, Right: 0 },
-  { Up: 0, Down: 0, Left: 0, Right: 0 }
-];
+let localMenuPadWaitRelease = [{}, {}, {}, {}];
+let localMenuPadLastPressAt = [{}, {}, {}, {}];
+let localMenuPadDirState = Array.from({ length: 4 }, () => ({
+  Up:    { held: false, startAt: 0, lastAt: 0 },
+  Down:  { held: false, startAt: 0, lastAt: 0 },
+  Left:  { held: false, startAt: 0, lastAt: 0 },
+  Right: { held: false, startAt: 0, lastAt: 0 }
+}));
+
+function resetLocalMenuPadDir(padIdx) {
+  if (!localMenuPadDirState[padIdx]) return;
+  localMenuPadDirState[padIdx] = {
+    Up:    { held: false, startAt: 0, lastAt: 0 },
+    Down:  { held: false, startAt: 0, lastAt: 0 },
+    Left:  { held: false, startAt: 0, lastAt: 0 },
+    Right: { held: false, startAt: 0, lastAt: 0 }
+  };
+}
+
+function clearLocalSliderAdjusting() {
+  if (typeof clearSliderAdjusting === 'function') {
+    clearSliderAdjusting();
+  }
+}
 
 function getLocalPlayerCount() {
   return Math.max(2, Math.min(4, parseInt(document.getElementById('local-player-count')?.value, 10) || 2));
@@ -521,6 +741,21 @@ function getLocalPlayerCount() {
 
 function isLocalSkillRuleOn() {
   return !!document.getElementById('local-skill-toggle')?.checked;
+}
+
+function isLocalCustomSkillRuleOn() {
+  return !!document.getElementById('local-custom-skill-toggle')?.checked;
+}
+
+function getLocalAvailableSkills() {
+  const allowCustom = isLocalCustomSkillRuleOn();
+  return (typeof getSelectableSkillIds === 'function') ? getSelectableSkillIds(allowCustom) : SKILL_IDS;
+}
+
+function getLocalEffectiveSlotSkill(slot) {
+  if (!slot) return 'erase_color';
+  const allowCustom = isLocalCustomSkillRuleOn();
+  return getEffectivePlayerSkillId(slot.skillId, allowCustom, slot.fallbackSkillId);
 }
 
 function isLocalSlotPadConnected(slotIdx, pads = null) {
@@ -591,15 +826,22 @@ function cancelLocalAutoStart() {
 
 function resetLocalSelectionStates() {
   cancelLocalAutoStart();
+  clearLocalSliderAdjusting();
   localDomNavOwner = null;
   const cnt = getLocalPlayerCount();
+  const availSkills = getLocalAvailableSkills();
   for (let i = 0; i < 4; i++) {
     const slot = localSlotsConfig[i];
     if (i === 0) slot.isCom = false;
     slot.handicap = Math.max(1, Math.min(5, slot.handicap || 3));
     slot.comLevel = Math.max(1, Math.min(99, slot.comLevel || 3));
     slot.charCursorIdx = Math.max(0, CHAR_PICKER_ORDER.indexOf(slot.charId));
-    slot.skillCursorIdx = Math.max(0, SKILL_IDS.indexOf(slot.skillId));
+    if (!slot.fallbackSkillId || getCustomSkillSlotIndex(slot.fallbackSkillId) !== -1) {
+      slot.fallbackSkillId = (i === 0 && selectedFallbackSkill) ? selectedFallbackSkill : 'erase_color';
+    }
+    const effSk = getLocalEffectiveSlotSkill(slot);
+    const skIdx = availSkills.indexOf(effSk);
+    slot.skillCursorIdx = skIdx >= 0 ? skIdx : 0;
     if (slot.isCom) {
       slot.phase = 'ready';
       slot.cursorStage = 'char';
@@ -616,13 +858,20 @@ function resetLocalSelectionStates() {
 }
 
 function forceConfirmAllAndStartLocal() {
+  clearLocalSliderAdjusting();
   const count = getLocalPlayerCount();
+  const availSkills = getLocalAvailableSkills();
+  const allowCustom = isLocalCustomSkillRuleOn();
   for (let i = 0; i < count; i++) {
     const sl = localSlotsConfig[i];
     const cid = CHAR_PICKER_ORDER[sl.charCursorIdx] || sl.charId;
     sl.charId = (cid === 'custom' && !CustomAssets.chara) ? 'main00' : cid;
     if (isLocalSkillRuleOn()) {
-      sl.skillId = SKILL_IDS[sl.skillCursorIdx] || sl.skillId;
+      const picked = availSkills[sl.skillCursorIdx];
+      if (picked) {
+        if (allowCustom) sl.skillId = picked;
+        else sl.fallbackSkillId = picked;
+      }
     }
     sl.phase = 'ready';
   }
@@ -633,6 +882,7 @@ function forceConfirmAllAndStartLocal() {
 
 function onLocalCountChange() {
   cancelLocalAutoStart();
+  clearLocalSliderAdjusting();
   SE.play('select');
   const count = getLocalPlayerCount();
   for (let i = 0; i < count; i++) {
@@ -650,6 +900,7 @@ function onLocalCountChange() {
 
 function onLocalSkillRuleToggle() {
   cancelLocalAutoStart();
+  clearLocalSliderAdjusting();
   SE.play('select');
   const skillOn = isLocalSkillRuleOn();
   const count = getLocalPlayerCount();
@@ -668,9 +919,24 @@ function onLocalSkillRuleToggle() {
   checkLocalAllReady();
 }
 
+function onLocalCustomSkillRuleToggle() {
+  cancelLocalAutoStart();
+  clearLocalSliderAdjusting();
+  SE.play('select');
+  const availSkills = getLocalAvailableSkills();
+  for (let i = 0; i < 4; i++) {
+    const slot = localSlotsConfig[i];
+    const effSk = getLocalEffectiveSlotSkill(slot);
+    const skIdx = availSkills.indexOf(effSk);
+    slot.skillCursorIdx = skIdx >= 0 ? skIdx : 0;
+  }
+  renderLocalMenuUI();
+}
+
 function toggleLocalSlotCom(slotIdx) {
   if (slotIdx === 0) return;
   cancelLocalAutoStart();
+  clearLocalSliderAdjusting();
   const slot = localSlotsConfig[slotIdx];
   slot.isCom = !slot.isCom;
   if (slot.isCom) {
@@ -707,6 +973,7 @@ function selectLocalActorToEdit(slotIdx, ownerKey = 'kb', reopenIfReady = true) 
     return;
   }
   cancelLocalAutoStart();
+  clearLocalSliderAdjusting();
   const slot = localSlotsConfig[slotIdx];
   if (reopenIfReady && slot.phase === 'ready') {
     slot.phase = 'char';
@@ -760,12 +1027,20 @@ function confirmLocalCharForSlot(slotIdx, tileIdx, ownerKey = null) {
 
 function confirmLocalSkillForSlot(slotIdx, tileIdx, ownerKey = null) {
   if (!isLocalSkillRuleOn()) return;
+  const availSkills = getLocalAvailableSkills();
+  const allowCustom = isLocalCustomSkillRuleOn();
   const slot = localSlotsConfig[slotIdx];
-  const skId = SKILL_IDS[tileIdx];
+  const skId = availSkills[tileIdx];
   if (!skId) return;
   cancelLocalAutoStart();
   slot.skillCursorIdx = tileIdx;
-  slot.skillId = skId;
+  if (allowCustom) {
+    slot.skillId = skId;
+    if (getCustomSkillSlotIndex(skId) === -1) slot.fallbackSkillId = skId;
+  } else {
+    slot.fallbackSkillId = skId;
+    if (getCustomSkillSlotIndex(slot.skillId) === -1) slot.skillId = skId;
+  }
   slot.phase = 'ready';
   SE.play('select');
 
@@ -803,6 +1078,7 @@ function getActiveTileDomForSlot(slot) {
 }
 
 function enterLocalDomFocusFromTile(slotIdx, dirY, ownerKey) {
+  clearLocalSliderAdjusting();
   const slot = localSlotsConfig[slotIdx];
   const tileEl = getActiveTileDomForSlot(slot);
   const scopeFilter = dirY < 0 ? 'top' : 'dock';
@@ -851,6 +1127,7 @@ function enterLocalDomFocusFromTile(slotIdx, dirY, ownerKey) {
 }
 
 function tryReturnFromDomToTiles(activeEl, dirY, ownerKey) {
+  clearLocalSliderAdjusting();
   const targetSlot = getLocalOwnerPadTarget(ownerKey);
   const slot = localSlotsConfig[targetSlot];
   if (!slot || slot.phase === 'ready') return false;
@@ -858,6 +1135,8 @@ function tryReturnFromDomToTiles(activeEl, dirY, ownerKey) {
   const isSkillPhase = (slot.phase === 'skill' && isLocalSkillRuleOn());
   const gridId = isSkillPhase ? 'local-skill-tiles' : 'local-char-tiles';
   const cols = isSkillPhase ? 4 : 5;
+  const availSkills = getLocalAvailableSkills();
+  const allowCustom = isLocalCustomSkillRuleOn();
   const tileEls = Array.from(document.querySelectorAll(`#${gridId} .local-select-tile`));
   if (tileEls.length === 0) return false;
 
@@ -883,7 +1162,11 @@ function tryReturnFromDomToTiles(activeEl, dirY, ownerKey) {
 
   if (isSkillPhase) {
     slot.skillCursorIdx = bestIdx;
-    slot.skillId = SKILL_IDS[bestIdx] || slot.skillId;
+    const picked = availSkills[bestIdx];
+    if (picked) {
+      if (allowCustom) slot.skillId = picked;
+      else slot.fallbackSkillId = picked;
+    }
   } else {
     slot.charCursorIdx = bestIdx;
     const cid = CHAR_PICKER_ORDER[bestIdx];
@@ -900,7 +1183,12 @@ function tryReturnFromDomToTiles(activeEl, dirY, ownerKey) {
 function handleLocalDomNavigation(input, ownerKey) {
   const activeEl = document.activeElement;
   if (!activeEl || !activeEl.closest('#local-menu') || activeEl.classList.contains('local-select-tile')) {
+    clearLocalSliderAdjusting();
     return false;
+  }
+
+  if (typeof activeAdjustSliderEl !== 'undefined' && activeAdjustSliderEl && activeAdjustSliderEl !== activeEl) {
+    clearLocalSliderAdjusting();
   }
 
   const allFocusables = getLocalDomFocusables();
@@ -913,6 +1201,11 @@ function handleLocalDomNavigation(input, ownerKey) {
   const inTop = !!activeEl.closest('.local-top-bar') || activeEl.id === 'local-back-btn';
 
   if (input.cancel) {
+    if (isRange && typeof activeAdjustSliderEl !== 'undefined' && activeAdjustSliderEl === activeEl) {
+      clearLocalSliderAdjusting();
+      SE.play('cancel');
+      return true;
+    }
     const targetSlot = getLocalOwnerPadTarget(ownerKey);
     const slot = localSlotsConfig[targetSlot];
     if (slot && slot.phase !== 'ready') {
@@ -937,22 +1230,46 @@ function handleLocalDomNavigation(input, ownerKey) {
     const step = parseFloat(activeEl.step) || 1;
     const min = parseFloat(activeEl.min) || 1;
     const max = parseFloat(activeEl.max) || 99;
-    if (input.left) {
-      setRangeValueWithEvents(activeEl, Math.max(min, parseFloat(activeEl.value) - step));
-      SE.play('cursorMove');
-      return true;
-    }
-    if (input.right) {
-      setRangeValueWithEvents(activeEl, Math.min(max, parseFloat(activeEl.value) + step));
-      SE.play('cursorMove');
-      return true;
-    }
-    if (input.confirm) {
-      rangeEditState.el = activeEl;
-      rangeEditState.digitIndex = 0;
-      updateRangeDigitHUD();
-      SE.play('select');
-      return true;
+
+    if (typeof activeAdjustSliderEl !== 'undefined' && activeAdjustSliderEl === activeEl) {
+      if (input.left) {
+        setRangeValueWithEvents(activeEl, Math.max(min, parseFloat(activeEl.value) - step));
+        SE.play('cursorMove');
+        return true;
+      }
+      if (input.right) {
+        setRangeValueWithEvents(activeEl, Math.min(max, parseFloat(activeEl.value) + step));
+        SE.play('cursorMove');
+        return true;
+      }
+      if (input.confirm) {
+        clearLocalSliderAdjusting();
+        rangeEditState.el = activeEl;
+        rangeEditState.digitIndex = 0;
+        updateRangeDigitHUD();
+        SE.play('select');
+        return true;
+      }
+      if (input.up) {
+        clearLocalSliderAdjusting();
+        const dockFocusables = getLocalDomFocusables('dock');
+        if (inDock && moveMenuFocus2D(0, -1, dockFocusables)) return true;
+        if (inDock && tryReturnFromDomToTiles(activeEl, -1, ownerKey)) return true;
+        moveMenuFocus2D(0, -1, allFocusables);
+        return true;
+      }
+      if (input.down) {
+        clearLocalSliderAdjusting();
+        moveMenuFocus2D(0, 1, allFocusables);
+        return true;
+      }
+      return false;
+    } else {
+      if (input.confirm) {
+        if (typeof setSliderAdjusting === 'function') setSliderAdjusting(activeEl);
+        SE.play('select');
+        return true;
+      }
     }
   }
 
@@ -1042,8 +1359,10 @@ function moveLocalTileCursor(slotIdx, dx, dy, ownerKey = 'kb') {
       renderLocalMenuUI();
     }
   } else if (slot.cursorStage === 'skill' && isLocalSkillRuleOn()) {
+    const availSkills = getLocalAvailableSkills();
+    const allowCustom = isLocalCustomSkillRuleOn();
     const cols = 4;
-    const total = SKILL_IDS.length;
+    const total = availSkills.length;
     let idx = slot.skillCursorIdx;
     let r = Math.floor(idx / cols);
     let c = idx % cols;
@@ -1064,7 +1383,11 @@ function moveLocalTileCursor(slotIdx, dx, dy, ownerKey = 'kb') {
     if (nextIdx >= total) nextIdx = total - 1;
     if (nextIdx !== slot.skillCursorIdx) {
       slot.skillCursorIdx = nextIdx;
-      slot.skillId = SKILL_IDS[nextIdx];
+      const picked = availSkills[nextIdx];
+      if (picked) {
+        if (allowCustom) slot.skillId = picked;
+        else slot.fallbackSkillId = picked;
+      }
       SE.play('cursorMove');
       renderLocalMenuUI();
     }
@@ -1095,34 +1418,76 @@ function checkLocalAllReady() {
 function pollLocalMenuGamepads(pads) {
   const now = performance.now();
   const isLocked = (typeof padInputLockUntil !== 'undefined' && now < padInputLockUntil);
+  const LOCAL_DAS_MS = (typeof GLOBAL_PAD_DAS_MS !== 'undefined') ? GLOBAL_PAD_DAS_MS : 230;
+  const LOCAL_ARR_MS = (typeof GLOBAL_PAD_ARR_MS !== 'undefined') ? GLOBAL_PAD_ARR_MS : 65;
+  const LOCAL_BOUNCE_MS = (typeof GLOBAL_PAD_BOUNCE_MS !== 'undefined') ? GLOBAL_PAD_BOUNCE_MS : 95;
 
   for (let padIdx = 0; padIdx < 4; padIdx++) {
     const padObj = pads[padIdx];
     if (!padObj || !padObj.connected) {
-      localMenuPadHold[padIdx] = { Up: 0, Down: 0, Left: 0, Right: 0 };
+      resetLocalMenuPadDir(padIdx);
       localMenuPadPrev[padIdx] = {};
+      localMenuPadWaitRelease[padIdx] = {};
       continue;
     }
 
     const prev = localMenuPadPrev[padIdx] || {};
+    const waitRel = localMenuPadWaitRelease[padIdx] || (localMenuPadWaitRelease[padIdx] = {});
+    const pressAt = localMenuPadLastPressAt[padIdx] || (localMenuPadLastPressAt[padIdx] = {});
+    const dirSt = localMenuPadDirState[padIdx] || (localMenuPadDirState[padIdx] = {
+      Up: { held: false, startAt: 0, lastAt: 0 },
+      Down: { held: false, startAt: 0, lastAt: 0 },
+      Left: { held: false, startAt: 0, lastAt: 0 },
+      Right: { held: false, startAt: 0, lastAt: 0 }
+    });
+
     const cur = {};
     padObj.buttons.forEach((b, i) => { cur[i] = !!b.pressed; });
+    Object.keys(waitRel).forEach(k => {
+      if (!cur[k]) delete waitRel[k];
+    });
 
     const ownerSlot = playerConfigs.findIndex(pc => pc.padSlot === padIdx);
     if (ownerSlot === -1 || isLocked) {
       localMenuPadPrev[padIdx] = cur;
+      if (isLocked) resetLocalMenuPadDir(padIdx);
       continue;
     }
 
     const cfg = playerConfigs[ownerSlot].pad;
-    const just = (btnIdx) => btnIdx !== null && btnIdx !== undefined && cur[btnIdx] && !prev[btnIdx];
+    const just = (btnIdx) => {
+      if (btnIdx === null || btnIdx === undefined) return false;
+      if (!cur[btnIdx] || prev[btnIdx] || waitRel[btnIdx]) return false;
+      if (now - (pressAt[btnIdx] || 0) < LOCAL_BOUNCE_MS) return false;
+      pressAt[btnIdx] = now;
+      return true;
+    };
+
     const isRep = (dir, btnIdx) => {
+      const st = dirSt[dir];
       if (btnIdx === null || btnIdx === undefined || !cur[btnIdx]) {
-        localMenuPadHold[padIdx][dir] = 0;
+        st.held = false;
         return false;
       }
-      const f = localMenuPadHold[padIdx][dir]++;
-      return f === 0 || (f >= 10 && (f - 10) % 3 === 0);
+      if (waitRel[btnIdx]) {
+        st.held = true;
+        st.startAt = now;
+        st.lastAt = now;
+        return false;
+      }
+      if (!st.held) {
+        st.held = true;
+        st.startAt = now;
+        st.lastAt = now;
+        if (now - (pressAt[`dir_${dir}`] || 0) < 55) return false;
+        pressAt[`dir_${dir}`] = now;
+        return true;
+      }
+      if ((now - st.startAt) >= LOCAL_DAS_MS && (now - st.lastAt) >= LOCAL_ARR_MS) {
+        st.lastAt = now;
+        return true;
+      }
+      return false;
     };
 
     if (ownerSlot === 0 && just(cfg.Pause)) {
@@ -1136,17 +1501,36 @@ function pollLocalMenuGamepads(pads) {
     const downTrig = isRep('Down', cfg.Down);
     const leftTrig = isRep('Left', cfg.Left);
     const rightTrig = isRep('Right', cfg.Right);
-    const confirmTrig = just(cfg.Swap) || just(cfg.GrabRight);
-    const cancelTrig = just(cfg.Skill) || just(cfg.GrabLeft);
+
+    let confirmTrig = just(cfg.Swap);
+    if (!confirmTrig) confirmTrig = just(cfg.GrabRight);
+    let cancelTrig = just(cfg.Skill);
+    if (!cancelTrig) cancelTrig = just(cfg.GrabLeft);
+
+    if (cancelTrig) confirmTrig = false;
 
     if (upTrig || downTrig || leftTrig || rightTrig || confirmTrig || cancelTrig) {
       const domActive = document.activeElement && document.activeElement.closest('#local-menu') && !document.activeElement.classList.contains('local-select-tile');
       if (domActive && (localDomNavOwner === padIdx || localDomNavOwner === null)) {
         localDomNavOwner = padIdx;
-        handleLocalDomNavigation({
-          up: upTrig, down: downTrig, left: leftTrig, right: rightTrig,
-          confirm: confirmTrig, cancel: cancelTrig
+        const did = handleLocalDomNavigation({
+          up: upTrig && !downTrig,
+          down: downTrig && !upTrig,
+          left: leftTrig && !rightTrig,
+          right: rightTrig && !leftTrig,
+          confirm: confirmTrig,
+          cancel: cancelTrig
         }, padIdx);
+        if (did && (confirmTrig || cancelTrig)) {
+          if (confirmTrig) {
+            if (cfg.Swap !== null && cfg.Swap !== undefined) waitRel[cfg.Swap] = true;
+            if (cfg.GrabRight !== null && cfg.GrabRight !== undefined) waitRel[cfg.GrabRight] = true;
+          }
+          if (cancelTrig) {
+            if (cfg.Skill !== null && cfg.Skill !== undefined) waitRel[cfg.Skill] = true;
+            if (cfg.GrabLeft !== null && cfg.GrabLeft !== undefined) waitRel[cfg.GrabLeft] = true;
+          }
+        }
         localMenuPadPrev[padIdx] = cur;
         continue;
       }
@@ -1161,6 +1545,8 @@ function pollLocalMenuGamepads(pads) {
       if (slot.phase === 'ready') {
         if (cancelTrig) {
           cancelLocalStepForSlot(targetSlot);
+          if (cfg.Skill !== null && cfg.Skill !== undefined) waitRel[cfg.Skill] = true;
+          if (cfg.GrabLeft !== null && cfg.GrabLeft !== undefined) waitRel[cfg.GrabLeft] = true;
         } else if (upTrig || downTrig || leftTrig || rightTrig) {
           const fallbackBtn = document.querySelector(`[data-local-focus-id="slot-edit-${targetSlot}"]`) || getLocalDomFocusables()[0];
           if (fallbackBtn) {
@@ -1174,6 +1560,8 @@ function pollLocalMenuGamepads(pads) {
       }
 
       if (cancelTrig) {
+        if (cfg.Skill !== null && cfg.Skill !== undefined) waitRel[cfg.Skill] = true;
+        if (cfg.GrabLeft !== null && cfg.GrabLeft !== undefined) waitRel[cfg.GrabLeft] = true;
         if (slot.phase === 'char' && targetSlot === 0 && ownerSlot === 0) {
           backToMultiHubMenu(true);
         } else if (slot.phase === 'char' && targetSlot !== ownerSlot) {
@@ -1184,13 +1572,15 @@ function pollLocalMenuGamepads(pads) {
           cancelLocalStepForSlot(targetSlot);
         }
       } else if (confirmTrig) {
+        if (cfg.Swap !== null && cfg.Swap !== undefined) waitRel[cfg.Swap] = true;
+        if (cfg.GrabRight !== null && cfg.GrabRight !== undefined) waitRel[cfg.GrabRight] = true;
         if (slot.phase === 'char') confirmLocalCharForSlot(targetSlot, slot.charCursorIdx, padIdx);
         else if (slot.phase === 'skill') confirmLocalSkillForSlot(targetSlot, slot.skillCursorIdx, padIdx);
       } else {
-        if (leftTrig) moveLocalTileCursor(targetSlot, -1, 0, padIdx);
-        else if (rightTrig) moveLocalTileCursor(targetSlot, 1, 0, padIdx);
-        else if (upTrig) moveLocalTileCursor(targetSlot, 0, -1, padIdx);
-        else if (downTrig) moveLocalTileCursor(targetSlot, 0, 1, padIdx);
+        if (leftTrig && !rightTrig) moveLocalTileCursor(targetSlot, -1, 0, padIdx);
+        else if (rightTrig && !leftTrig) moveLocalTileCursor(targetSlot, 1, 0, padIdx);
+        else if (upTrig && !downTrig) moveLocalTileCursor(targetSlot, 0, -1, padIdx);
+        else if (downTrig && !upTrig) moveLocalTileCursor(targetSlot, 0, 1, padIdx);
       }
     }
 
@@ -1201,6 +1591,7 @@ function pollLocalMenuGamepads(pads) {
 function renderLocalMenuUI() {
   const count = getLocalPlayerCount();
   const skillOn = isLocalSkillRuleOn();
+  const allowCustom = isLocalCustomSkillRuleOn();
   const actorBar = document.getElementById('local-touch-actor-bar');
   const charGrid = document.getElementById('local-char-tiles');
   const skillGrid = document.getElementById('local-skill-tiles');
@@ -1212,7 +1603,11 @@ function renderLocalMenuUI() {
   const prevFocusKey = activeBefore && activeBefore.closest('#local-menu')
     ? (activeBefore.dataset?.localFocusId || activeBefore.id || null)
     : null;
+  const prevAdjustKey = (typeof activeAdjustSliderEl !== 'undefined' && activeAdjustSliderEl?.dataset?.localFocusId)
+    ? activeAdjustSliderEl.dataset.localFocusId
+    : null;
 
+  clearLocalSliderAdjusting();
   if (activeLocalTouchActor >= count) activeLocalTouchActor = 0;
 
   if (actorBar) {
@@ -1283,8 +1678,13 @@ function renderLocalMenuUI() {
   });
 
   if (skillSection) skillSection.classList.toggle('disabled-section', !skillOn);
+  const skillTitleEl = skillSection ? skillSection.querySelector('.local-section-title') : null;
+  if (skillTitleEl) {
+    skillTitleEl.innerText = allowCustom ? '② スキル選択' : '② 自作OFF時スキル選択';
+  }
   skillGrid.innerHTML = '';
-  SKILL_IDS.forEach((skId, tIdx) => {
+  const availSkills = getLocalAvailableSkills();
+  availSkills.forEach((skId, tIdx) => {
     const tile = document.createElement('button');
     tile.type = 'button';
     tile.tabIndex = -1;
@@ -1293,11 +1693,11 @@ function renderLocalMenuUI() {
 
     const icon = document.createElement('div');
     icon.className = 'local-tile-skill-icon';
-    icon.innerText = SKILL_ICONS[skId] || '⚡';
+    icon.innerText = (typeof getSkillIcon === 'function') ? getSkillIcon(skId) : (SKILL_ICONS[skId] || '⚡');
 
     const lbl = document.createElement('div');
     lbl.className = 'local-tile-label';
-    lbl.innerText = SKILL_LABELS[skId] || skId;
+    lbl.innerText = (typeof getSkillLabel === 'function') ? getSkillLabel(skId) : (SKILL_LABELS[skId] || skId);
 
     const badges = document.createElement('div');
     badges.className = 'local-cursor-badges';
@@ -1340,8 +1740,8 @@ function renderLocalMenuUI() {
       : slot.charId;
     const ch = getCharacterById(displayCharId);
     const displaySkillId = (slot.phase === 'skill')
-      ? (SKILL_IDS[slot.skillCursorIdx] || slot.skillId)
-      : slot.skillId;
+      ? (availSkills[slot.skillCursorIdx] || getLocalEffectiveSlotSkill(slot))
+      : getLocalEffectiveSlotSkill(slot);
 
     slotEl.className = `local-dock-slot p${i}` + (activeLocalTouchActor === i ? ' is-active-touch' : '');
 
@@ -1387,11 +1787,12 @@ function renderLocalMenuUI() {
     const skBox = document.createElement('div');
     skBox.className = 'local-slot-skill-box';
     if (skillOn) {
-      const skIcon = SKILL_ICONS[displaySkillId] || '⚡';
-      const skLabel = SKILL_LABELS[displaySkillId] || displaySkillId;
-      const skDesc = SKILL_DESCRIPTIONS[displaySkillId] || '';
+      const skIcon = (typeof getSkillIcon === 'function') ? getSkillIcon(displaySkillId) : '⚡';
+      const skLabel = (typeof getSkillLabel === 'function') ? getSkillLabel(displaySkillId) : displaySkillId;
+      const skDesc = (typeof getSkillDesc === 'function') ? getSkillDesc(displaySkillId) : '';
+      const prefix = (!allowCustom && getCustomSkillSlotIndex(slot.skillId) !== -1) ? '🛡️ ' : '';
       skBox.innerHTML = `
-        <div class="local-slot-skill-name">${skIcon} ${skLabel}</div>
+        <div class="local-slot-skill-name">${prefix}${skIcon} ${skLabel}</div>
         <div class="local-slot-skill-desc">${skDesc}</div>
       `;
     } else {
@@ -1475,25 +1876,65 @@ function renderLocalMenuUI() {
     }
     if (restoreEl && !restoreEl.disabled) {
       restoreEl.focus({ preventScroll: true });
+      if (prevAdjustKey && prevAdjustKey === prevFocusKey && restoreEl.type === 'range' && typeof setSliderAdjusting === 'function') {
+        setSliderAdjusting(restoreEl);
+      }
     }
   }
 }
 
 function startLocalGame() {
   cancelLocalAutoStart();
+  clearLocalSliderAdjusting();
   const count = getLocalPlayerCount();
   const skillEnabled = isLocalSkillRuleOn();
-  startGame('local', 3, count, skillEnabled);
+  const customSkillEnabled = isLocalCustomSkillRuleOn();
+  startGame('local', 3, count, skillEnabled, customSkillEnabled);
 }
-
 // ==========================================
-// シェア対戦 & メニューナビゲーション
+// シェア対戦（複数回タップ誤爆完全防止） & メニューナビゲーション
 // ==========================================
 let sharePrepConfig = {
-  p1: { charId: 'main00', handicap: 3, skillEnabled: false, skillId: 'erase_color', ready: false },
-  p2: { charId: 'sub01',  handicap: 3, skillId: 'erase_rows', ready: false }
+  p1: { charId: 'main00', handicap: 3, skillEnabled: false, customSkillEnabled: true, skillId: 'erase_color', fallbackSkillId: 'erase_color', ready: false },
+  p2: { charId: 'sub01',  handicap: 3, skillId: 'erase_rows', fallbackSkillId: 'erase_rows', ready: false }
 };
 let shareStartTimer = null;
+const recentPointerTapRecords = [];
+let shareGhostClickGuardBound = false;
+
+function recordPointerTapPoint(x, y, now) {
+  recentPointerTapRecords.push({ t: now, x: x || 0, y: y || 0 });
+  while (recentPointerTapRecords.length > 0 && (now - recentPointerTapRecords[0].t) > 1000) {
+    recentPointerTapRecords.shift();
+  }
+}
+
+function isGhostClickNearRecentPointerDown(x, y, now, maxAgeMs = 850, maxDistPx = 100) {
+  for (let i = recentPointerTapRecords.length - 1; i >= 0; i--) {
+    const rec = recentPointerTapRecords[i];
+    if (now - rec.t <= maxAgeMs) {
+      const dist = Math.hypot((x || 0) - rec.x, (y || 0) - rec.y);
+      if (dist <= maxDistPx) return true;
+    }
+  }
+  return false;
+}
+
+function ensureShareGhostClickGuard() {
+  if (shareGhostClickGuardBound) return;
+  shareGhostClickGuardBound = true;
+  const prepOverlay = document.getElementById('share-prep-overlay');
+  if (prepOverlay) {
+    prepOverlay.addEventListener('click', (e) => {
+      if (e.detail === 0) return;
+      const now = performance.now();
+      if (isGhostClickNearRecentPointerDown(e.clientX, e.clientY, now, 900, 110)) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    }, true);
+  }
+}
 
 function isSharePortraitForced() {
   const prepOpen = document.getElementById('share-prep-overlay')?.style.display === 'flex';
@@ -1511,23 +1952,50 @@ function getShareCharCandidateIds() {
 
 function bindMultiTouchTap(el, handler) {
   if (!el) return;
-  let lastTrigger = 0;
-  const trigger = (e) => {
+  el._multiTapHandler = handler;
+  if (el.dataset.multiTapBound === '1') return;
+  el.dataset.multiTapBound = '1';
+
+  el.addEventListener('pointerdown', (e) => {
+    if (e.button !== undefined && e.button !== 0) return;
+    if (e.cancelable) e.preventDefault();
     const now = performance.now();
-    if (now - lastTrigger < 120) return;
-    lastTrigger = now;
-    if (e && e.cancelable) e.preventDefault();
-    handler(e);
-  };
-  el.addEventListener('pointerdown', trigger);
+    if (now - (el._lastPointerDownAt || 0) < 160) return;
+    el._lastPointerDownAt = now;
+    recordPointerTapPoint(e.clientX, e.clientY, now);
+    if (typeof el._multiTapHandler === 'function') {
+      el._multiTapHandler(e);
+    }
+  });
+
   el.addEventListener('click', (e) => {
-    if (performance.now() - lastTrigger < 350) { e.preventDefault(); return; }
-    trigger(e);
+    const now = performance.now();
+    if (e.detail !== 0) {
+      if (now - (el._lastPointerDownAt || 0) < 900) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      if (isGhostClickNearRecentPointerDown(e.clientX, e.clientY, now, 900, 110)) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+    } else if (now - (el._lastPointerDownAt || 0) < 400) {
+      e.preventDefault();
+      return;
+    }
+    if (e.cancelable) e.preventDefault();
+    if (typeof el._multiTapHandler === 'function') {
+      el._multiTapHandler(e);
+    }
   });
 }
 
 function openSharePrepMenu() {
   cancelLocalAutoStart();
+  clearLocalSliderAdjusting();
+  ensureShareGhostClickGuard();
   SE.play('select');
   if (typeof closeRangeDigitEdit === 'function') closeRangeDigitEdit();
   sharePrepConfig.p1.ready = false;
@@ -1538,6 +2006,7 @@ function openSharePrepMenu() {
   const overlay = document.getElementById('share-prep-overlay');
   if (overlay) overlay.style.display = 'flex';
   updateShareForcePortraitClass();
+  updateVerticalBottomNav();
   renderSharePrepUI();
 }
 
@@ -1548,6 +2017,7 @@ function closeSharePrepMenu(silent = false) {
   if (overlay) overlay.style.display = 'none';
   document.body.classList.remove('share-force-portrait');
   if (wasOpen && !silent) SE.play('cancel');
+  updateVerticalBottomNav();
 }
 
 function renderSharePrepUI() {
@@ -1578,6 +2048,7 @@ function renderSharePrepSide(playerNum) {
   if (!container) return;
   const cfg = isP1 ? sharePrepConfig.p1 : sharePrepConfig.p2;
   const skillEnabled = sharePrepConfig.p1.skillEnabled;
+  const allowCustom = sharePrepConfig.p1.customSkillEnabled !== false;
   container.innerHTML = '';
 
   const hdr = document.createElement('div');
@@ -1655,26 +2126,50 @@ function renderSharePrepSide(playerNum) {
       renderSharePrepUI();
     });
     skRow.appendChild(toggleBtn);
+
+    const customToggleBtn = document.createElement('button');
+    customToggleBtn.type = 'button';
+    customToggleBtn.className = 'share-pill-btn' + (allowCustom ? ' active' : '');
+    customToggleBtn.disabled = !skillEnabled;
+    customToggleBtn.innerText = `自作:${allowCustom ? 'ON' : 'OFF'}`;
+    bindMultiTouchTap(customToggleBtn, () => {
+      if (!sharePrepConfig.p1.skillEnabled) return;
+      sharePrepConfig.p1.customSkillEnabled = !sharePrepConfig.p1.customSkillEnabled;
+      sharePrepConfig.p1.ready = false; sharePrepConfig.p2.ready = false;
+      SE.play('select');
+      renderSharePrepUI();
+    });
+    skRow.appendChild(customToggleBtn);
   } else {
     const ruleBadge = document.createElement('span');
     ruleBadge.className = 'share-prep-lbl';
     ruleBadge.style.color = skillEnabled ? '#ffd700' : '#94a3b8';
-    ruleBadge.innerText = `スキル:${skillEnabled ? 'ON(1P決定)' : 'OFF(1P決定)'}`;
+    ruleBadge.innerText = `スキル:${skillEnabled ? 'ON' : 'OFF'} / 自作:${allowCustom ? 'ON' : 'OFF'}`;
     skRow.appendChild(ruleBadge);
   }
   const skillShort = {
     erase_color: '2色消', erase_rows: '1・5・9段', purify_garbage: '浄化', corrupt_enemy_row: '侵食',
-    seal_skill: '封印', convert_blocks: '変換', sacrifice: '代償', no_skill: '無'
+    seal_skill: '封印', convert_blocks: '変換', sacrifice: '代償', no_skill: '無', random: '乱'
   };
-  SKILL_IDS.forEach(skId => {
+  const availSkills = (typeof getSelectableSkillIds === 'function') ? getSelectableSkillIds(allowCustom) : SKILL_IDS;
+  const activeSkId = getEffectivePlayerSkillId(cfg.skillId, allowCustom, cfg.fallbackSkillId);
+  availSkills.forEach(skId => {
     const b = document.createElement('button');
     b.type = 'button';
-    b.className = 'share-pill-btn' + (cfg.skillId === skId ? ' active' : '');
+    b.className = 'share-pill-btn' + (activeSkId === skId ? ' active' : '');
     b.disabled = !skillEnabled;
-    b.innerText = skillShort[skId] || skId;
+    const custom = typeof getCustomSkillConfig === 'function' ? getCustomSkillConfig(skId) : null;
+    b.innerText = custom ? (custom.name || '自作').slice(0, 4) : (skillShort[skId] || skId);
     bindMultiTouchTap(b, () => {
       if (!sharePrepConfig.p1.skillEnabled) return;
-      cfg.skillId = skId; cfg.ready = false;
+      if (allowCustom) {
+        cfg.skillId = skId;
+        if (getCustomSkillSlotIndex(skId) === -1) cfg.fallbackSkillId = skId;
+      } else {
+        cfg.fallbackSkillId = skId;
+        if (getCustomSkillSlotIndex(cfg.skillId) === -1) cfg.skillId = skId;
+      }
+      cfg.ready = false;
       SE.play('select');
       renderSharePrepUI();
     });
@@ -1698,7 +2193,7 @@ function renderSharePrepSide(playerNum) {
 function startShareGame() {
   const overlay = document.getElementById('share-prep-overlay');
   if (overlay) overlay.style.display = 'none';
-  startGame('share', 3, 2, sharePrepConfig.p1.skillEnabled);
+  startGame('share', 3, 2, sharePrepConfig.p1.skillEnabled, sharePrepConfig.p1.customSkillEnabled !== false);
 }
 
 function showToast(msg) { 
@@ -1717,25 +2212,33 @@ function hideAllMenuSubViews() {
 
 function showSoloHubMenu() {
   SE.play('select');
+  clearLocalSliderAdjusting();
   hideAllMenuSubViews();
   document.getElementById('solo-hub-menu').style.display = 'flex';
   setSwitchHeroPreview('ひとりで', 'ストーリー・COM対戦・各種練習モードを楽しめます。', 'SOLO PLAY');
   refreshMenuLayoutState(true);
   focusPrimaryMenuElement('solo-hub-menu');
 }
+
 function showMultiHubMenu() {
   SE.play('select');
+  clearLocalSliderAdjusting();
   hideAllMenuSubViews();
   document.getElementById('multi-hub-menu').style.display = 'flex';
   setSwitchHeroPreview('みんなで', '1台で最大4人対戦、またはP2Pオンライン対戦を選べます。', 'MULTI PLAY');
   refreshMenuLayoutState(true);
   focusPrimaryMenuElement('multi-hub-menu');
 }
+
 function backToMainMenu(playSe = true) {
   if (playSe) SE.play('cancel');
   cancelLocalAutoStart();
+  clearLocalSliderAdjusting();
   if (typeof closeRangeDigitEdit === 'function') closeRangeDigitEdit();
   if (typeof closeSelectPickerModal === 'function') closeSelectPickerModal(true);
+  if (typeof closeCustomSkillModal === 'function') closeCustomSkillModal(true);
+  if (typeof closePwaGuideModal === 'function') closePwaGuideModal(true);
+  if (typeof closeKeyResetConfirmModal === 'function') closeKeyResetConfirmModal(true);
   closeSharePrepMenu(true);
   closeSkillSelectModal(true);
   const cModal = document.getElementById('confirm-match-modal');
@@ -1748,8 +2251,10 @@ function backToMainMenu(playSe = true) {
   refreshMenuLayoutState(true);
   focusPrimaryMenuElement('main-menu-actions');
 }
+
 function backToSoloHubMenu(playSe = true) {
   if (playSe) SE.play('cancel');
+  clearLocalSliderAdjusting();
   if (typeof closeRangeDigitEdit === 'function') closeRangeDigitEdit();
   if (typeof closeSelectPickerModal === 'function') closeSelectPickerModal(true);
   hideAllMenuSubViews();
@@ -1757,9 +2262,11 @@ function backToSoloHubMenu(playSe = true) {
   refreshMenuLayoutState(true);
   focusPrimaryMenuElement('solo-hub-menu');
 }
+
 function backToMultiHubMenu(playSe = true) {
   if (playSe) SE.play('cancel');
   cancelLocalAutoStart();
+  clearLocalSliderAdjusting();
   if (typeof closeRangeDigitEdit === 'function') closeRangeDigitEdit();
   if (typeof closeSelectPickerModal === 'function') closeSelectPickerModal(true);
   closeSharePrepMenu(true);
@@ -1770,51 +2277,68 @@ function backToMultiHubMenu(playSe = true) {
 }
 
 function handleMenuCancelAction() {
-  if (document.getElementById('exit-confirm-modal')?.style.display === 'flex') {
+  if (isElementActuallyVisible('key-reset-confirm-modal')) {
+    if (typeof closeKeyResetConfirmModal === 'function') closeKeyResetConfirmModal();
+    return true;
+  }
+  if (isElementActuallyVisible('exit-confirm-modal')) {
     closeExitConfirmModal();
     return true;
   }
-  if (document.getElementById('select-picker-modal')?.style.display === 'flex') {
+  if (isElementActuallyVisible('pwa-guide-modal')) {
+    if (typeof closePwaGuideModal === 'function') closePwaGuideModal();
+    return true;
+  }
+  if (isElementActuallyVisible('select-picker-modal')) {
     if (typeof closeSelectPickerModal === 'function') closeSelectPickerModal();
     return true;
   }
-  if (document.getElementById('confirm-match-modal')?.style.display === 'flex') {
+  if (isElementActuallyVisible('custom-skill-modal')) {
+    if (typeof closeCustomSkillModal === 'function') closeCustomSkillModal();
+    return true;
+  }
+  if (isElementActuallyVisible('confirm-match-modal')) {
     backFromConfirmModal();
     return true;
   }
-  if (document.getElementById('skill-select-modal')?.style.display === 'flex') {
+  if (isElementActuallyVisible('skill-select-modal')) {
     closeSkillSelectModal();
     return true;
   }
-  if (document.getElementById('settings-overlay')?.style.display === 'block') {
+  if (isElementActuallyVisible('settings-overlay')) {
     cancelSettings();
     return true;
   }
-  if (document.getElementById('room-waiting')?.style.display === 'flex') {
+  if (isElementActuallyVisible('result-overlay')) {
+    performExitGame(false);
+    return true;
+  }
+  if (isElementActuallyVisible('room-waiting')) {
     cancelRoom();
     return true;
   }
-  const isVisible = (id) => {
-    const el = document.getElementById(id);
-    return el && window.getComputedStyle(el).display !== 'none';
-  };
-  if (isVisible('story-menu')) {
-    if (isVisible('story-stage-step')) {
+
+  if (!isElementActuallyVisible('menu-overlay')) {
+    return false;
+  }
+
+  if (isElementActuallyVisible('story-menu')) {
+    if (isElementActuallyVisible('story-stage-step')) {
       StoryManager.backToPrepStep();
       return true;
     }
     backToSoloHubMenu(true);
     return true;
   }
-  if (isVisible('single-menu') || isVisible('com-menu')) {
+  if (isElementActuallyVisible('single-menu') || isElementActuallyVisible('com-menu')) {
     backToSoloHubMenu(true);
     return true;
   }
-  if (isVisible('local-menu') || isVisible('online-menu')) {
+  if (isElementActuallyVisible('local-menu') || isElementActuallyVisible('online-menu')) {
     backToMultiHubMenu(true);
     return true;
   }
-  if (isVisible('solo-hub-menu') || isVisible('multi-hub-menu') || isVisible('ranking-menu')) {
+  if (isElementActuallyVisible('solo-hub-menu') || isElementActuallyVisible('multi-hub-menu') || isElementActuallyVisible('ranking-menu')) {
     backToMainMenu(true);
     return true;
   }
@@ -1841,6 +2365,7 @@ function selectComCountBtn(cnt) {
 
 function showSingleMenu() {
   SE.play('select');
+  clearLocalSliderAdjusting();
   hideAllMenuSubViews();
   document.getElementById('single-menu').style.display = 'flex';
   selectSingleModeBtn(selectedSingleMode);
@@ -1853,6 +2378,7 @@ function showSingleMenu() {
 
 function showComMenu() {
   SE.play('select');
+  clearLocalSliderAdjusting();
   hideAllMenuSubViews();
   document.getElementById('com-menu').style.display = 'flex';
   selectComCountBtn(selectedComCount);
@@ -1865,6 +2391,7 @@ function showComMenu() {
 
 function showLocalMenu() {
   SE.play('select');
+  clearLocalSliderAdjusting();
   hideAllMenuSubViews();
   document.getElementById('local-menu').style.display = 'flex';
   resetLocalSelectionStates();
@@ -1876,6 +2403,7 @@ function showLocalMenu() {
 
 function showOnlineMenu(silent = false) {
   if (!silent) SE.play('select');
+  clearLocalSliderAdjusting();
   hideAllMenuSubViews();
   document.getElementById('online-menu').style.display = 'flex';
   syncHandicapFromSlider(document.getElementById('handicap-val')?.value || 3);
@@ -1967,12 +2495,13 @@ function getSurvivalLevel(initLv, matchNum) {
 function startSingleMode() {
   const mode = selectedSingleMode || 'free';
   const skillEnabled = !!document.getElementById('single-skill-toggle')?.checked;
+  const customSkillEnabled = !!document.getElementById('single-custom-skill-toggle')?.checked;
   let initLevel = 1;
   if (mode === 'survival') {
     survivalBaseLevel = parseInt(document.getElementById('survival-init-level').value) || 1;
     initLevel = getSurvivalLevel(survivalBaseLevel, 1);
   }
-  startGame('single_' + mode, initLevel, mode === 'survival' ? 2 : 1, skillEnabled);
+  startGame('single_' + mode, initLevel, mode === 'survival' ? 2 : 1, skillEnabled, customSkillEnabled);
 }
 
 function getRankingData(mode) {
@@ -2049,7 +2578,9 @@ function playGarbageSendAnimation(fromOppId, toOppId, isHard) {
   if (!fromEl || !toEl) return;
   const fromRect = fromEl.getBoundingClientRect(), toRect = toEl.getBoundingClientRect();
   const animEl = document.createElement('div');
-  animEl.style.cssText = `position:fixed;left:${fromRect.left+fromRect.width/2-25}px;top:${fromRect.top+fromRect.height/2-25}px;width:50px;height:50px;background:${isHard?'#a8b2bd':'#5c636a'};border:4px solid #fff;border-radius:8px;box-shadow:0 0 15px #fff;z-index:1000;transition:all 0.8s cubic-bezier(0.25,1,0.5,1);pointer-events:none;`;
+  const gb = (typeof isGbMode !== 'undefined' && isGbMode);
+  const bgCol = gb ? (isHard ? '#c0c0c0' : '#686868') : (isHard ? '#a8b2bd' : '#5c636a');
+  animEl.style.cssText = `position:fixed;left:${fromRect.left+fromRect.width/2-25}px;top:${fromRect.top+fromRect.height/2-25}px;width:50px;height:50px;background:${bgCol};border:4px solid #fff;border-radius:8px;box-shadow:0 0 15px #fff;z-index:1000;transition:all 0.8s cubic-bezier(0.25,1,0.5,1);pointer-events:none;`;
   document.body.appendChild(animEl);
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
@@ -2161,8 +2692,9 @@ function distributeGarbageOnline(senderId, totalBlocks, isHard) {
 function sendBlocksToOpponent(opp, count, isHard) {
   if (!opp || !opp.engine) return;
   let finalCount = count;
-  if (opp.engine.isSacrifice) {
-    finalCount = Math.ceil(finalCount * 1.2);
+  const incMult = opp.engine.skillModifiers ? (opp.engine.skillModifiers.incomingGarbageMult || 1.0) : (opp.engine.isSacrifice ? 1.2 : 1.0);
+  if (incMult > 1.0) {
+    finalCount = Math.ceil(finalCount * incMult);
   }
   let fullRows = Math.floor(finalCount / 6), remainder = finalCount % 6;
   if (fullRows > 0) opp.engine.addGarbage(6, fullRows, isHard, true);
@@ -2296,10 +2828,10 @@ function showResultModal(titleMsg) {
 function requestRematch() {
   SE.play('select');
   if (hostDisconnected) { performExitGame(true); return; }
-  if (currentMode === 'story') startGame('story', currentComLevel, 2, currentSkillEnabled);
+  if (currentMode === 'story') startGame('story', currentComLevel, 2, currentSkillEnabled, currentCustomSkillEnabled);
   else if (currentMode === 'single_survival') startSingleMode();
   else if (currentMode === 'single' || currentMode.startsWith('single_') || currentMode === 'com' || currentMode === 'local' || currentMode === 'share') {
-    startGame(currentMode, currentComLevel, currentTotalPlayers, currentSkillEnabled);
+    startGame(currentMode, currentComLevel, currentTotalPlayers, currentSkillEnabled, currentCustomSkillEnabled);
   } else if (currentMode === 'online') {
     rematchReady[myOnlineId] = true;
     document.getElementById('result-rematch-btn').disabled = true;
@@ -2331,11 +2863,15 @@ function startPracticeMode() {
   myEngine.isPractice = true;
   myEngine.garbageQueue = [];
   myEngine.onSendGarbage = null;
+  myEngine.onSwap = () => { if (typeof triggerSwapVibration === 'function') triggerSwapVibration(false, getMainPlayerPadSlot()); };
+  myEngine.onGarbageLanded = () => { if (typeof triggerGarbageLandVibration === 'function') triggerGarbageLandVibration(getMainPlayerPadSlot()); };
   myEngine.onStateChange = (state) => {
     if (state === 'gameover') {
       myEngine = new PonEngine(null, null, handicap, true);
       myEngine.isPractice = true;
       myEngine.onSendGarbage = null;
+      myEngine.onSwap = () => { if (typeof triggerSwapVibration === 'function') triggerSwapVibration(false, getMainPlayerPadSlot()); };
+      myEngine.onGarbageLanded = () => { if (typeof triggerGarbageLandVibration === 'function') triggerGarbageLandVibration(getMainPlayerPadSlot()); };
     }
   };
 }
@@ -2461,6 +2997,7 @@ function checkMatchEnd() {
 }
 
 function stopAllEngines() {
+  clearKeyboardHoldStates();
   if (myEngine) {
     myEngine.isRisingManualBtn = myEngine.isRisingManualKey = myEngine.isRisingManualPad = false;
     myEngine.riseSpeed = 0;
@@ -2574,7 +3111,6 @@ function switchBgmToPanic(toPanic) {
   }
 }
 
-let currentSkillEnabled = false;
 const PLAYER_SKILL_MAX = 3;
 const PLAYER_SKILL_SCORE_STEP = 300;
 let playerSkillState = {
@@ -2582,8 +3118,10 @@ let playerSkillState = {
   skillId: 'erase_color',
   isNoSkill: false,
   isSacrifice: false,
+  isPassiveOnly: false,
   usesLeft: 0,
   maxUses: PLAYER_SKILL_MAX,
+  scoreStep: PLAYER_SKILL_SCORE_STEP,
   nextRequiredScore: 0,
   prevReady: false
 };
@@ -2629,7 +3167,7 @@ function hidePlayerHeaderCutin() {
 
 function isSkillStateCurrentlyReady(skillState, engine, skillId) {
   if (!skillState || !skillState.enabled || !engine || engine.gameOver || isPracticeMode) return false;
-  if (skillId === 'no_skill' || skillId === 'sacrifice') return false;
+  if (skillId === 'no_skill' || skillId === 'sacrifice' || skillState.isPassiveOnly) return false;
   if (skillState.usesLeft <= 0) return false;
   return engine.score >= skillState.nextRequiredScore;
 }
@@ -2643,30 +3181,66 @@ function checkSkillFilledSound(skillState, engine, skillId) {
   skillState.prevReady = nowReady;
 }
 
-function initPlayerSkillState(enabled, skillId = selectedPlayerSkill) {
-  const skId = skillId || 'erase_color';
+function configureSkillStateForEngine(skillState, engine, enabled, rawSkillId, wrapperId, allowCustom = true, fallbackOverride = null) {
+  const effectiveRaw = getEffectivePlayerSkillId(rawSkillId, allowCustom, fallbackOverride);
+  const skId = (enabled && typeof resolvePlayableSkillId === 'function')
+    ? resolvePlayableSkillId(effectiveRaw, allowCustom, fallbackOverride || selectedFallbackSkill)
+    : (effectiveRaw || 'erase_color');
+
   const isNoSkill = (skId === 'no_skill');
   const isSacrifice = !!enabled && (skId === 'sacrifice');
+  const customCfg = (enabled && allowCustom && typeof getCustomSkillConfig === 'function') ? getCustomSkillConfig(skId) : null;
 
-  playerSkillState.enabled = !!enabled;
-  playerSkillState.skillId = skId;
-  playerSkillState.isNoSkill = isNoSkill;
-  playerSkillState.isSacrifice = isSacrifice;
-  playerSkillState.usesLeft = (enabled && !isNoSkill && !isSacrifice) ? PLAYER_SKILL_MAX : 0;
-  playerSkillState.nextRequiredScore = 0;
-  playerSkillState.prevReady = !!enabled && !isNoSkill && !isSacrifice;
+  let maxUses = PLAYER_SKILL_MAX;
+  let scoreStep = PLAYER_SKILL_SCORE_STEP;
+  let isPassiveOnly = false;
+  let hasDangerAura = isSacrifice;
 
-  const myWrapper = document.getElementById('my-wrapper');
-  if (myWrapper) myWrapper.classList.toggle('sacrifice-aura', isSacrifice);
-  if (myEngine && typeof myEngine.setSacrifice === 'function') {
-    myEngine.setSacrifice(isSacrifice);
+  if (engine && typeof engine.setSacrifice === 'function') {
+    engine.setSacrifice(false);
   }
+
+  if (isSacrifice && engine && typeof engine.setSacrifice === 'function') {
+    engine.setSacrifice(true);
+    maxUses = 0;
+  } else if (isNoSkill) {
+    maxUses = 0;
+  } else if (customCfg && typeof applyCustomSkillStartEffects === 'function') {
+    const info = applyCustomSkillStartEffects(engine, customCfg);
+    scoreStep = info.scoreStep || PLAYER_SKILL_SCORE_STEP;
+    maxUses = info.hasActiveMerit ? (info.maxUses || 0) : 0;
+    isPassiveOnly = !info.hasActiveMerit;
+    if (engine && engine.skillModifiers && engine.skillModifiers.autoLoseMs > 0) {
+      hasDangerAura = true;
+    }
+  }
+
+  skillState.enabled = !!enabled;
+  skillState.skillId = skId;
+  skillState.isNoSkill = isNoSkill;
+  skillState.isSacrifice = isSacrifice;
+  skillState.isPassiveOnly = isPassiveOnly;
+  skillState.maxUses = maxUses;
+  skillState.scoreStep = scoreStep;
+  skillState.usesLeft = (enabled && !isNoSkill && !isSacrifice && !isPassiveOnly) ? maxUses : 0;
+  skillState.nextRequiredScore = 0;
+  skillState.prevReady = skillState.usesLeft > 0;
+
+  if (wrapperId) {
+    const wrap = document.getElementById(wrapperId);
+    if (wrap) wrap.classList.toggle('sacrifice-aura', hasDangerAura);
+  }
+  return skId;
+}
+
+function initPlayerSkillState(enabled, rawSkillId = selectedPlayerSkill, allowCustom = true, fallbackOverride = null) {
+  configureSkillStateForEngine(playerSkillState, myEngine, enabled, rawSkillId, 'my-wrapper', allowCustom, fallbackOverride);
   updateSkillButtonUI();
 }
 
 function applySkillSealToMainPlayer(amount = 300) {
   if (!myEngine || myEngine.gameOver || isPracticeMode) return;
-  if (playerSkillState.enabled && !playerSkillState.isNoSkill && !playerSkillState.isSacrifice && playerSkillState.usesLeft > 0) {
+  if (playerSkillState.enabled && !playerSkillState.isNoSkill && !playerSkillState.isSacrifice && !playerSkillState.isPassiveOnly && playerSkillState.usesLeft > 0) {
     playerSkillState.nextRequiredScore = Math.max(playerSkillState.nextRequiredScore, myEngine.score) + amount;
     playerSkillState.prevReady = false;
   }
@@ -2675,9 +3249,12 @@ function applySkillSealToMainPlayer(amount = 300) {
   updateSkillButtonUI();
 }
 
-function formatSacrificeRemainText(engine) {
+function formatAutoLoseRemainText(engine) {
+  const limitMs = (engine && engine.skillModifiers && engine.skillModifiers.autoLoseMs > 0)
+    ? engine.skillModifiers.autoLoseMs
+    : 180000;
   const elapsed = engine ? engine.timeElapsed : 0;
-  const remSec = Math.max(0, Math.ceil((180000 - elapsed) / 1000));
+  const remSec = Math.max(0, Math.ceil((limitMs - elapsed) / 1000));
   const m = String(Math.floor(remSec / 60)).padStart(2, '0');
   const s = String(remSec % 60).padStart(2, '0');
   return `${m}:${s}`;
@@ -2689,31 +3266,37 @@ function renderLocalSkillBarElement(barId, skillState, engine, skillId) {
   if (!skillState || !skillState.enabled || currentMode !== 'local') { bar.style.display = 'none'; return; }
   bar.style.display = 'flex';
   const curScore = engine ? engine.score : 0;
-  const skName = (typeof SKILL_LABELS !== 'undefined' && SKILL_LABELS[skillId]) ? SKILL_LABELS[skillId] : 'スキル';
+  const skName = (typeof getSkillLabel === 'function') ? getSkillLabel(skillId) : 'スキル';
+  const maxU = skillState.maxUses || PLAYER_SKILL_MAX;
+  const stepScore = skillState.scoreStep || PLAYER_SKILL_SCORE_STEP;
 
   if (skillId === 'no_skill') {
     bar.classList.remove('ready');
     bar.innerHTML = `<div class="local-skill-bar-fill" style="width:0%"></div><span class="local-skill-bar-text">ノースキル (不可)</span>`;
     return;
   }
-  if (skillId === 'sacrifice') {
+  if (skillId === 'sacrifice' || skillState.isPassiveOnly) {
     bar.classList.remove('ready');
-    bar.innerHTML = `<div class="local-skill-bar-fill" style="width:100%;background:rgba(220,38,38,0.5);"></div><span class="local-skill-bar-text">💀代償 残り${formatSacrificeRemainText(engine)}</span>`;
+    const hasLimit = engine && engine.skillModifiers && engine.skillModifiers.autoLoseMs > 0;
+    const txt = skillId === 'sacrifice'
+      ? `💀代償 残り${formatAutoLoseRemainText(engine)}`
+      : (hasLimit ? `🛠️${skName} 残${formatAutoLoseRemainText(engine)}` : `🛠️${skName} 常時発動`);
+    bar.innerHTML = `<div class="local-skill-bar-fill" style="width:100%;background:${hasLimit ? 'rgba(220,38,38,0.5)' : 'rgba(56,189,248,0.45)'};"></div><span class="local-skill-bar-text">${txt}</span>`;
     return;
   }
   if (skillState.usesLeft <= 0) {
     bar.classList.remove('ready');
-    bar.innerHTML = `<div class="local-skill-bar-fill" style="width:0%"></div><span class="local-skill-bar-text">${skName} 終了 (0/${PLAYER_SKILL_MAX})</span>`;
+    bar.innerHTML = `<div class="local-skill-bar-fill" style="width:0%"></div><span class="local-skill-bar-text">${skName} 終了 (0/${maxU})</span>`;
     return;
   }
   const remain = Math.max(0, skillState.nextRequiredScore - curScore);
   if (remain === 0) {
     bar.classList.add('ready');
-    bar.innerHTML = `<div class="local-skill-bar-fill" style="width:100%"></div><span class="local-skill-bar-text">${skName} OK! (${skillState.usesLeft}/${PLAYER_SKILL_MAX})</span>`;
+    bar.innerHTML = `<div class="local-skill-bar-fill" style="width:100%"></div><span class="local-skill-bar-text">${skName} OK! (${skillState.usesLeft}/${maxU})</span>`;
   } else {
     bar.classList.remove('ready');
-    const pct = Math.min(100, Math.floor((Math.max(0, PLAYER_SKILL_SCORE_STEP - remain) / PLAYER_SKILL_SCORE_STEP) * 100));
-    bar.innerHTML = `<div class="local-skill-bar-fill" style="width:${pct}%"></div><span class="local-skill-bar-text">${skName}(${skillState.usesLeft}/${PLAYER_SKILL_MAX}) あと${remain}</span>`;
+    const pct = Math.min(100, Math.floor((Math.max(0, stepScore - remain) / stepScore) * 100));
+    bar.innerHTML = `<div class="local-skill-bar-fill" style="width:${pct}%"></div><span class="local-skill-bar-text">${skName}(${skillState.usesLeft}/${maxU}) あと${remain}</span>`;
   }
 }
 
@@ -2723,45 +3306,52 @@ function updateSkillButtonVisual(btn, label, prog, skillState, engine, skillId) 
   btn.style.display = 'flex';
   btn.classList.remove('sacrifice-active');
   const curScore = engine ? engine.score : 0;
-  const skName = (typeof SKILL_LABELS !== 'undefined' && SKILL_LABELS[skillId]) ? SKILL_LABELS[skillId] : 'スキル';
+  const skName = (typeof getSkillLabel === 'function') ? getSkillLabel(skillId) : 'スキル';
+  const maxU = skillState.maxUses || PLAYER_SKILL_MAX;
+  const stepScore = skillState.scoreStep || PLAYER_SKILL_SCORE_STEP;
 
   if (skillId === 'no_skill') {
     btn.disabled = true; btn.classList.remove('ready'); prog.style.width = '0%';
     label.innerText = 'ノースキル\n使用不可';
     return;
   }
-  if (skillId === 'sacrifice') {
-    btn.disabled = true; btn.classList.remove('ready'); btn.classList.add('sacrifice-active');
+  if (skillId === 'sacrifice' || skillState.isPassiveOnly) {
+    btn.disabled = true; btn.classList.remove('ready');
+    const hasLimit = engine && engine.skillModifiers && engine.skillModifiers.autoLoseMs > 0;
+    if (hasLimit || skillId === 'sacrifice') btn.classList.add('sacrifice-active');
     prog.style.width = '100%';
-    label.innerText = `💀 代償発動中\n残 ${formatSacrificeRemainText(engine)}`;
+    label.innerText = skillId === 'sacrifice'
+      ? `💀 代償発動中\n残 ${formatAutoLoseRemainText(engine)}`
+      : (hasLimit ? `🛠️ ${skName}\n残 ${formatAutoLoseRemainText(engine)}` : `🛠️ ${skName}\n常時発動中`);
     return;
   }
   if (skillState.usesLeft <= 0) {
     btn.disabled = true; btn.classList.remove('ready'); prog.style.width = '0%';
-    label.innerText = `${skName}\n終了 (0/${PLAYER_SKILL_MAX})`;
+    label.innerText = `${skName}\n終了 (0/${maxU})`;
     return;
   }
   const remain = Math.max(0, skillState.nextRequiredScore - curScore);
   if (remain === 0) {
     btn.disabled = false; btn.classList.add('ready'); prog.style.width = '100%';
-    label.innerText = `${skName}\n発動 (${skillState.usesLeft}/${PLAYER_SKILL_MAX})`;
+    label.innerText = `${skName}\n発動 (${skillState.usesLeft}/${maxU})`;
   } else {
     btn.disabled = true; btn.classList.remove('ready');
-    const pct = Math.min(100, Math.floor((Math.max(0, PLAYER_SKILL_SCORE_STEP - remain) / PLAYER_SKILL_SCORE_STEP) * 100));
+    const pct = Math.min(100, Math.floor((Math.max(0, stepScore - remain) / stepScore) * 100));
     prog.style.width = `${pct}%`;
-    label.innerText = `${skName}(${skillState.usesLeft}/${PLAYER_SKILL_MAX})\nあと${remain}点`;
+    label.innerText = `${skName}(${skillState.usesLeft}/${maxU})\nあと${remain}点`;
   }
 }
 
 function updateSkillButtonUI() {
-  checkSkillFilledSound(playerSkillState, myEngine, playerSkillState.skillId || selectedPlayerSkill);
+  const p1SkillId = playerSkillState.skillId || selectedPlayerSkill;
+  checkSkillFilledSound(playerSkillState, myEngine, p1SkillId);
 
   const btn = document.getElementById('skill-btn'), label = document.getElementById('skill-btn-label'), prog = document.getElementById('skill-btn-progress');
   const p2Btn = document.getElementById('p2-skill-btn'), p2Label = document.getElementById('p2-skill-btn-label'), p2Prog = document.getElementById('p2-skill-btn-progress');
   if (currentMode === 'local') {
     if (btn) btn.style.display = 'none';
     if (p2Btn) p2Btn.style.display = 'none';
-    renderLocalSkillBarElement('my-local-skill-bar', playerSkillState, myEngine, localSlotsConfig[0].skillId);
+    renderLocalSkillBarElement('my-local-skill-bar', playerSkillState, myEngine, p1SkillId);
     opponents.forEach((opp, i) => {
       if (opp.type === 'local_human' && opp.skillState) {
         checkSkillFilledSound(opp.skillState, opp.engine, opp.skillId);
@@ -2774,7 +3364,7 @@ function updateSkillButtonUI() {
   const myBar = document.getElementById('my-local-skill-bar');
   if (myBar) myBar.style.display = 'none';
   if (currentMode === 'share') {
-    updateSkillButtonVisual(btn, label, prog, playerSkillState, myEngine, sharePrepConfig.p1.skillId);
+    updateSkillButtonVisual(btn, label, prog, playerSkillState, myEngine, p1SkillId);
     const p2Opp = opponents[0];
     if (p2Opp && p2Opp.skillState) {
       checkSkillFilledSound(p2Opp.skillState, p2Opp.engine, p2Opp.skillId);
@@ -2784,7 +3374,7 @@ function updateSkillButtonUI() {
     return;
   }
   if (p2Btn) p2Btn.style.display = 'none';
-  updateSkillButtonVisual(btn, label, prog, playerSkillState, myEngine, playerSkillState.skillId || selectedPlayerSkill);
+  updateSkillButtonVisual(btn, label, prog, playerSkillState, myEngine, p1SkillId);
   updateAllPortraitHUDs();
 }
 
@@ -2804,25 +3394,23 @@ function updateRivalSkillBadge(opp, index) {
 
 function activatePlayerSkill() {
   if (!playerSkillState.enabled || !myEngine || myEngine.gameOver || isPracticeMode) return;
-  if (playerSkillState.isNoSkill || playerSkillState.isSacrifice) return;
+  if (playerSkillState.isNoSkill || playerSkillState.isSacrifice || playerSkillState.isPassiveOnly) return;
   if (matchState !== 'playing' || isMatchOver) return;
   if (playerSkillState.usesLeft <= 0 || myEngine.score < playerSkillState.nextRequiredScore) return;
   if (typeof executePlayerCheatSkill !== 'function') return;
 
-  let chosenSkill = playerSkillState.skillId || selectedPlayerSkill;
-  if (currentMode === 'local') chosenSkill = localSlotsConfig[0].skillId || 'erase_color';
-  else if (currentMode === 'share') chosenSkill = sharePrepConfig.p1.skillId || 'erase_color';
-
+  const chosenSkill = playerSkillState.skillId || 'erase_color';
   const senderId = currentMode === 'online' ? myOnlineId : 'player';
   const res = executePlayerCheatSkill(myEngine, senderId, myTargetIndex, chosenSkill);
   if (!res || !res.success) {
     if (currentMode !== 'local' && currentMode !== 'share') showToast('今はそのスキルを発動できる対象がありません');
     return;
   }
+  if (typeof triggerConfirmVibration === 'function') triggerConfirmVibration(false, getMainPlayerPadSlot());
   if (typeof SE !== 'undefined' && SE.customBuffers && SE.customBuffers.skill) SE.play('skill');
   playAttackVoiceForSender(senderId);
   playerSkillState.usesLeft--;
-  playerSkillState.nextRequiredScore = myEngine.score + PLAYER_SKILL_SCORE_STEP;
+  playerSkillState.nextRequiredScore = myEngine.score + (playerSkillState.scoreStep || PLAYER_SKILL_SCORE_STEP);
   playerSkillState.prevReady = false;
   updateSkillButtonUI();
 
@@ -2836,17 +3424,21 @@ function activatePlayerSkill() {
 
 function activateLocalOpponentSkill(opp) {
   if (!opp || !opp.skillState || !opp.skillState.enabled || !opp.engine || opp.engine.gameOver) return;
-  if (opp.skillId === 'no_skill' || opp.skillId === 'sacrifice') return;
+  if (opp.skillState.isNoSkill || opp.skillState.isSacrifice || opp.skillState.isPassiveOnly) return;
   if (matchState !== 'playing' || isMatchOver) return;
   if (opp.skillState.usesLeft <= 0 || opp.engine.score < opp.skillState.nextRequiredScore) return;
   if (typeof executePlayerCheatSkill !== 'function') return;
 
   const res = executePlayerCheatSkill(opp.engine, opp.id, opp.targetId || -1, opp.skillId || 'erase_color');
   if (!res || !res.success) return;
+  const oppPadSlot = getConnectedLocalPadSlotIfVibrating(opp.playerSlotIndex);
+  if (oppPadSlot >= 0 && typeof triggerConfirmVibration === 'function') {
+    triggerConfirmVibration(false, oppPadSlot);
+  }
   if (typeof SE !== 'undefined' && SE.customBuffers && SE.customBuffers.skill) SE.play('skill');
   playAttackVoiceForSender(opp.id);
   opp.skillState.usesLeft--;
-  opp.skillState.nextRequiredScore = opp.engine.score + PLAYER_SKILL_SCORE_STEP;
+  opp.skillState.nextRequiredScore = opp.engine.score + (opp.skillState.scoreStep || PLAYER_SKILL_SCORE_STEP);
   opp.skillState.prevReady = false;
   updateSkillButtonUI();
 
@@ -2860,7 +3452,7 @@ function activateShareP2Skill() {
 }
 
 // ==========================================
-// オンライン対戦：各プレイヤー等分フレーム背景（高さフィット・アス比維持・シームレス境界ブレンド）
+// オンライン対戦：各プレイヤー等分フレーム背景
 // ==========================================
 function refreshOnlineSplitFrames() {
   const container = document.getElementById('online-split-frames-bg');
@@ -2873,28 +3465,18 @@ function refreshOnlineSplitFrames() {
   }
 
   const playersList = [];
-  if (myRenderer && myRenderer.theme) {
-    playersList.push({ id: 'me', theme: myRenderer.theme });
-  }
+  if (myRenderer && myRenderer.theme) playersList.push({ id: 'me', theme: myRenderer.theme });
   opponents.forEach((opp, idx) => {
-    if (opp && opp.renderer && opp.renderer.theme) {
-      playersList.push({ id: opp.id || `opp_${idx}`, theme: opp.renderer.theme });
-    }
+    if (opp && opp.renderer && opp.renderer.theme) playersList.push({ id: opp.id || `opp_${idx}`, theme: opp.renderer.theme });
   });
 
   const total = playersList.length;
-  if (total === 0) {
-    container.style.display = 'none';
-    container.innerHTML = '';
-    return;
-  }
+  if (total === 0) { container.style.display = 'none'; container.innerHTML = ''; return; }
 
   const isPortrait = window.innerHeight >= window.innerWidth;
   const isLandscapeLarge = !isPortrait && !useMobileLayoutInLandscape;
   const isLeft = document.getElementById('handedness-toggle')?.checked;
-  if (!isLandscapeLarge && total === 2 && isLeft) {
-    playersList.reverse();
-  }
+  if (!isLandscapeLarge && total === 2 && isLeft) playersList.reverse();
 
   container.style.display = 'block';
   container.innerHTML = '';
@@ -2903,26 +3485,15 @@ function refreshOnlineSplitFrames() {
     const slot = document.createElement('div');
     slot.className = 'online-split-frame-slot' + (idx > 0 ? ' has-left-feather' : '');
     slot.style.zIndex = String(idx + 1);
-
-    if (total === 1) {
-      slot.style.left = '0%';
-      slot.style.width = '100%';
-    } else if (idx === 0) {
-      slot.style.left = '0%';
-      slot.style.width = `calc(${unitPct}% + 3.5vw)`;
-    } else if (idx === total - 1) {
-      slot.style.left = `calc(${idx * unitPct}% - 3.5vw)`;
-      slot.style.width = `calc(${unitPct}% + 3.5vw)`;
-    } else {
-      slot.style.left = `calc(${idx * unitPct}% - 3.5vw)`;
-      slot.style.width = `calc(${unitPct}% + 7vw)`;
-    }
+    if (total === 1) { slot.style.left = '0%'; slot.style.width = '100%'; }
+    else if (idx === 0) { slot.style.left = '0%'; slot.style.width = `calc(${unitPct}% + 3.5vw)`; }
+    else if (idx === total - 1) { slot.style.left = `calc(${idx * unitPct}% - 3.5vw)`; slot.style.width = `calc(${unitPct}% + 3.5vw)`; }
+    else { slot.style.left = `calc(${idx * unitPct}% - 3.5vw)`; slot.style.width = `calc(${unitPct}% + 7vw)`; }
 
     const frameUrl = p.theme?.frameSrc ? toAbsoluteAssetUrl(p.theme.frameSrc) : null;
     if (frameUrl) {
       const img = document.createElement('img');
-      img.src = frameUrl;
-      img.alt = '';
+      img.src = frameUrl; img.alt = '';
       slot.appendChild(img);
     } else {
       slot.style.background = `radial-gradient(circle at 50% 40%, ${p.theme?.color || '#334155'}44, rgba(8, 12, 24, 0.88))`;
@@ -2930,8 +3501,9 @@ function refreshOnlineSplitFrames() {
     container.appendChild(slot);
   });
 }
+
 // ==========================================
-// バトル中サイド演出枠（1人時）& インライン立ち絵（横複数人対戦時：スキルゲージ＆連勝数付き）& 縦画面最下部ステータスバー
+// バトル中サイド演出枠（1人時）& インライン立ち絵（横複数人対戦時）
 // ==========================================
 function setSidePortraitElement(imgEl, theme) {
   if (!imgEl || !theme) return;
@@ -2958,9 +3530,7 @@ function buildInlinePortraitCard(playerIdx, totalCount, theme, rivalIndex = -1) 
   const card = document.createElement('div');
   card.id = `inline-portrait-p${playerIdx}`;
   card.className = `inline-player-portrait p-count-${totalCount}` + (playerIdx === 0 ? ' is-p1' : ' is-rival');
-  if (theme && theme.color && playerIdx > 0) {
-    card.style.borderColor = theme.color;
-  }
+  if (theme && theme.color && playerIdx > 0) card.style.borderColor = theme.color;
 
   const img = document.createElement('img');
   img.className = 'inline-portrait-img';
@@ -2987,6 +3557,12 @@ function buildInlinePortraitCard(playerIdx, totalCount, theme, rivalIndex = -1) 
   name.innerText = theme ? theme.name : `${playerIdx + 1}P`;
   footer.appendChild(name);
 
+  const skillName = document.createElement('div');
+  skillName.id = `inline-portrait-skill-name-p${playerIdx}`;
+  skillName.className = 'portrait-skill-name';
+  skillName.style.display = 'none';
+  footer.appendChild(skillName);
+
   const skillMeter = document.createElement('div');
   skillMeter.id = `inline-portrait-skill-p${playerIdx}`;
   skillMeter.className = 'portrait-skill-meter';
@@ -3007,7 +3583,19 @@ function buildInlinePortraitCard(playerIdx, totalCount, theme, rivalIndex = -1) 
   return card;
 }
 
-function applySkillMeterState(meterEl, spec) {
+function applySkillMeterState(meterEl, spec, nameEl = null) {
+  if (nameEl) {
+    if (!spec || !spec.show || !spec.skillName) {
+      if (nameEl.style.display !== 'none') nameEl.style.display = 'none';
+      nameEl.dataset.lastName = '';
+    } else {
+      if (nameEl.dataset.lastName !== spec.skillName) {
+        nameEl.dataset.lastName = spec.skillName;
+        nameEl.innerText = spec.skillName;
+      }
+      if (nameEl.style.display === 'none') nameEl.style.display = 'block';
+    }
+  }
   if (!meterEl) return;
   if (!spec || !spec.show) {
     if (meterEl.style.display !== 'none') meterEl.style.display = 'none';
@@ -3041,34 +3629,43 @@ function applyWinsBadgeState(badgeEl, text) {
 
 function buildHumanSkillMeterSpec(skillState, engine, skillId, isCompact = false) {
   if (!skillState || !skillState.enabled || !engine || isPracticeMode) return null;
+  const label = (typeof getSkillLabel === 'function') ? getSkillLabel(skillId) : skillId;
+  const maxU = skillState.maxUses || PLAYER_SKILL_MAX;
+  const stepScore = skillState.scoreStep || PLAYER_SKILL_SCORE_STEP;
+
   if (skillId === 'no_skill') {
-    return { show: true, pct: 0, text: isCompact ? 'スキル無' : 'ノースキル', cls: 'empty' };
+    return { show: true, skillName: label, pct: 0, text: isCompact ? '不可' : 'ノースキル', cls: 'empty' };
   }
-  if (skillId === 'sacrifice') {
+  if (skillId === 'sacrifice' || skillState.isPassiveOnly) {
+    const hasLimit = engine.skillModifiers && engine.skillModifiers.autoLoseMs > 0;
+    const tStr = hasLimit ? formatAutoLoseRemainText(engine) : '常時';
     return {
       show: true,
+      skillName: label,
       pct: 100,
-      text: isCompact ? `💀${formatSacrificeRemainText(engine)}` : `💀代償 ${formatSacrificeRemainText(engine)}`,
-      cls: 'sacrifice'
+      text: isCompact ? tStr : (hasLimit ? `残 ${tStr}` : '常時発動中'),
+      cls: hasLimit ? 'sacrifice' : 'ready'
     };
   }
   if (skillState.usesLeft <= 0) {
-    return { show: true, pct: 0, text: isCompact ? '⚡0/3' : `⚡終了 (0/${PLAYER_SKILL_MAX})`, cls: 'empty' };
+    return { show: true, skillName: label, pct: 0, text: isCompact ? `0/${maxU}` : `終了 (0/${maxU})`, cls: 'empty' };
   }
   const remain = Math.max(0, skillState.nextRequiredScore - engine.score);
   if (remain === 0) {
     return {
       show: true,
+      skillName: label,
       pct: 100,
-      text: isCompact ? `⚡OK(${skillState.usesLeft})` : `⚡発動OK! (${skillState.usesLeft}/${PLAYER_SKILL_MAX})`,
+      text: isCompact ? `OK(${skillState.usesLeft})` : `発動OK! (${skillState.usesLeft}/${maxU})`,
       cls: 'ready'
     };
   }
-  const pct = Math.min(100, Math.floor((Math.max(0, PLAYER_SKILL_SCORE_STEP - remain) / PLAYER_SKILL_SCORE_STEP) * 100));
+  const pct = Math.min(100, Math.floor((Math.max(0, stepScore - remain) / stepScore) * 100));
   return {
     show: true,
+    skillName: label,
     pct,
-    text: isCompact ? `⚡あと${remain}` : `⚡あと${remain} (${skillState.usesLeft}/${PLAYER_SKILL_MAX})`,
+    text: isCompact ? `残${remain}` : `あと${remain} (${skillState.usesLeft}/${maxU})`,
     cls: ''
   };
 }
@@ -3079,41 +3676,47 @@ function buildOpponentSkillMeterSpec(opp, isCompact = false) {
     return buildHumanSkillMeterSpec(opp.skillState, opp.engine, opp.skillId, isCompact);
   }
   if (opp.ai && typeof opp.ai.getRemainingSkills === 'function') {
-    if (opp.engine.isSacrifice) {
-      return {
-        show: true,
-        pct: 100,
-        text: isCompact ? `💀${formatSacrificeRemainText(opp.engine)}` : `💀代償 ${formatSacrificeRemainText(opp.engine)}`,
-        cls: 'sacrifice'
-      };
+    const skName = typeof opp.ai.getSkillDisplayName === 'function' ? opp.ai.getSkillDisplayName() : 'COMスキル';
+    if (opp.engine.isSacrifice || (opp.engine.skillModifiers && opp.engine.skillModifiers.autoLoseMs > 0)) {
+      const tStr = formatAutoLoseRemainText(opp.engine);
+      return { show: true, skillName: skName, pct: 100, text: isCompact ? tStr : `残 ${tStr}`, cls: 'sacrifice' };
+    }
+    if (opp.ai.fixedSkill === 'no_skill') {
+      return { show: true, skillName: skName, pct: 0, text: '不可', cls: 'empty' };
     }
     const maxUses = Math.max(1, opp.ai.maxSkillUses || 3);
     const rem = Math.max(0, opp.ai.getRemainingSkills());
+    if (opp.ai.maxSkillUses === 0) {
+      return { show: true, skillName: skName, pct: 100, text: '常時発動', cls: 'ready' };
+    }
     if (rem <= 0) {
-      return { show: true, pct: 0, text: isCompact ? '⚡0' : `⚡終了 (0/${maxUses})`, cls: 'empty' };
+      return { show: true, skillName: skName, pct: 0, text: isCompact ? '0' : `終了 (0/${maxUses})`, cls: 'empty' };
     }
     const cdReady = (typeof opp.ai.skillCooldown === 'number' && opp.ai.skillCooldown <= 0);
     const pct = Math.round((rem / maxUses) * 100);
     return {
       show: true,
+      skillName: skName,
       pct,
-      text: isCompact ? `⚡${rem}/${maxUses}` : `⚡残${rem}/${maxUses}${cdReady ? ' OK' : ''}`,
+      text: isCompact ? `${rem}/${maxUses}` : `残${rem}/${maxUses}${cdReady ? ' OK' : ''}`,
       cls: cdReady ? 'ready' : ''
     };
   }
   if (opp.syncedSkillRemaining !== undefined && opp.syncedSkillRemaining !== null) {
+    const skName = 'スキル';
     if (opp.engine.isSacrifice) {
-      return { show: true, pct: 100, text: isCompact ? '💀代償' : '💀代償発動中', cls: 'sacrifice' };
+      return { show: true, skillName: '代償', pct: 100, text: isCompact ? '発動' : '発動中', cls: 'sacrifice' };
     }
     const rem = Math.max(0, opp.syncedSkillRemaining);
     if (rem <= 0) {
-      return { show: true, pct: 0, text: isCompact ? '⚡0' : `⚡終了 (0/${PLAYER_SKILL_MAX})`, cls: 'empty' };
+      return { show: true, skillName: skName, pct: 0, text: isCompact ? '0' : `終了 (0/${PLAYER_SKILL_MAX})`, cls: 'empty' };
     }
     const pct = Math.round((rem / PLAYER_SKILL_MAX) * 100);
     return {
       show: true,
+      skillName: skName,
       pct,
-      text: isCompact ? `⚡${rem}/${PLAYER_SKILL_MAX}` : `⚡残${rem}/${PLAYER_SKILL_MAX}`,
+      text: isCompact ? `${rem}/${PLAYER_SKILL_MAX}` : `残${rem}/${PLAYER_SKILL_MAX}`,
       cls: 'ready'
     };
   }
@@ -3123,16 +3726,16 @@ function buildOpponentSkillMeterSpec(opp, isCompact = false) {
 function updateAllPortraitHUDs() {
   const isSurvival = (currentMode === 'single_survival');
   const p1WinsText = isSurvival ? `🏆 ${currentSurvivalWins}連勝` : '';
-  const p1SkillId = currentMode === 'local'
-    ? (localSlotsConfig[0].skillId || 'erase_color')
-    : (playerSkillState.skillId || selectedPlayerSkill);
+  const p1SkillId = playerSkillState.skillId || selectedPlayerSkill;
+  const p1Spec = buildHumanSkillMeterSpec(playerSkillState, myEngine, p1SkillId, false);
 
   const sideCardP1 = document.getElementById('battle-side-p1');
   if (sideCardP1 && sideCardP1.style.display !== 'none') {
     applyWinsBadgeState(document.getElementById('battle-side-p1-wins'), p1WinsText);
     applySkillMeterState(
       document.getElementById('battle-side-p1-skill'),
-      buildHumanSkillMeterSpec(playerSkillState, myEngine, p1SkillId, false)
+      p1Spec,
+      document.getElementById('battle-side-p1-skill-name')
     );
   }
 
@@ -3144,7 +3747,8 @@ function updateAllPortraitHUDs() {
     applyWinsBadgeState(document.getElementById('inline-portrait-wins-p0'), isSurvival ? `🏆 ${currentSurvivalWins}連勝` : '');
     applySkillMeterState(
       document.getElementById('inline-portrait-skill-p0'),
-      buildHumanSkillMeterSpec(playerSkillState, myEngine, p1SkillId, isCompact)
+      buildHumanSkillMeterSpec(playerSkillState, myEngine, p1SkillId, isCompact),
+      document.getElementById('inline-portrait-skill-name-p0')
     );
   }
 
@@ -3155,7 +3759,8 @@ function updateAllPortraitHUDs() {
     applyWinsBadgeState(document.getElementById(`inline-portrait-wins-p${i + 1}`), oppWinsText);
     applySkillMeterState(
       document.getElementById(`inline-portrait-skill-p${i + 1}`),
-      buildOpponentSkillMeterSpec(opp, isCompact)
+      buildOpponentSkillMeterSpec(opp, isCompact),
+      document.getElementById(`inline-portrait-skill-name-p${i + 1}`)
     );
   });
 }
@@ -3224,15 +3829,18 @@ function updateBottomStatusBar() {
     }
   }
 }
-
-function startGame(mode, level = 1, totalPlayers = 2, skillEnabled = false) {
+function startGame(mode, level = 1, totalPlayers = 2, skillEnabled = false, customSkillEnabled = true) {
   cancelLocalAutoStart();
+  clearLocalSliderAdjusting();
   closeExitConfirmModal(true);
+  if (typeof SceneBgm !== 'undefined') SceneBgm.stop();
   if (typeof closeRangeDigitEdit === 'function') closeRangeDigitEdit();
   if (typeof closeSelectPickerModal === 'function') closeSelectPickerModal(true);
   document.getElementById('result-overlay').style.display = 'none';
   hideBattleEndOverlay();
-  currentMode = mode; currentComLevel = level; currentTotalPlayers = totalPlayers; currentSkillEnabled = !!skillEnabled;
+  currentMode = mode; currentComLevel = level; currentTotalPlayers = totalPlayers;
+  currentSkillEnabled = !!skillEnabled;
+  currentCustomSkillEnabled = (customSkillEnabled !== false);
   matchState = 'ready'; isPracticeMode = false;
 
   const runInit = () => {
@@ -3240,6 +3848,7 @@ function startGame(mode, level = 1, totalPlayers = 2, skillEnabled = false) {
     if (storyOverlay) storyOverlay.style.display = 'none';
     document.getElementById('menu-overlay').style.display = 'none';
     document.getElementById('game-area').style.display = 'flex';
+    updateVerticalBottomNav();
 
     if (currentMode === 'local') {
       document.body.classList.remove('share-force-portrait');
@@ -3290,19 +3899,28 @@ function resetGameLogic() {
     handicap, true, sharedSeed
   );
   myEngine.onRowPushed = handleMyRowPushed;
+  myEngine.onSwap = () => {
+    if (typeof triggerSwapVibration === 'function') triggerSwapVibration(false, getMainPlayerPadSlot());
+  };
+  myEngine.onGarbageLanded = () => {
+    if (typeof triggerGarbageLandVibration === 'function') triggerGarbageLandVibration(getMainPlayerPadSlot());
+  };
   myEngine.garbageQueue = [];
   myEngine.allowBoardCutin = (currentMode === 'local');
   if (currentMode === 'single_survival' && document.getElementById('survival-keep-speed').checked) myEngine.keepSpeed = true;
 
   let rawCharId = selectedCharId;
   let mySkillId = selectedPlayerSkill;
+  let myFallbackSkill = selectedFallbackSkill;
   if (currentMode === 'story') rawCharId = StoryManager.getSelectedCharId();
   else if (currentMode === 'local') {
     rawCharId = localSlotsConfig[0].charId;
     mySkillId = localSlotsConfig[0].skillId || 'erase_color';
+    myFallbackSkill = localSlotsConfig[0].fallbackSkillId || selectedFallbackSkill;
   } else if (currentMode === 'share') {
     rawCharId = sharePrepConfig.p1.charId;
     mySkillId = sharePrepConfig.p1.skillId || 'erase_color';
+    myFallbackSkill = sharePrepConfig.p1.fallbackSkillId || selectedFallbackSkill;
   }
 
   const resolvedCharId = resolvePlayableCharId(rawCharId);
@@ -3353,7 +3971,7 @@ function resetGameLogic() {
     showPlayerHeaderCutin(myRenderer.theme, `${chain} CHAIN!!`, '#ffd700');
   };
   myEngine.onSimultaneousMatch = (size) => showPlayerHeaderCutin(myRenderer.theme, `${size}個消し！`, '#00d4ff');
-  initPlayerSkillState(currentSkillEnabled, mySkillId);
+  initPlayerSkillState(currentSkillEnabled, mySkillId, currentCustomSkillEnabled, myFallbackSkill);
 
   const rivalsArea = document.getElementById('rivals-area');
   const rivalsTopArea = document.getElementById('rivals-top-area');
@@ -3369,7 +3987,11 @@ function resetGameLogic() {
     const isComMode = !isShareMode && (currentMode === 'com' || currentMode === 'single_survival' || currentMode === 'story' || (currentMode === 'local' && slotCfg && slotCfg.isCom));
 
     const wrapper = document.createElement('div');
-    wrapper.className = 'board-wrapper rival-board' + (isComMode ? ' com-board' : '');
+    if (isShareMode) {
+      wrapper.className = 'board-wrapper share-p2-board';
+    } else {
+      wrapper.className = 'board-wrapper rival-board' + (isComMode ? ' com-board' : '');
+    }
     wrapper.id = `rival-wrapper-${i}`;
     if (currentMode !== 'local' && !isShareMode) wrapper.onclick = () => selectTarget(i);
 
@@ -3386,7 +4008,18 @@ function resetGameLogic() {
     else if (isShareMode) oppName = `2P: ${oppChar.name}`;
     else if (currentMode === 'local') oppName = isLocalHuman ? `${i + 2}P: ${oppChar.name}` : `${i + 2}P(COM): ${oppChar.name}`;
 
-    if (currentMode === 'local' || isShareMode) {
+    if (isShareMode) {
+      wrapper.innerHTML = `
+        <div class="board-frame-layer" id="rival-board-frame-${i}"></div>
+        <div class="garbage-preview-box"><span class="preview-label">予告</span><div id="rival-garbage-preview-${i}" class="preview-list"></div></div>
+        <div class="board-header my-board-header">
+          <span style="color:#ff6b9d;" id="rival-name-label-${i}">${oppName}</span>
+          <span id="rival-timer-label-${i}" style="color:#ffd700;">00:00</span>
+          <span id="rival-score-label-${i}">SCORE: 0 | CHAIN: 0</span>
+          <div id="rival-header-cutin-${i}" class="header-cutin" aria-hidden="true"><img class="header-cutin-img" alt=""><span class="header-cutin-name"></span><span class="header-cutin-text"></span></div>
+        </div>
+        <div class="canvas-container"><canvas id="rival-canvas-${i}"></canvas></div>`;
+    } else if (currentMode === 'local') {
       wrapper.innerHTML = `
         <div class="garbage-preview-box"><span class="preview-label">予告</span><div id="rival-garbage-preview-${i}" class="preview-list"></div><span id="rival-skill-badge-${i}" class="skill-count-badge" style="display:none;"></span></div>
         <div class="board-header my-board-header"><span style="color:${nameColor};" id="rival-name-label-${i}">${oppName} <span class="target-badge">🎯</span></span><span id="rival-score-label-${i}">SCORE: 0</span>
@@ -3410,9 +4043,7 @@ function resetGameLogic() {
     }
     if (currentMode === 'story' && i === 0) {
       const storyEnemyFrame = rRenderer.theme.frameSrc || (CustomAssets.frame ? CustomAssets.frame.dataUrl : null);
-      if (typeof applyGlobalFrameTheme === 'function') {
-        applyGlobalFrameTheme(storyEnemyFrame);
-      }
+      if (typeof applyGlobalFrameTheme === 'function') applyGlobalFrameTheme(storyEnemyFrame);
     }
     if (!rRenderer.theme.frameSrc && rRenderer.theme.charId !== 'custom' && rRenderer.theme.voiceName && typeof resolveCharacterImage === 'function') {
       const targetRTheme = rRenderer.theme;
@@ -3422,9 +4053,7 @@ function resetGameLogic() {
         if (url && document.getElementById(rivalWrapId)) {
           targetRTheme.frameSrc = url;
           applyBoardFrame(rivalWrapId, url);
-          if (isStoryEnemy && currentMode === 'story' && typeof applyGlobalFrameTheme === 'function') {
-            applyGlobalFrameTheme(url);
-          }
+          if (isStoryEnemy && currentMode === 'story' && typeof applyGlobalFrameTheme === 'function') applyGlobalFrameTheme(url);
         }
       });
     }
@@ -3441,6 +4070,19 @@ function resetGameLogic() {
 
     const oppInputState = isLocalHuman ? createPlayerInputState() : null;
     if (isLocalHuman) {
+      const oppPlayerSlotIndex = i + 1;
+      rEngine.onSwap = () => {
+        const oppPadSlot = getConnectedLocalPadSlotIfVibrating(oppPlayerSlotIndex);
+        if (oppPadSlot >= 0 && typeof triggerSwapVibration === 'function') {
+          triggerSwapVibration(false, oppPadSlot);
+        }
+      };
+      rEngine.onGarbageLanded = () => {
+        const oppPadSlot = getConnectedLocalPadSlotIfVibrating(oppPlayerSlotIndex);
+        if (oppPadSlot >= 0 && typeof triggerGarbageLandVibration === 'function') {
+          triggerGarbageLandVibration(oppPadSlot);
+        }
+      };
       rEngine.onRowPushed = () => {
         if (oppInputState.padGrabState.active && oppInputState.padGrabState.row > 0) oppInputState.padGrabState.row--;
         if (oppInputState.keyGrabState.active && oppInputState.keyGrabState.row > 0) oppInputState.keyGrabState.row--;
@@ -3455,50 +4097,63 @@ function resetGameLogic() {
       rEngine.onSimultaneousMatch = (size) => { rEngine.cutinMax = 50; rEngine.cutinTimer = 50; rEngine.cutinText = `${size}個消し！`; };
     }
 
-    const oppSkillId = isShareMode
+    const oppFallbackSk = isShareMode
+      ? (sharePrepConfig.p2.fallbackSkillId || 'erase_rows')
+      : ((slotCfg && slotCfg.fallbackSkillId) ? slotCfg.fallbackSkillId : 'erase_color');
+    const rawOppSkillId = isShareMode
       ? (sharePrepConfig.p2.skillId || 'erase_color')
       : ((slotCfg && slotCfg.skillId) ? slotCfg.skillId : 'erase_color');
+    const effOppSkillId = getEffectivePlayerSkillId(rawOppSkillId, currentCustomSkillEnabled, oppFallbackSk);
+    const oppSkillId = (currentSkillEnabled && typeof resolvePlayableSkillId === 'function')
+      ? resolvePlayableSkillId(effOppSkillId, currentCustomSkillEnabled, oppFallbackSk)
+      : effOppSkillId;
 
     let rAI = null;
     if (isComMode) {
       if (currentMode === 'story' && StoryManager.activeStage) {
         const stCfg = StoryManager.activeStageConfig || StoryManager.getStageConfig(StoryManager.activeStage);
         rAI = (stCfg.useCheat && typeof cheat === 'function')
-          ? new cheat(rEngine, stCfg.level, oppId, { skillType: stCfg.skillType, maxSkillUses: 10 })
+          ? new cheat(rEngine, stCfg.level, oppId, { skillType: stCfg.skillType, maxSkillUses: 10, allowCustom: currentCustomSkillEnabled })
           : new ComAI(rEngine, stCfg.level, oppId);
       } else {
         const comLv = (currentMode === 'local' && slotCfg) ? slotCfg.comLevel : currentComLevel;
         const useCheat = ((currentMode === 'com' || currentMode === 'single_survival' || currentMode === 'local') && currentSkillEnabled);
         const maxUses = (currentMode === 'single_survival' || currentMode === 'local') ? 3 : 10;
-        const aiOpts = { maxSkillUses: maxUses };
+        const aiOpts = { maxSkillUses: maxUses, allowCustom: currentCustomSkillEnabled, fallbackSkill: oppFallbackSk };
         if (currentMode === 'local' && slotCfg) {
           aiOpts.skillType = 'single';
           aiOpts.fixedSkill = oppSkillId;
         }
         rAI = (useCheat && typeof cheat === 'function') ? new cheat(rEngine, comLv, oppId, aiOpts) : new ComAI(rEngine, comLv, oppId);
       }
+      if (rEngine.isSacrifice || (rEngine.skillModifiers && rEngine.skillModifiers.autoLoseMs > 0)) {
+        wrapper.classList.add('sacrifice-aura');
+      }
     }
 
-    const oppIsSacrifice = !!currentSkillEnabled && (
-      (isLocalHuman && oppSkillId === 'sacrifice') ||
-      (isComMode && rEngine.isSacrifice)
-    );
-    if (oppIsSacrifice) {
-      rEngine.setSacrifice(true);
-      wrapper.classList.add('sacrifice-aura');
+    let oppSkillState = null;
+    let finalOppSkillId = oppSkillId;
+    if (isLocalHuman) {
+      oppSkillState = {
+        enabled: false,
+        skillId: oppSkillId,
+        isNoSkill: false,
+        isSacrifice: false,
+        isPassiveOnly: false,
+        usesLeft: 0,
+        maxUses: PLAYER_SKILL_MAX,
+        scoreStep: PLAYER_SKILL_SCORE_STEP,
+        nextRequiredScore: 0,
+        prevReady: false
+      };
+      finalOppSkillId = configureSkillStateForEngine(oppSkillState, rEngine, currentSkillEnabled, oppSkillId, `rival-wrapper-${i}`, currentCustomSkillEnabled, oppFallbackSk);
     }
 
-    const oppIsNoSkill = (oppSkillId === 'no_skill' || oppSkillId === 'sacrifice');
     const oppObj = {
       id: oppId, name: oppName, type: isLocalHuman ? 'local_human' : 'com',
-      playerSlotIndex: i + 1, skillId: oppSkillId, engine: rEngine, renderer: rRenderer, ai: rAI,
+      playerSlotIndex: i + 1, skillId: finalOppSkillId, engine: rEngine, renderer: rRenderer, ai: rAI,
       index: i, level: currentComLevel, targetId: null, inputState: oppInputState,
-      skillState: isLocalHuman ? {
-        enabled: currentSkillEnabled,
-        usesLeft: (currentSkillEnabled && !oppIsNoSkill) ? PLAYER_SKILL_MAX : 0,
-        nextRequiredScore: 0,
-        prevReady: !!currentSkillEnabled && !oppIsNoSkill
-      } : null
+      skillState: oppSkillState
     };
     opponents.push(oppObj);
     updateRivalSkillBadge(oppObj, i);
@@ -3512,15 +4167,17 @@ function resetGameLogic() {
   adjustLayout();
 }
 
-function startSingleGame() { selectedSingleMode = 'free'; startGame('single_free', 1, 1, false); }
+function startSingleGame() { selectedSingleMode = 'free'; startGame('single_free', 1, 1, false, true); }
 function startComGame(level) {
   const skillEnabled = !!document.getElementById('com-cheat-toggle')?.checked;
-  startGame('com', level, selectedComCount || 2, skillEnabled);
+  const customSkillEnabled = !!document.getElementById('com-custom-skill-toggle')?.checked;
+  startGame('com', level, selectedComCount || 2, skillEnabled, customSkillEnabled);
 }
 function startComGameFromSlider() {
   const level = parseInt(document.getElementById('com-level-slider').value) || 2;
   const skillEnabled = !!document.getElementById('com-cheat-toggle')?.checked;
-  startGame('com', level, selectedComCount || 2, skillEnabled);
+  const customSkillEnabled = !!document.getElementById('com-custom-skill-toggle')?.checked;
+  startGame('com', level, selectedComCount || 2, skillEnabled, customSkillEnabled);
 }
 
 function cleanupShareDomZones() {
@@ -3533,10 +4190,30 @@ function cleanupShareDomZones() {
   if (p2Controls) p2Controls.style.display = 'none';
   const p1Zone = document.getElementById('share-p1-zone'), p2Zone = document.getElementById('share-p2-zone');
   if (gameContainer) {
-    if (controls && controls.parentNode !== gameContainer) gameContainer.appendChild(controls);
-    if (p2Controls && p2Controls.parentNode !== gameContainer) gameContainer.appendChild(p2Controls);
-    if (myWrapper && myWrapper.parentNode !== gameContainer) gameContainer.appendChild(myWrapper);
+    if (controls) {
+      controls.style.transform = '';
+      controls.style.margin = '';
+      if (controls.parentNode !== gameContainer) gameContainer.appendChild(controls);
+    }
+    if (p2Controls) {
+      p2Controls.style.transform = '';
+      p2Controls.style.margin = '';
+      if (p2Controls.parentNode !== gameContainer) gameContainer.appendChild(p2Controls);
+    }
+    if (myWrapper) {
+      myWrapper.style.transform = '';
+      myWrapper.style.margin = '';
+      if (myWrapper.parentNode !== gameContainer) gameContainer.appendChild(myWrapper);
+    }
     if (rivalsArea && rivalsArea.parentNode !== gameContainer) gameContainer.appendChild(rivalsArea);
+    opponents.forEach((_, i) => {
+      const rw = document.getElementById(`rival-wrapper-${i}`);
+      if (rw) {
+        rw.style.transform = '';
+        rw.style.margin = '';
+        if (rivalsArea && rw.parentNode !== rivalsArea) rivalsArea.appendChild(rw);
+      }
+    });
   }
   if (p1Zone && p1Zone.parentNode) p1Zone.parentNode.removeChild(p1Zone);
   if (p2Zone && p2Zone.parentNode) p2Zone.parentNode.removeChild(p2Zone);
@@ -3554,6 +4231,7 @@ function exitGame(silent = false) {
 
 function performExitGame(silent = false) {
   closeExitConfirmModal(true);
+  clearKeyboardHoldStates();
   if (myEngine && !currentMode.startsWith('single')) {
     onlineConnections.forEach(c => { if(c && c.open) c.send({ type: 'leave', senderId: myOnlineId }); });
   }
@@ -3600,6 +4278,9 @@ function performExitGame(silent = false) {
   document.getElementById('story-overlay').style.display = 'none';
   document.getElementById('share-prep-overlay').style.display = 'none';
   backToMainMenu(false);
+  if (typeof SceneBgm !== 'undefined' && (typeof OpAnimation === 'undefined' || !OpAnimation.isActive())) {
+    SceneBgm.play('mode_select');
+  }
   if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(220);
 }
 
@@ -3615,8 +4296,24 @@ function createPlayerInputState() {
   return {
     padState: {}, prevPadState: {},
     padHoldFrames: { Up: 0, Down: 0, Left: 0, Right: 0 },
+    padDirTime: {
+      Up:    { held: false, startAt: 0, lastAt: 0 },
+      Down:  { held: false, startAt: 0, lastAt: 0 },
+      Left:  { held: false, startAt: 0, lastAt: 0 },
+      Right: { held: false, startAt: 0, lastAt: 0 }
+    },
+    padLastPressAt: {},
+    padWaitRelease: {},
     padGrabState: { active: false, side: 'left', col: 0, row: 0, consumed: false },
-    keyGrabState: { active: false, side: 'left', col: 0, row: 0, consumed: false }
+    keyGrabState: { active: false, side: 'left', col: 0, row: 0, consumed: false },
+    keyHeld: { Up: false, Down: false, Left: false, Right: false },
+    keyHoldFrames: { Up: 0, Down: 0, Left: 0, Right: 0 },
+    keyDirTime: {
+      Up:    { held: false, startAt: 0, lastAt: 0 },
+      Down:  { held: false, startAt: 0, lastAt: 0 },
+      Left:  { held: false, startAt: 0, lastAt: 0 },
+      Right: { held: false, startAt: 0, lastAt: 0 }
+    }
   };
 }
 
@@ -3624,13 +4321,35 @@ let p1InputState = createPlayerInputState();
 let padState = p1InputState.padState, prevPadState = p1InputState.prevPadState;
 let padHoldFrames = p1InputState.padHoldFrames, padGrabState = p1InputState.padGrabState, keyGrabState = p1InputState.keyGrabState;
 let touchRowFollowCallback = null, shareP2RowFollowCallback = null;
-const PAD_DAS_FRAMES = 15, PAD_ARR_FRAMES = 4;
+const PAD_DAS_MS = 210, PAD_ARR_MS = 45, PAD_BOUNCE_MS = 55;
+const KEY_DAS_MS = 210, KEY_ARR_MS = 45;
 
 function resetAllLocalInputStates() {
   p1InputState = createPlayerInputState();
   padState = p1InputState.padState; prevPadState = p1InputState.prevPadState;
   padHoldFrames = p1InputState.padHoldFrames; padGrabState = p1InputState.padGrabState; keyGrabState = p1InputState.keyGrabState;
   shareP2RowFollowCallback = null;
+}
+
+function clearKeyboardHoldStates() {
+  const clearState = (st) => {
+    if (!st) return;
+    if (st.keyGrabState) st.keyGrabState.active = st.keyGrabState.consumed = false;
+    if (st.keyHeld) st.keyHeld = { Up: false, Down: false, Left: false, Right: false };
+    if (st.keyHoldFrames) st.keyHoldFrames = { Up: 0, Down: 0, Left: 0, Right: 0 };
+    if (st.keyDirTime) {
+      st.keyDirTime = {
+        Up:    { held: false, startAt: 0, lastAt: 0 },
+        Down:  { held: false, startAt: 0, lastAt: 0 },
+        Left:  { held: false, startAt: 0, lastAt: 0 },
+        Right: { held: false, startAt: 0, lastAt: 0 }
+      };
+    }
+  };
+  clearState(p1InputState);
+  opponents.forEach(opp => {
+    if (opp && opp.inputState) clearState(opp.inputState);
+  });
 }
 
 function handleMyRowPushed() {
@@ -3651,23 +4370,46 @@ function cycleTargetForLocalOpponent(opp, dir = 1) {
   SE.play('cursorMove');
 }
 
-function pollSingleGamepad(engine, cfgPad, stateObj, padObj, isMainPlayer, oppRef = null) {
+function resetPadDirTimeState(stateObj) {
+  if (!stateObj || !stateObj.padDirTime) return;
+  ['Up', 'Down', 'Left', 'Right'].forEach(d => {
+    stateObj.padDirTime[d].held = false;
+  });
+}
+
+function pollSingleGamepad(engine, cfgPad, stateObj, padObj, isMainPlayer, oppRef = null, now = performance.now()) {
   if (!padObj) {
     if (engine) engine.isRisingManualPad = false;
     stateObj.padHoldFrames = { Up: 0, Down: 0, Left: 0, Right: 0 };
+    resetPadDirTimeState(stateObj);
     stateObj.padGrabState.active = stateObj.padGrabState.consumed = false;
     return;
   }
   stateObj.prevPadState = { ...stateObj.padState };
   padObj.buttons.forEach((b, i) => stateObj.padState[i] = !!b.pressed);
 
-  if (typeof padInputLockUntil !== 'undefined' && performance.now() < padInputLockUntil) {
+  if (stateObj.padWaitRelease) {
+    Object.keys(stateObj.padWaitRelease).forEach(k => {
+      if (!stateObj.padState[k]) delete stateObj.padWaitRelease[k];
+    });
+  }
+
+  if (typeof padInputLockUntil !== 'undefined' && now < padInputLockUntil) {
     if (engine) engine.isRisingManualPad = false;
+    resetPadDirTimeState(stateObj);
     return;
   }
 
-  const justPressed = (btnIdx) => btnIdx !== null && btnIdx !== undefined && stateObj.padState[btnIdx] && !stateObj.prevPadState[btnIdx];
   const isPressed = (btnIdx) => btnIdx !== null && btnIdx !== undefined && !!stateObj.padState[btnIdx];
+  const justPressed = (btnIdx) => {
+    if (btnIdx === null || btnIdx === undefined) return false;
+    if (!stateObj.padState[btnIdx] || stateObj.prevPadState[btnIdx]) return false;
+    if (stateObj.padWaitRelease && stateObj.padWaitRelease[btnIdx]) return false;
+    const lastT = stateObj.padLastPressAt ? (stateObj.padLastPressAt[btnIdx] || 0) : 0;
+    if (now - lastT < PAD_BOUNCE_MS) return false;
+    if (stateObj.padLastPressAt) stateObj.padLastPressAt[btnIdx] = now;
+    return true;
+  };
 
   if (isMainPlayer && justPressed(cfgPad.Pause)) {
     if (isExitConfirmOpen) {
@@ -3676,6 +4418,7 @@ function pollSingleGamepad(engine, cfgPad, stateObj, padObj, isMainPlayer, oppRe
     }
     if (document.getElementById('game-area').style.display === 'flex' && document.getElementById('result-overlay').style.display !== 'flex' && !battleEndState.active) {
       stateObj.padHoldFrames = { Up: 0, Down: 0, Left: 0, Right: 0 };
+      resetPadDirTimeState(stateObj);
       stateObj.padGrabState.active = stateObj.padGrabState.consumed = false;
       exitGame();
       return;
@@ -3683,10 +4426,12 @@ function pollSingleGamepad(engine, cfgPad, stateObj, padObj, isMainPlayer, oppRe
   }
   if (isExitConfirmOpen) {
     if (engine) engine.isRisingManualPad = false;
+    resetPadDirTimeState(stateObj);
     return;
   }
   if (!engine || engine.gameOver || (isMatchOver && !isPracticeMode)) {
     stateObj.padHoldFrames = { Up: 0, Down: 0, Left: 0, Right: 0 };
+    resetPadDirTimeState(stateObj);
     stateObj.padGrabState.active = stateObj.padGrabState.consumed = false;
     if (engine) engine.isRisingManualPad = false;
     return;
@@ -3701,13 +4446,36 @@ function pollSingleGamepad(engine, cfgPad, stateObj, padObj, isMainPlayer, oppRe
   }
 
   const checkDirTrigger = (dirName, btnIdx) => {
-    if (!isPressed(btnIdx)) { stateObj.padHoldFrames[dirName] = 0; return false; }
-    const f = stateObj.padHoldFrames[dirName]++;
-    return f === 0 || (f >= PAD_DAS_FRAMES && (f - PAD_DAS_FRAMES) % PAD_ARR_FRAMES === 0);
+    const dt = stateObj.padDirTime[dirName];
+    if (!isPressed(btnIdx)) {
+      dt.held = false;
+      return false;
+    }
+    if (stateObj.padWaitRelease && stateObj.padWaitRelease[btnIdx]) {
+      dt.held = true;
+      dt.startAt = now;
+      dt.lastAt = now;
+      return false;
+    }
+    if (!dt.held) {
+      const lastDirT = stateObj.padLastPressAt ? (stateObj.padLastPressAt[`dir_${dirName}`] || 0) : 0;
+      dt.held = true;
+      dt.startAt = now;
+      dt.lastAt = now;
+      if (now - lastDirT < 45) return false;
+      if (stateObj.padLastPressAt) stateObj.padLastPressAt[`dir_${dirName}`] = now;
+      return true;
+    }
+    if ((now - dt.startAt) >= PAD_DAS_MS && (now - dt.lastAt) >= PAD_ARR_MS) {
+      dt.lastAt = now;
+      return true;
+    }
+    return false;
   };
+
   let moved = false;
   if (isPressed(cfgPad.Up) && isPressed(cfgPad.Down)) {
-    stateObj.padHoldFrames.Up = stateObj.padHoldFrames.Down = 0;
+    stateObj.padDirTime.Up.held = stateObj.padDirTime.Down.held = false;
   } else {
     if (checkDirTrigger('Up', cfgPad.Up) && engine.cursor.y > 0) {
       engine.cursor.y--; moved = true;
@@ -3719,7 +4487,7 @@ function pollSingleGamepad(engine, cfgPad, stateObj, padObj, isMainPlayer, oppRe
     }
   }
   if (isPressed(cfgPad.Left) && isPressed(cfgPad.Right)) {
-    stateObj.padHoldFrames.Left = stateObj.padHoldFrames.Right = 0;
+    stateObj.padDirTime.Left.held = stateObj.padDirTime.Right.held = false;
   } else {
     if (checkDirTrigger('Left', cfgPad.Left)) {
       if (stateObj.padGrabState.active) executeGrabMoveForEngine(engine, stateObj.padGrabState, -1);
@@ -3741,6 +4509,72 @@ function pollSingleGamepad(engine, cfgPad, stateObj, padObj, isMainPlayer, oppRe
     if (justPressed(cfgPad.TargetRight)) cycleTargetForLocalOpponent(oppRef, 1);
     if (justPressed(cfgPad.TargetLeft)) cycleTargetForLocalOpponent(oppRef, -1);
     if (justPressed(cfgPad.Skill)) activateLocalOpponentSkill(oppRef);
+  }
+}
+
+function pollSingleKeyboardHold(engine, stateObj, now = performance.now()) {
+  if (!engine || !stateObj || !stateObj.keyHeld) return;
+  if (isExitConfirmOpen || engine.gameOver || (isMatchOver && !isPracticeMode)) {
+    stateObj.keyHoldFrames = { Up: 0, Down: 0, Left: 0, Right: 0 };
+    if (stateObj.keyDirTime) {
+      ['Up', 'Down', 'Left', 'Right'].forEach(d => { stateObj.keyDirTime[d].held = false; });
+    }
+    return;
+  }
+  if (typeof getCurrentPadContextKey === 'function' && getCurrentPadContextKey() !== 'game') return;
+
+  const checkKeyDirRepeat = (dirName) => {
+    const dt = stateObj.keyDirTime[dirName];
+    if (!stateObj.keyHeld[dirName]) {
+      dt.held = false;
+      return false;
+    }
+    if (!dt.held) {
+      dt.held = true;
+      dt.startAt = now;
+      dt.lastAt = now;
+      return false;
+    }
+    if ((now - dt.startAt) >= KEY_DAS_MS && (now - dt.lastAt) >= KEY_ARR_MS) {
+      dt.lastAt = now;
+      return true;
+    }
+    return false;
+  };
+  let moved = false;
+  if (stateObj.keyHeld.Up && stateObj.keyHeld.Down) {
+    stateObj.keyDirTime.Up.held = stateObj.keyDirTime.Down.held = false;
+  } else {
+    if (checkKeyDirRepeat('Up') && engine.cursor.y > 0) {
+      engine.cursor.y--; moved = true;
+      if (stateObj.keyGrabState.active) { stateObj.keyGrabState.row = engine.cursor.y; stateObj.keyGrabState.col = stateObj.keyGrabState.side === 'left' ? engine.cursor.x : engine.cursor.x + 1; stateObj.keyGrabState.consumed = false; }
+    }
+    if (checkKeyDirRepeat('Down') && engine.cursor.y < ROWS - 1) {
+      engine.cursor.y++; moved = true;
+      if (stateObj.keyGrabState.active) { stateObj.keyGrabState.row = engine.cursor.y; stateObj.keyGrabState.col = stateObj.keyGrabState.side === 'left' ? engine.cursor.x : engine.cursor.x + 1; stateObj.keyGrabState.consumed = false; }
+    }
+  }
+  if (stateObj.keyHeld.Left && stateObj.keyHeld.Right) {
+    stateObj.keyDirTime.Left.held = stateObj.keyDirTime.Right.held = false;
+  } else {
+    if (checkKeyDirRepeat('Left')) {
+      if (stateObj.keyGrabState.active) executeGrabMoveForEngine(engine, stateObj.keyGrabState, -1);
+      else if (engine.cursor.x > 0) { engine.cursor.x--; moved = true; }
+    }
+    if (checkKeyDirRepeat('Right')) {
+      if (stateObj.keyGrabState.active) executeGrabMoveForEngine(engine, stateObj.keyGrabState, 1);
+      else if (engine.cursor.x < COLS - 2) { engine.cursor.x++; moved = true; }
+    }
+  }
+  if (moved) SE.play('cursorMove');
+}
+
+function pollKeyboardHoldInput(now = performance.now()) {
+  pollSingleKeyboardHold(myEngine, p1InputState, now);
+  if (currentMode === 'local' || currentMode === 'share') {
+    opponents.forEach(opp => {
+      if (opp.type === 'local_human' && opp.inputState) pollSingleKeyboardHold(opp.engine, opp.inputState, now);
+    });
   }
 }
 
@@ -3767,7 +4601,7 @@ function executeGrabMoveForEngine(engine, grabState, dx) {
   return swapped;
 }
 
-function pollGamepadInput() {
+function pollGamepadInput(now = performance.now()) {
   const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()) : [];
   if (battleEndState.active) {
     const anyPressed = pads.some(p => p && p.connected && p.buttons.some(b => b.pressed));
@@ -3790,12 +4624,12 @@ function pollGamepadInput() {
   } else if (slot0 === 0 && currentMode !== 'local' && currentMode !== 'share') {
     pad0 = pads.find(p => p && p.connected) || null;
   }
-  pollSingleGamepad(myEngine, playerConfigs[0].pad, p1InputState, pad0, true, null);
+  pollSingleGamepad(myEngine, playerConfigs[0].pad, p1InputState, pad0, true, null, now);
   if (currentMode === 'local' || currentMode === 'share') {
     opponents.forEach(opp => {
       if (opp.type === 'local_human' && opp.inputState) {
         const slot = playerConfigs[opp.playerSlotIndex].padSlot;
-        pollSingleGamepad(opp.engine, playerConfigs[opp.playerSlotIndex].pad, opp.inputState, (slot >= 0 && pads[slot]) ? pads[slot] : null, false, opp);
+        pollSingleGamepad(opp.engine, playerConfigs[opp.playerSlotIndex].pad, opp.inputState, (slot >= 0 && pads[slot]) ? pads[slot] : null, false, opp, now);
       }
     });
   }
@@ -3814,9 +4648,12 @@ function updateGarbagePreview(engine, containerId) {
   if (container.dataset.qStr === cStr) return;
   container.dataset.qStr = cStr;
   container.innerHTML = '';
+  const gb = (typeof isGbMode !== 'undefined' && isGbMode);
   compressed.forEach((g, idx) => {
     const block = document.createElement('div');
-    block.style.cssText = `background:${g.isHard?'#a8b2bd':'#5c636a'};border:${idx===0?'1px solid #ffd700':'1px solid #dee2e6'};border-radius:2px;width:${Math.min(34,Math.max(14,g.w*5))}px;height:${Math.min(18,Math.max(10,g.h*4))}px;flex-shrink:0;display:flex;align-items:center;justify-content:center;${idx>0?'opacity:0.55;':''}`;
+    const bgCol = gb ? (g.isHard ? '#cccccc' : '#4a4a4a') : (g.isHard ? '#a8b2bd' : '#5c636a');
+    const brCol = idx === 0 ? (gb ? '#ffffff' : '#ffd700') : '#dee2e6';
+    block.style.cssText = `background:${bgCol};border:1px solid ${brCol};border-radius:2px;width:${Math.min(34,Math.max(14,g.w*5))}px;height:${Math.min(18,Math.max(10,g.h*4))}px;flex-shrink:0;display:flex;align-items:center;justify-content:center;${idx>0?'opacity:0.55;':''}`;
     if (g.count > 1) {
       const span = document.createElement('span');
       span.innerText = `×${g.count}`;
@@ -3831,6 +4668,12 @@ let lastTime = 0, accumulator = 0;
 const FIXED_TIME_STEP = 1000 / 60;
 
 function gameLoop(time) {
+  if (myEngine && !myEngine.onSwap) {
+    myEngine.onSwap = () => { if (typeof triggerSwapVibration === 'function') triggerSwapVibration(false, getMainPlayerPadSlot()); };
+  }
+  if (myEngine && !myEngine.onGarbageLanded) {
+    myEngine.onGarbageLanded = () => { if (typeof triggerGarbageLandVibration === 'function') triggerGarbageLandVibration(getMainPlayerPadSlot()); };
+  }
   if (isExitConfirmOpen && currentMode !== 'online') {
     lastTime = time;
     accumulator = 0;
@@ -3840,11 +4683,14 @@ function gameLoop(time) {
     return;
   }
 
+  const inputNow = performance.now();
+  pollGamepadInput(inputNow);
+  pollKeyboardHoldInput(inputNow);
+
   let deltaTime = time - lastTime;
   if (deltaTime > 100) deltaTime = 100;
   lastTime = time; accumulator += deltaTime;
   while (accumulator >= FIXED_TIME_STEP) {
-    pollGamepadInput();
     if (myEngine && (!isMatchOver || isPracticeMode || (myEngine.endAnim && !myEngine.endAnim.done))) myEngine.update(FIXED_TIME_STEP);
     opponents.forEach(opp => {
       const oppHasEndAnim = opp.engine && opp.engine.endAnim && !opp.engine.endAnim.done;
@@ -3859,7 +4705,9 @@ function gameLoop(time) {
           if (document.getElementById('survival-cancel-sent').checked) opp.engine.garbageQueue = [];
           let nextLv = getSurvivalLevel(survivalBaseLevel, currentSurvivalWins + 1);
           opp.level = nextLv;
-          opp.ai = (currentSkillEnabled && typeof cheat === 'function') ? new cheat(opp.engine, nextLv, opp.id, { maxSkillUses: 3 }) : new ComAI(opp.engine, nextLv, opp.id);
+          opp.ai = (currentSkillEnabled && typeof cheat === 'function')
+            ? new cheat(opp.engine, nextLv, opp.id, { maxSkillUses: 3, allowCustom: currentCustomSkillEnabled })
+            : new ComAI(opp.engine, nextLv, opp.id);
           document.getElementById(`rival-name-label-0`).innerHTML = `${opp.renderer.theme.name} Lv.${nextLv} <span class="target-badge">🎯 TARGET</span>`;
         }
       } else if (opp.type === 'local_human') {
@@ -3876,10 +4724,12 @@ function gameLoop(time) {
     accumulator -= FIXED_TIME_STEP;
   }
 
+  let sharedTimeStr = '00:00';
   if (myEngine) {
     myRenderer.draw(myEngine);
     const t = Math.floor(myEngine.timeElapsed / 1000);
-    document.getElementById('timer-label').innerText = `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`;
+    sharedTimeStr = `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`;
+    document.getElementById('timer-label').innerText = sharedTimeStr;
     document.getElementById('score-label').innerText = `SCORE: ${myEngine.score} | CHAIN: ${myEngine.chain}`;
     updateGarbagePreview(myEngine, 'my-garbage-preview');
     updateSkillButtonUI();
@@ -3893,8 +4743,19 @@ function gameLoop(time) {
   opponents.forEach((opp, i) => {
     if (opp.renderer && opp.engine) {
       opp.renderer.draw(opp.engine);
+      const timerEl = document.getElementById(`rival-timer-label-${i}`);
+      if (timerEl) {
+        const ot = Math.floor(opp.engine.timeElapsed / 1000);
+        timerEl.innerText = `${String(Math.floor(ot / 60)).padStart(2, '0')}:${String(ot % 60).padStart(2, '0')}`;
+      }
       const scoreEl = document.getElementById(`rival-score-label-${i}`);
-      if (scoreEl) scoreEl.innerText = currentMode === 'single_survival' ? `WINS: ${currentSurvivalWins}` : `SCORE: ${opp.engine.score}`;
+      if (scoreEl) {
+        if (currentMode === 'share') {
+          scoreEl.innerText = `SCORE: ${opp.engine.score} | CHAIN: ${opp.engine.chain}`;
+        } else {
+          scoreEl.innerText = currentMode === 'single_survival' ? `WINS: ${currentSurvivalWins}` : `SCORE: ${opp.engine.score}`;
+        }
+      }
       updateGarbagePreview(opp.engine, `rival-garbage-preview-${i}`);
       updateRivalSkillBadge(opp, i);
       const pCard = document.getElementById(`inline-portrait-p${i + 1}`);
@@ -3907,32 +4768,49 @@ function gameLoop(time) {
 function handleKeyboardActionForPlayer(engine, cfgKey, stateObj, code, isRepeat, isMainPlayer, oppRef, e) {
   if (!engine || engine.gameOver || (isMatchOver && !isPracticeMode)) return false;
   let handled = false, moved = false;
+  const now = performance.now();
   if (isMainPlayer && code === cfgKey.ToggleContinuous) { handled = true; if (!isRepeat) toggleContinuousSwipe(); }
   if (code === cfgKey.GrabLeft) { handled = true; if (!isRepeat) startGrabForEngine(engine, stateObj.keyGrabState, 'left'); }
   if (code === cfgKey.GrabRight) { handled = true; if (!isRepeat) startGrabForEngine(engine, stateObj.keyGrabState, 'right'); }
   if (code === cfgKey.Up) {
     handled = true;
-    if (engine.cursor.y > 0) {
-      engine.cursor.y--; moved = true;
-      if (stateObj.keyGrabState.active) { stateObj.keyGrabState.row = engine.cursor.y; stateObj.keyGrabState.col = stateObj.keyGrabState.side === 'left' ? engine.cursor.x : engine.cursor.x + 1; stateObj.keyGrabState.consumed = false; }
+    if (!isRepeat) {
+      stateObj.keyHeld.Up = true; stateObj.keyHoldFrames.Up = 1;
+      if (stateObj.keyDirTime) stateObj.keyDirTime.Up = { held: true, startAt: now, lastAt: now };
+      if (engine.cursor.y > 0) {
+        engine.cursor.y--; moved = true;
+        if (stateObj.keyGrabState.active) { stateObj.keyGrabState.row = engine.cursor.y; stateObj.keyGrabState.col = stateObj.keyGrabState.side === 'left' ? engine.cursor.x : engine.cursor.x + 1; stateObj.keyGrabState.consumed = false; }
+      }
     }
   }
   if (code === cfgKey.Down) {
     handled = true;
-    if (engine.cursor.y < ROWS - 1) {
-      engine.cursor.y++; moved = true;
-      if (stateObj.keyGrabState.active) { stateObj.keyGrabState.row = engine.cursor.y; stateObj.keyGrabState.col = stateObj.keyGrabState.side === 'left' ? engine.cursor.x : engine.cursor.x + 1; stateObj.keyGrabState.consumed = false; }
+    if (!isRepeat) {
+      stateObj.keyHeld.Down = true; stateObj.keyHoldFrames.Down = 1;
+      if (stateObj.keyDirTime) stateObj.keyDirTime.Down = { held: true, startAt: now, lastAt: now };
+      if (engine.cursor.y < ROWS - 1) {
+        engine.cursor.y++; moved = true;
+        if (stateObj.keyGrabState.active) { stateObj.keyGrabState.row = engine.cursor.y; stateObj.keyGrabState.col = stateObj.keyGrabState.side === 'left' ? engine.cursor.x : engine.cursor.x + 1; stateObj.keyGrabState.consumed = false; }
+      }
     }
   }
   if (code === cfgKey.Left) {
     handled = true;
-    if (stateObj.keyGrabState.active) executeGrabMoveForEngine(engine, stateObj.keyGrabState, -1);
-    else if (engine.cursor.x > 0) { engine.cursor.x--; moved = true; }
+    if (!isRepeat) {
+      stateObj.keyHeld.Left = true; stateObj.keyHoldFrames.Left = 1;
+      if (stateObj.keyDirTime) stateObj.keyDirTime.Left = { held: true, startAt: now, lastAt: now };
+      if (stateObj.keyGrabState.active) executeGrabMoveForEngine(engine, stateObj.keyGrabState, -1);
+      else if (engine.cursor.x > 0) { engine.cursor.x--; moved = true; }
+    }
   }
   if (code === cfgKey.Right) {
     handled = true;
-    if (stateObj.keyGrabState.active) executeGrabMoveForEngine(engine, stateObj.keyGrabState, 1);
-    else if (engine.cursor.x < COLS - 2) { engine.cursor.x++; moved = true; }
+    if (!isRepeat) {
+      stateObj.keyHeld.Right = true; stateObj.keyHoldFrames.Right = 1;
+      if (stateObj.keyDirTime) stateObj.keyDirTime.Right = { held: true, startAt: now, lastAt: now };
+      if (stateObj.keyGrabState.active) executeGrabMoveForEngine(engine, stateObj.keyGrabState, 1);
+      else if (engine.cursor.x < COLS - 2) { engine.cursor.x++; moved = true; }
+    }
   }
   if (moved) SE.play('cursorMove');
   if (code === cfgKey.Swap) { handled = true; engine.swap(engine.cursor.x, engine.cursor.y); }
@@ -4061,6 +4939,7 @@ function bindBoardTouchInput(cvs, getEngine, getContinuousChecked, isSelf180Rota
   if (setRowFollowCb) setRowFollowCb(() => { if (activePointerId !== null && grabbedRow > 0) grabbedRow--; });
 
   cvs.addEventListener('pointerdown', (e) => {
+    if (e.cancelable) e.preventDefault();
     if (isExitConfirmOpen) return;
     const engine = getEngine();
     if (!engine || (isMatchOver && !isPracticeMode) || activePointerId !== null) return;
@@ -4154,9 +5033,15 @@ function setupInput() {
   }
 
   const skillBtn = document.getElementById('skill-btn');
-  if (skillBtn) bindMultiTouchTap(skillBtn, () => activatePlayerSkill());
+  if (skillBtn) {
+    skillBtn.removeAttribute('onclick');
+    bindMultiTouchTap(skillBtn, () => activatePlayerSkill());
+  }
   const p2SkillBtn = document.getElementById('p2-skill-btn');
-  if (p2SkillBtn) bindMultiTouchTap(p2SkillBtn, () => activateShareP2Skill());
+  if (p2SkillBtn) {
+    p2SkillBtn.removeAttribute('onclick');
+    bindMultiTouchTap(p2SkillBtn, () => activateShareP2Skill());
+  }
 
   const battleEndOverlay = document.getElementById('battle-end-overlay');
   if (battleEndOverlay) {
@@ -4166,15 +5051,19 @@ function setupInput() {
   }
 
   window.addEventListener('blur', () => {
-    p1InputState.keyGrabState.active = p1InputState.keyGrabState.consumed = false;
+    clearKeyboardHoldStates();
     if (myEngine) myEngine.isRisingManualKey = false;
     opponents.forEach(opp => {
-      if (opp.inputState) opp.inputState.keyGrabState.active = opp.inputState.keyGrabState.consumed = false;
       if (opp.engine) opp.engine.isRisingManualKey = false;
     });
   });
 
   window.addEventListener('keydown', (e) => {
+    if (typeof OpAnimation !== 'undefined' && OpAnimation.isActive && OpAnimation.isActive()) {
+      e.preventDefault();
+      if (!e.repeat) OpAnimation.skip();
+      return;
+    }
     if (battleEndState.active) { e.preventDefault(); tryDismissBattleEndOverlay(); return; }
     if (assigningAction) {
       e.preventDefault();
@@ -4204,13 +5093,16 @@ function setupInput() {
     }
     const code = e.code;
     const isGameVisible = document.getElementById('game-area').style.display === 'flex';
-    const isResultVisible = document.getElementById('result-overlay')?.style.display === 'flex';
-    const isSettingsVisible = document.getElementById('settings-overlay')?.style.display === 'block';
-    const isSkillModalVisible = document.getElementById('skill-select-modal')?.style.display === 'flex';
-    const isConfirmModalVisible = document.getElementById('confirm-match-modal')?.style.display === 'flex';
-    const isSelectPickerVisible = document.getElementById('select-picker-modal')?.style.display === 'flex';
-    const isExitConfirmVisible = document.getElementById('exit-confirm-modal')?.style.display === 'flex';
-    const isStoryOverlayVisible = document.getElementById('story-overlay')?.style.display === 'flex';
+    const isResultVisible = isElementActuallyVisible('result-overlay');
+    const isSettingsVisible = isElementActuallyVisible('settings-overlay');
+    const isSkillModalVisible = isElementActuallyVisible('skill-select-modal');
+    const isCustomSkillModalVisible = isElementActuallyVisible('custom-skill-modal');
+    const isConfirmModalVisible = isElementActuallyVisible('confirm-match-modal');
+    const isSelectPickerVisible = isElementActuallyVisible('select-picker-modal');
+    const isExitConfirmVisible = isElementActuallyVisible('exit-confirm-modal');
+    const isKeyResetConfirmVisible = isElementActuallyVisible('key-reset-confirm-modal');
+    const isPwaGuideVisible = isElementActuallyVisible('pwa-guide-modal');
+    const isStoryOverlayVisible = isElementActuallyVisible('story-overlay');
 
     if (isStoryOverlayVisible) return;
 
@@ -4220,19 +5112,22 @@ function setupInput() {
       return;
     }
 
-    if (!isGameVisible || isResultVisible || isSettingsVisible || isSkillModalVisible || isConfirmModalVisible || isSelectPickerVisible || isExitConfirmVisible) {
+    if (!isGameVisible || isResultVisible || isSettingsVisible || isSkillModalVisible || isCustomSkillModalVisible || isConfirmModalVisible || isSelectPickerVisible || isExitConfirmVisible || isKeyResetConfirmVisible || isPwaGuideVisible) {
       const tag = document.activeElement?.tagName;
       const isTextInput = tag === 'INPUT' && document.activeElement?.type === 'text';
-      const isLocalMenuOpen = document.getElementById('local-menu')?.style.display === 'flex';
+      const isLocalMenuOpen = isElementActuallyVisible('local-menu');
       const isDigitHudOpen = (typeof rangeEditState !== 'undefined' && !!rangeEditState.el);
       const isModalOpen = isSkillModalVisible
+                       || isCustomSkillModalVisible
                        || isConfirmModalVisible
                        || isSelectPickerVisible
                        || isExitConfirmVisible
+                       || isKeyResetConfirmVisible
+                       || isPwaGuideVisible
                        || isSettingsVisible
                        || isResultVisible
                        || isDigitHudOpen
-                       || document.getElementById('share-prep-overlay')?.style.display === 'flex';
+                       || isElementActuallyVisible('share-prep-overlay');
 
       if (!isGameVisible && isLocalMenuOpen && !isModalOpen && !isTextInput && !e.repeat) {
         if (handleLocalMenuKeyInput(code, e)) return;
@@ -4243,9 +5138,9 @@ function setupInput() {
       }
       return;
     }
-    if (code === keyConfig.Pause && !e.repeat && document.getElementById('result-overlay').style.display !== 'flex') {
+    if (code === keyConfig.Pause && !e.repeat && !isResultVisible) {
       e.preventDefault();
-      p1InputState.keyGrabState.active = p1InputState.keyGrabState.consumed = false;
+      clearKeyboardHoldStates();
       if (myEngine) myEngine.isRisingManualKey = false;
       exitGame(); return;
     }
@@ -4262,6 +5157,10 @@ function setupInput() {
     const releaseFor = (engine, cfgKey, stateObj) => {
       if (e.code === cfgKey.GrabLeft && stateObj.keyGrabState.active && stateObj.keyGrabState.side === 'left') stateObj.keyGrabState.active = stateObj.keyGrabState.consumed = false;
       if (e.code === cfgKey.GrabRight && stateObj.keyGrabState.active && stateObj.keyGrabState.side === 'right') stateObj.keyGrabState.active = stateObj.keyGrabState.consumed = false;
+      if (e.code === cfgKey.Up) { stateObj.keyHeld.Up = false; stateObj.keyHoldFrames.Up = 0; if (stateObj.keyDirTime) stateObj.keyDirTime.Up.held = false; }
+      if (e.code === cfgKey.Down) { stateObj.keyHeld.Down = false; stateObj.keyHoldFrames.Down = 0; if (stateObj.keyDirTime) stateObj.keyDirTime.Down.held = false; }
+      if (e.code === cfgKey.Left) { stateObj.keyHeld.Left = false; stateObj.keyHoldFrames.Left = 0; if (stateObj.keyDirTime) stateObj.keyDirTime.Left.held = false; }
+      if (e.code === cfgKey.Right) { stateObj.keyHeld.Right = false; stateObj.keyHoldFrames.Right = 0; if (stateObj.keyDirTime) stateObj.keyDirTime.Right.held = false; }
       if (engine && (e.code === cfgKey.Rise1 || e.code === cfgKey.Rise2)) engine.isRisingManualKey = false;
     };
     releaseFor(myEngine, playerConfigs[0].key, p1InputState);
@@ -4353,75 +5252,130 @@ function resetBattleLayoutStyles() {
   }
 }
 
+function ensureShareSizerBox(parentZone, sizerId, childEl, orderNum) {
+  let sizer = document.getElementById(sizerId);
+  if (!sizer) {
+    sizer = document.createElement('div');
+    sizer.id = sizerId;
+    sizer.className = 'share-slot-sizer';
+  }
+  sizer.style.order = String(orderNum);
+  if (sizer.parentNode !== parentZone) parentZone.appendChild(sizer);
+  if (childEl && childEl.parentNode !== sizer) sizer.appendChild(childEl);
+  return sizer;
+}
+
 function adjustLayout() {
   updateShareForcePortraitClass();
   const isPortrait = window.innerHeight >= window.innerWidth;
   const W = window.innerWidth, H = window.innerHeight;
   const isLeft = document.getElementById('handedness-toggle')?.checked;
 
-  resetBattleLayoutStyles();
-
-  const layoutBtn = document.getElementById('layout-toggle-btn');
-  if (layoutBtn) {
-    layoutBtn.style.display = (!isPortrait && currentMode !== 'local' && currentMode !== 'share') ? 'block' : 'none';
-    updateLayoutToggleBtnText();
-  }
-
-  const isLandscapeLarge = !isPortrait && !useMobileLayoutInLandscape;
   const oppCount = opponents.length;
   const myWrapper = document.getElementById('my-wrapper'), rivalsArea = document.getElementById('rivals-area');
   const rivalsTopArea = document.getElementById('rivals-top-area'), controls = document.getElementById('controls-container');
   const p2Controls = document.getElementById('p2-controls-container'), exitBtn = document.getElementById('exit-btn');
   const gameArea = document.getElementById('game-area'), gameContainer = document.getElementById('game-container');
   const handednessWrapper = document.getElementById('handedness-wrapper'), zoneBgEl = document.getElementById('my-zone-frame-bg');
+  const vibrateWrapper = document.getElementById('vibrate-wrapper');
   const bottomBar = document.getElementById('battle-bottom-status-bar');
+  const layoutBtn = document.getElementById('layout-toggle-btn');
+
   if (!myWrapper || !controls || !exitBtn || !gameArea || !gameContainer) return;
 
-  const isGameShown = gameArea.style.display !== 'none';
-
-  if (bottomBar) {
-    bottomBar.style.display = (isGameShown && isPortrait && currentMode !== 'local' && currentMode !== 'share') ? 'flex' : 'none';
-  }
-  refreshBattleSidePanels();
-  refreshOnlineSplitFrames();
-
   if (currentMode === 'share') {
+    removeInlinePlayerPortraits();
     if (zoneBgEl) zoneBgEl.style.opacity = '0';
+    if (bottomBar) bottomBar.style.display = 'none';
     document.body.classList.remove('local-force-landscape');
     gameArea.classList.add('share-mode');
-    rivalsTopArea.style.display = 'none'; rivalsArea.style.display = 'none';
-    const effW = Math.min(W, H), effH = Math.max(W, H), halfH = effH / 2;
+    if (rivalsTopArea) rivalsTopArea.style.display = 'none';
+    if (rivalsArea) rivalsArea.style.display = 'none';
 
+    const effW = Math.min(W, H), effH = Math.max(W, H), halfH = effH / 2;
     let p2Zone = document.getElementById('share-p2-zone'), p1Zone = document.getElementById('share-p1-zone');
-    if (!p2Zone) { p2Zone = document.createElement('div'); p2Zone.id = 'share-p2-zone'; p2Zone.className = 'share-zone-half share-p2-zone'; gameContainer.appendChild(p2Zone); }
-    if (!p1Zone) { p1Zone = document.createElement('div'); p1Zone.id = 'share-p1-zone'; p1Zone.className = 'share-zone-half share-p1-zone'; gameContainer.appendChild(p1Zone); }
+    if (!p2Zone) {
+      p2Zone = document.createElement('div');
+      p2Zone.id = 'share-p2-zone';
+      p2Zone.className = 'share-zone-half share-p2-zone';
+      gameContainer.appendChild(p2Zone);
+    }
+    if (!p1Zone) {
+      p1Zone = document.createElement('div');
+      p1Zone.id = 'share-p1-zone';
+      p1Zone.className = 'share-zone-half share-p1-zone';
+      gameContainer.appendChild(p1Zone);
+    }
 
     const rivalWrapper = document.getElementById('rival-wrapper-0');
-    if (rivalWrapper && rivalWrapper.parentNode !== p2Zone) p2Zone.appendChild(rivalWrapper);
-    if (p2Controls && p2Controls.parentNode !== p2Zone) p2Zone.appendChild(p2Controls);
-    if (myWrapper.parentNode !== p1Zone) p1Zone.appendChild(myWrapper);
-    if (controls.parentNode !== p1Zone) p1Zone.appendChild(controls);
+    const p2BoardSizer = ensureShareSizerBox(p2Zone, 'share-p2-board-sizer', rivalWrapper, 1);
+    const p2CtrlSizer = ensureShareSizerBox(p2Zone, 'share-p2-ctrl-sizer', p2Controls, 2);
+    const p1BoardSizer = ensureShareSizerBox(p1Zone, 'share-p1-board-sizer', myWrapper, 1);
+    const p1CtrlSizer = ensureShareSizerBox(p1Zone, 'share-p1-ctrl-sizer', controls, 2);
 
     if (exitBtn.parentNode !== gameArea) gameArea.appendChild(exitBtn);
     exitBtn.className = 'action-btn retire-btn share-exit-btn';
     exitBtn.style.cssText = 'position:absolute;top:50%;left:6px;right:auto;width:auto;margin:0;';
     if (handednessWrapper) handednessWrapper.style.display = 'none';
+    if (vibrateWrapper) vibrateWrapper.style.display = 'none';
+    if (layoutBtn) layoutBtn.style.display = 'none';
 
-    controls.style.cssText = 'display:flex;order:2;height:auto;width:110px;justify-content:center;position:relative;flex-direction:column;gap:6px;z-index:20;';
-    if (p2Controls) p2Controls.style.cssText = 'display:flex;order:2;height:auto;width:110px;justify-content:center;position:relative;flex-direction:column;gap:6px;z-index:20;';
-    myWrapper.style.order = '1';
-    if (rivalWrapper) { rivalWrapper.style.order = '1'; rivalWrapper.style.position = 'relative'; rivalWrapper.style.width = ''; rivalWrapper.style.flexShrink = ''; }
+    controls.style.cssText = 'display:flex;height:auto;width:110px;justify-content:center;position:relative;flex-direction:column;gap:6px;z-index:20;flex-shrink:0;transform-origin:top left;';
+    if (p2Controls) p2Controls.style.cssText = 'display:flex;height:auto;width:110px;justify-content:center;position:relative;flex-direction:column;gap:6px;z-index:20;flex-shrink:0;transform-origin:top left;';
+
+    myWrapper.style.cssText = 'position:relative;width:224px;max-width:224px;flex-shrink:0;transition:none;transform-origin:top left;margin:0;';
+    if (rivalWrapper) {
+      rivalWrapper.style.cssText = 'position:relative;width:224px;max-width:224px;flex-shrink:0;transition:none;transform-origin:top left;margin:0;';
+    }
     gameContainer.style.cssText = 'position:relative;width:100%;height:100%;display:flex;flex-direction:column;flex-wrap:nowrap;padding:0;gap:0;';
 
-    const baseBoardH = 515, baseTotalW = 224 + 110 + 8;
-    const scale = Math.max(0.32, Math.min(1.0, (halfH - 12) / baseBoardH, (effW - 14) / baseTotalW));
-    const boardMx = (224 - 224 * scale) / -2, boardMy = (baseBoardH - baseBoardH * scale) / -2, ctrlMx = (110 - 110 * scale) / -2;
-    myWrapper.style.transformOrigin = 'center'; myWrapper.style.transform = `scale(${scale})`; myWrapper.style.margin = `${boardMy}px ${boardMx}px`;
-    controls.style.transformOrigin = 'center'; controls.style.transform = `scale(${scale})`; controls.style.margin = `0 ${ctrlMx}px`;
-    if (rivalWrapper) { rivalWrapper.style.transformOrigin = 'center'; rivalWrapper.style.transform = `scale(${scale})`; rivalWrapper.style.margin = `${boardMy}px ${boardMx}px`; }
-    if (p2Controls) { p2Controls.style.transformOrigin = 'center'; p2Controls.style.transform = `scale(${scale})`; p2Controls.style.margin = `0 ${ctrlMx}px`; }
+    const baseBoardH = Math.max(522, myWrapper.offsetHeight || 522, rivalWrapper ? (rivalWrapper.offsetHeight || 522) : 522);
+    const p1CtrlH = Math.max(160, controls.offsetHeight || 180);
+    const p2CtrlH = p2Controls ? Math.max(160, p2Controls.offsetHeight || 180) : 180;
+    const baseTotalW = 224 + 110 + 10;
+    const scale = Math.max(0.32, Math.min(1.0, (halfH - 22) / baseBoardH, (effW - 18) / baseTotalW));
+
+    myWrapper.style.transform = `scale(${scale})`;
+    p1BoardSizer.style.width = `${Math.round(224 * scale)}px`;
+    p1BoardSizer.style.height = `${Math.round(baseBoardH * scale)}px`;
+
+    controls.style.transform = `scale(${scale})`;
+    p1CtrlSizer.style.width = `${Math.round(110 * scale)}px`;
+    p1CtrlSizer.style.height = `${Math.round(p1CtrlH * scale)}px`;
+
+    if (rivalWrapper) {
+      rivalWrapper.style.transform = `scale(${scale})`;
+      p2BoardSizer.style.width = `${Math.round(224 * scale)}px`;
+      p2BoardSizer.style.height = `${Math.round(baseBoardH * scale)}px`;
+    }
+    if (p2Controls) {
+      p2Controls.style.transform = `scale(${scale})`;
+      p2CtrlSizer.style.width = `${Math.round(110 * scale)}px`;
+      p2CtrlSizer.style.height = `${Math.round(p2CtrlH * scale)}px`;
+    }
+
+    refreshBattleSidePanels();
+    refreshOnlineSplitFrames();
     return;
   }
+
+  resetBattleLayoutStyles();
+  if (typeof syncBoardVibrateToggleUI === 'function') syncBoardVibrateToggleUI();
+
+  if (layoutBtn) {
+    layoutBtn.style.display = (!isPortrait && currentMode !== 'local') ? 'block' : 'none';
+    updateLayoutToggleBtnText();
+  }
+
+  const isLandscapeLarge = !isPortrait && !useMobileLayoutInLandscape;
+  const largeScreenMaxScale = (isLandscapeLarge && W >= 860 && H >= 580) ? 1.65 : 1.0;
+  const isGameShown = gameArea.style.display !== 'none';
+
+  if (bottomBar) {
+    bottomBar.style.display = (isGameShown && isPortrait && currentMode !== 'local') ? 'flex' : 'none';
+  }
+  refreshBattleSidePanels();
+  refreshOnlineSplitFrames();
 
   if (currentMode === 'local') {
     if (zoneBgEl) zoneBgEl.style.opacity = '1';
@@ -4445,7 +5399,8 @@ function adjustLayout() {
     const gapPx = totalPlayers >= 4 ? 6 : 8;
     const baseTotalW = totalPlayers * baseW + totalPortraits * portraitW + Math.max(0, itemCount - 1) * gapPx;
 
-    const scale = Math.max(0.28, Math.min(1.0, (effW - 24) / baseTotalW, (effH - 54) / baseH));
+    const localMaxScale = (!isPortrait && effW >= 860 && effH >= 580) ? 1.65 : 1.0;
+    const scale = Math.max(0.28, Math.min(localMaxScale, (effW - 24) / baseTotalW, (effH - 54) / baseH));
     gameContainer.style.cssText = `position:relative;width:100%;height:100%;display:flex;flex-direction:row;flex-wrap:nowrap;align-items:center;align-content:center;justify-content:center;gap:${gapPx}px;padding:36px 8px 8px 8px;`;
 
     const mx = (baseW - baseW * scale) / -2, my = (baseH - baseH * scale) / -2;
@@ -4470,11 +5425,8 @@ function adjustLayout() {
       if (el) {
         el.style.position = 'relative'; el.style.width = ''; el.style.flexShrink = '';
         el.style.transformOrigin = 'center'; el.style.transform = `scale(${scale})`; el.style.margin = `${my}px ${mx}px`;
-        if (totalPlayers === 2) {
-          el.style.order = '40';
-        } else {
-          el.style.order = String((i + 1) * 20 + 10);
-        }
+        if (totalPlayers === 2) el.style.order = '40';
+        else el.style.order = String((i + 1) * 20 + 10);
       }
       if (showPortraits && opp.renderer && opp.renderer.theme) {
         const pCard = buildInlinePortraitCard(i + 1, totalPlayers, opp.renderer.theme, i);
@@ -4509,7 +5461,7 @@ function adjustLayout() {
 
       const availW = Math.max(300, W - 24);
       const availH = Math.max(240, H - 56);
-      const scale = Math.max(0.28, Math.min(1.0, availW / totalBaseW, availH / baseBoardH));
+      const scale = Math.max(0.28, Math.min(largeScreenMaxScale, availW / totalBaseW, availH / baseBoardH));
 
       rivalsArea.style.display = 'contents';
       gameContainer.style.cssText = `position:relative;width:100%;height:100%;display:flex;flex-direction:row;flex-wrap:nowrap;align-items:center;justify-content:center;gap:${gapPx}px;padding:24px 10px 24px 10px;`;
@@ -4567,15 +5519,17 @@ function adjustLayout() {
     if (isLeft) { controls.style.order = '1'; myWrapper.style.order = '2'; }
     else { myWrapper.style.order = '2'; controls.style.order = '3'; }
 
-    const availableW = Math.max(260, W - sideMargin * 2 - 140);
-    const baseBoardW = 224;
-    let myScale = Math.min(1.0, (H - 84) / 515);
-    if (baseBoardW * myScale > availableW) myScale = Math.max(0.4, availableW / baseBoardW);
+    const baseBoardW = 224, baseBoardH = 515, ctrlW = 110;
+    const availableW = Math.max(260, W - sideMargin * 2 - 20);
+    const availableH = Math.max(240, H - 84);
+    const myScale = Math.max(0.4, Math.min(largeScreenMaxScale, availableH / baseBoardH, availableW / (baseBoardW + ctrlW + 16)));
 
+    myWrapper.style.transformOrigin = 'center';
     myWrapper.style.transform = `scale(${myScale})`;
-    myWrapper.style.margin = `0 ${(baseBoardW - baseBoardW * myScale) / -2}px`;
+    myWrapper.style.margin = `${(baseBoardH - baseBoardH * myScale) / -2}px ${(baseBoardW - baseBoardW * myScale) / -2}px`;
+    controls.style.transformOrigin = 'center';
     controls.style.transform = `scale(${myScale})`;
-    controls.style.margin = `0 ${(110 - 110 * myScale) / -2}px`;
+    controls.style.margin = `0 ${(ctrlW - ctrlW * myScale) / -2}px`;
     updateAllPortraitHUDs();
     updateMyZoneFrameLayout(null);
   } else if (oppCount <= 1) {
@@ -4610,6 +5564,8 @@ function adjustLayout() {
         rivalWrapper.style.marginBottom = `${originalRivalH * rivalScale - originalRivalH}px`;
       }
       controls.style.height = '515px'; controls.style.justifyContent = 'flex-start';
+      const vibVisible = document.getElementById('vibrate-wrapper')?.style.display !== 'none';
+      if (vibVisible) controls.style.gap = '4px';
       if (handednessWrapper) handednessWrapper.style.marginTop = 'auto';
     } else {
       controls.style.height = ''; controls.style.justifyContent = 'flex-end';
@@ -4699,6 +5655,7 @@ window.addEventListener('DOMContentLoaded', () => {
     lastTouchEnd = now;
   }, { passive: false });
 
+  if (typeof initPwaInstallSupport === 'function') initPwaInstallSupport();
   bindSwitchMenuHoverEvents();
   bindMenuHoverCursorSE();
   refreshMenuLayoutState(true);

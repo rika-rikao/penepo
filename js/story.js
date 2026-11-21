@@ -1,5 +1,5 @@
 // ==========================================
-// ストーリーモード（全7話：2段階UI・スキルモーダル＆確認連携・最終2話スキル固定）
+// ストーリーモード（全7話：2段階UI・スキルモーダル＆自作スキルON/OFF連携）
 // ==========================================
 const STORY_DIFFICULTIES = {
   easy:   { label: 'やさしい',   levels: [1, 2, 4, 6, 8, 12, 16],     allUseCheat: false },
@@ -213,6 +213,10 @@ const StoryManager = {
     return !!document.getElementById('story-skill-toggle')?.checked;
   },
 
+  isCustomSkillEnabled() {
+    return !!document.getElementById('story-custom-skill-toggle')?.checked;
+  },
+
   saveProgress(stageId) {
     if (stageId > this.clearedStage) {
       this.clearedStage = stageId;
@@ -267,7 +271,8 @@ const StoryManager = {
     if (typeof openSkillAndConfirmFlow === 'function') {
       openSkillAndConfirmFlow({
         charId: this.getSelectedCharId(),
-        extraText: `難易度: ${STORY_DIFFICULTIES[this.getDifficultyKey()].label}`,
+        allowCustom: this.isCustomSkillEnabled(),
+        extraText: `難易度: ${STORY_DIFFICULTIES[this.getDifficultyKey()].label} / 自作:${this.isCustomSkillEnabled() ? 'ON' : 'OFF'}`,
         okLabel: 'ステージ選択へ ▶',
         onConfirm: () => {
           this.goToStageStep();
@@ -308,15 +313,19 @@ const StoryManager = {
     if (!bar) return;
     const diffLabel = STORY_DIFFICULTIES[this.getDifficultyKey()].label;
     const ch = getCharacterById(this.getSelectedCharId());
+    const allowCustom = this.isCustomSkillEnabled();
     let skillTxt = 'OFF';
     if (this.isPlayerSkillEnabled()) {
-      const skId = typeof selectedPlayerSkill !== 'undefined' ? selectedPlayerSkill : 'erase_color';
-      skillTxt = (typeof SKILL_LABELS !== 'undefined' && SKILL_LABELS[skId]) ? SKILL_LABELS[skId] : skId;
+      const rawSk = typeof selectedPlayerSkill !== 'undefined' ? selectedPlayerSkill : 'erase_color';
+      const effSk = (typeof getEffectivePlayerSkillId === 'function')
+        ? getEffectivePlayerSkillId(rawSk, allowCustom)
+        : rawSk;
+      skillTxt = (typeof getSkillLabel === 'function') ? getSkillLabel(effSk) : effSk;
     }
     bar.innerHTML = `
       <span class="story-summary-chip">難易度: ${diffLabel}</span>
       <span class="story-summary-chip">キャラ: ${ch.name}</span>
-      <span class="story-summary-chip">スキル: ${skillTxt}</span>
+      <span class="story-summary-chip">スキル: ${skillTxt} (自作:${allowCustom ? 'ON' : 'OFF'})</span>
     `;
   },
 
@@ -612,7 +621,7 @@ const StoryManager = {
   finishDialogue() {
     if (this.phase === 'intro') {
       const cfg = this.activeStageConfig || this.getStageConfig(this.activeStage);
-      startGame('story', cfg.level, 2, this.isPlayerSkillEnabled());
+      startGame('story', cfg.level, 2, this.isPlayerSkillEnabled(), this.isCustomSkillEnabled());
     } else if (this.phase === 'win') {
       document.getElementById('story-overlay').style.display = 'none';
       this.saveProgress(this.activeStage.id);

@@ -1,5 +1,343 @@
-if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-  navigator.serviceWorker.register('sw.js').catch(err => console.error('SW Register Error:', err));
+// ==========================================
+// PWAインストール管理 & Webサーバー更新チェック起動 & バイブ/GB風モード設定 & 共通メニュー入力/スライダー制御
+// ==========================================
+let swRegistration = null;
+let deferredPwaPrompt = null;
+let serverUpdateCheckPromise = null;
+
+let isSwapVibrateEnabled = (localStorage.getItem('pdw_swap_vibrate') !== 'false');
+let isGbMode = (localStorage.getItem('pdw_gb_mode') === 'true');
+const lastVibrateAtByKind = { swap: 0, confirm: 0, garbage: 0 };
+let lastShortVibrateAt = 0;
+
+function isAppleMobileDevice() {
+  try {
+    const ua = navigator.userAgent || '';
+    return /iPhone|iPad|iPod/i.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  } catch (_) {
+    return false;
+  }
+}
+
+function isBodyVibrationCapable() {
+  if (isAppleMobileDevice()) return false;
+  if (!navigator || typeof navigator.vibrate !== 'function') return false;
+  const ua = navigator.userAgent || '';
+  const plat = navigator.platform || '';
+  return /Android|Mobile|Tablet/i.test(ua) || (navigator.maxTouchPoints > 1 && !/Win|Mac/i.test(plat));
+}
+
+function hasVibratingGamepad() {
+  try {
+    const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()) : [];
+    for (let i = 0; i < pads.length; i++) {
+      const p = pads[i];
+      if (p && p.connected && p.vibrationActuator && typeof p.vibrationActuator.playEffect === 'function') {
+        return true;
+      }
+    }
+  } catch (_) {}
+  return false;
+}
+
+function isVibrationCapable() {
+  return isBodyVibrationCapable() || hasVibratingGamepad();
+}
+
+function isShareModeActiveForVibration() {
+  if (typeof currentMode !== 'undefined' && currentMode === 'share') return true;
+  const sharePrep = document.getElementById('share-prep-overlay');
+  if (sharePrep && sharePrep.style.display === 'flex') return true;
+  return false;
+}
+
+function applyGbMode(enabled) {
+  isGbMode = !!enabled;
+  if (document.body) {
+    document.body.classList.toggle('gb-mode', isGbMode);
+  }
+  const el = document.getElementById('settings-gb-mode');
+  if (el && el.checked !== isGbMode) el.checked = isGbMode;
+}
+
+function onGbModeToggle(checked) {
+  applyGbMode(checked);
+  if (typeof SE !== 'undefined') SE.play('select');
+}
+
+function onSwapVibrateToggle(checked) {
+  isSwapVibrateEnabled = !!checked;
+  syncVisualControlSettingToggles();
+  if (typeof SE !== 'undefined') SE.play('select');
+  if (isSwapVibrateEnabled) {
+    triggerSwapVibration(true);
+  }
+}
+
+function onBoardVibrateToggle(checked) {
+  isSwapVibrateEnabled = !!checked;
+  localStorage.setItem('pdw_swap_vibrate', String(!!isSwapVibrateEnabled));
+  syncVisualControlSettingToggles();
+  if (typeof SE !== 'undefined') SE.play('select');
+  if (isSwapVibrateEnabled) {
+    triggerSwapVibration(true);
+  }
+}
+
+function syncBoardVibrateToggleUI() {
+  const wrapper = document.getElementById('vibrate-wrapper');
+  const toggle = document.getElementById('vibrate-toggle');
+  if (toggle && toggle.checked !== !!isSwapVibrateEnabled) {
+    toggle.checked = !!isSwapVibrateEnabled;
+  }
+  if (wrapper) {
+    const isShare = (typeof currentMode !== 'undefined' && currentMode === 'share');
+    wrapper.style.display = (isVibrationCapable() && !isShare) ? 'flex' : 'none';
+  }
+}
+
+function syncVisualControlSettingToggles() {
+  const gbEl = document.getElementById('settings-gb-mode');
+  if (gbEl) gbEl.checked = !!isGbMode;
+  const vibEl = document.getElementById('settings-swap-vibrate');
+  if (vibEl) vibEl.checked = !!isSwapVibrateEnabled;
+  syncBoardVibrateToggleUI();
+}
+
+function triggerGameVibration(kind = 'swap', force = false, targetPadSlot = null) {
+  if (isShareModeActiveForVibration()) return;
+  if (!isSwapVibrateEnabled) return;
+
+  const now = performance.now();
+  const minInterval = kind === 'garbage' ? 110 : (kind === 'confirm' ? 45 : 35);
+  if (!force) {
+    if (now - (lastVibrateAtByKind[kind] || 0) < minInterval) return;
+    if (kind !== 'garbage' && (now - lastShortVibrateAt < 32)) return;
+  }
+  lastVibrateAtByKind[kind] = now;
+  if (kind !== 'garbage') lastShortVibrateAt = now;
+
+  const padParamsMap = {
+    swap:    { duration: 48,  weakMagnitude: 0.45, strongMagnitude: 0.20 },
+    confirm: { duration: 58,  weakMagnitude: 0.52, strongMagnitude: 0.28 },
+    garbage: { duration: 150, weakMagnitude: 0.72, strongMagnitude: 0.90 }
+  };
+  const bodyPatternMap = {
+    swap: 30,
+    confirm: 36,
+    garbage: [75, 25, 45]
+  };
+  const padParams = padParamsMap[kind] || padParamsMap.swap;
+  const bodyPattern = bodyPatternMap[kind] || bodyPatternMap.swap;
+
+  let padRumbled = false;
+  try {
+    const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()) : [];
+    for (let i = 0; i < pads.length; i++) {
+      if (targetPadSlot !== null && targetPadSlot !== undefined) {
+        if (targetPadSlot < 0 || i !== targetPadSlot) continue;
+      }
+      const p = pads[i];
+      if (p && p.connected && p.vibrationActuator && typeof p.vibrationActuator.playEffect === 'function') {
+        padRumbled = true;
+        p.vibrationActuator.playEffect('dual-rumble', {
+          startDelay: 0,
+          duration: padParams.duration,
+          weakMagnitude: padParams.weakMagnitude,
+          strongMagnitude: padParams.strongMagnitude
+        }).catch(() => {});
+      }
+    }
+  } catch (_) {}
+
+  // ゲームパッド側で振動を実行できた場合は本体側のバイブを鳴らさない
+  if (!padRumbled && isBodyVibrationCapable()) {
+    try {
+      navigator.vibrate(bodyPattern);
+    } catch (_) {}
+  }
+}
+
+function triggerSwapVibration(force = false, targetPadSlot = null) {
+  triggerGameVibration('swap', force, targetPadSlot);
+}
+
+function triggerConfirmVibration(force = false, targetPadSlot = null) {
+  triggerGameVibration('confirm', force, targetPadSlot);
+}
+
+function triggerGarbageLandVibration(targetPadSlot = null) {
+  triggerGameVibration('garbage', false, targetPadSlot);
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+  applyGbMode(isGbMode);
+  syncVisualControlSettingToggles();
+});
+
+window.addEventListener('gamepadconnected', () => {
+  syncBoardVibrateToggleUI();
+});
+
+window.addEventListener('gamepaddisconnected', () => {
+  syncBoardVibrateToggleUI();
+});
+
+function isRunningAsPwa() {
+  try {
+    if (window.matchMedia && (
+      window.matchMedia('(display-mode: standalone)').matches ||
+      window.matchMedia('(display-mode: fullscreen)').matches ||
+      window.matchMedia('(display-mode: minimal-ui)').matches
+    )) {
+      return true;
+    }
+    if (window.navigator.standalone === true) return true;
+    if (document.referrer && document.referrer.startsWith('android-app://')) return true;
+  } catch (_) {}
+  return false;
+}
+
+function removePwaInstallBar() {
+  const bar = document.getElementById('pwa-install-bar');
+  if (bar && bar.parentNode) {
+    bar.parentNode.removeChild(bar);
+  }
+}
+
+function initPwaInstallSupport() {
+  if (isRunningAsPwa()) {
+    document.body.classList.add('is-pwa-standalone');
+    removePwaInstallBar();
+    return;
+  }
+  const bar = document.getElementById('pwa-install-bar');
+  if (bar) bar.style.display = 'flex';
+}
+
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredPwaPrompt = e;
+  initPwaInstallSupport();
+});
+
+window.addEventListener('appinstalled', () => {
+  deferredPwaPrompt = null;
+  document.body.classList.add('is-pwa-standalone');
+  removePwaInstallBar();
+  if (typeof showToast === 'function') {
+    showToast('アプリとしてインストールされました！');
+  }
+});
+
+async function triggerPwaInstall() {
+  if (typeof SE !== 'undefined') SE.play('select');
+  if (deferredPwaPrompt) {
+    try {
+      deferredPwaPrompt.prompt();
+      const choice = await deferredPwaPrompt.userChoice;
+      deferredPwaPrompt = null;
+      if (choice && choice.outcome === 'accepted') {
+        removePwaInstallBar();
+      }
+      return;
+    } catch (_) {}
+  }
+
+  const ua = navigator.userAgent || '';
+  const isIOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const guideModal = document.getElementById('pwa-guide-modal');
+  const guideText = document.getElementById('pwa-guide-text');
+  if (guideModal && guideText) {
+    if (isIOS) {
+      guideText.innerHTML = '1. Safari下部の <b>共有ボタン（□に↑）</b> をタップ<br>2. <b>「ホーム画面に追加」</b> を選択<br>3. 右上の <b>「追加」</b> をタップするとアプリとして起動できます！';
+    } else {
+      guideText.innerHTML = 'ブラウザの右上メニュー（⋮ 等）から<br><b>「アプリをインストール」</b> または <b>「ホーム画面に追加」</b> を選択してください！';
+    }
+    guideModal.style.display = 'flex';
+    const closeBtn = guideModal.querySelector('button');
+    if (closeBtn) closeBtn.focus();
+  }
+}
+
+function closePwaGuideModal(silent = false) {
+  const guideModal = document.getElementById('pwa-guide-modal');
+  if (guideModal) guideModal.style.display = 'none';
+  if (!silent && typeof SE !== 'undefined') SE.play('cancel');
+}
+
+// Service Worker登録 & Webサーバー上の更新確認
+const swRegisterPromise = ('serviceWorker' in navigator && location.protocol !== 'file:')
+  ? navigator.serviceWorker.register('sw.js').then((reg) => {
+      swRegistration = reg;
+      return reg;
+    }).catch((err) => {
+      console.warn('SW Register Error:', err);
+      return null;
+    })
+  : Promise.resolve(null);
+
+async function checkServerUpdatesOnBoot() {
+  if (location.protocol === 'file:' || !('serviceWorker' in navigator)) return false;
+  if (navigator.onLine === false) return false;
+
+  if (sessionStorage.getItem('pdw_update_reloaded') === '1') {
+    sessionStorage.removeItem('pdw_update_reloaded');
+    return false;
+  }
+
+  try {
+    const reg = await Promise.race([
+      swRegisterPromise,
+      new Promise(r => setTimeout(() => r(swRegistration), 1200))
+    ]);
+    if (!reg) return false;
+
+    try { await Promise.race([reg.update(), new Promise(r => setTimeout(r, 1500))]); } catch (_) {}
+
+    const targetWorker = reg.waiting || reg.installing || navigator.serviceWorker.controller || reg.active;
+    if (!targetWorker) return false;
+
+    if (reg.waiting && navigator.serviceWorker.controller) {
+      sessionStorage.setItem('pdw_update_reloaded', '1');
+      reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+      location.reload();
+      return true;
+    }
+
+    const res = await new Promise((resolve) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (!settled) { settled = true; resolve({ updated: false }); }
+      }, 2800);
+
+      try {
+        const mc = new MessageChannel();
+        mc.port1.onmessage = (ev) => {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timer);
+            resolve(ev.data || { updated: false });
+          }
+        };
+        targetWorker.postMessage({ type: 'CHECK_AND_UPDATE' }, [mc.port2]);
+      } catch (_) {
+        if (!settled) { settled = true; clearTimeout(timer); resolve({ updated: false }); }
+      }
+    });
+
+    if (res && res.updated) {
+      if (typeof AppLoader !== 'undefined') {
+        AppLoader.setProgress(70, '新しいバージョンを更新しています...');
+      }
+      sessionStorage.setItem('pdw_update_reloaded', '1');
+      setTimeout(() => location.reload(), 180);
+      return true;
+    }
+  } catch (e) {
+    console.warn('Update check skip:', e);
+  }
+  return false;
 }
 
 const COLS = 6, ROWS = 12, CELL_PX = 36;
@@ -16,11 +354,13 @@ const COLORS = [
 // ==========================================
 const AppLoader = {
   _hidden: false,
+  _waitingStart: false,
   show(text = 'アセットを読み込み中...') {
     const el = document.getElementById('app-loader-overlay');
     if (!el) return;
     this._hidden = false;
-    el.classList.remove('fade-out');
+    this._waitingStart = false;
+    el.classList.remove('fade-out', 'ready-to-start');
     el.style.display = 'flex';
     this.setProgress(8, text);
   },
@@ -30,18 +370,112 @@ const AppLoader = {
     if (fill) fill.style.width = `${Math.max(5, Math.min(100, pct))}%`;
     if (txt && text) txt.innerText = text;
   },
+  waitForUserStart(onStart) {
+    const el = document.getElementById('app-loader-overlay');
+    if (!el || this._hidden) {
+      if (typeof onStart === 'function') onStart();
+      return;
+    }
+    if (this._waitingStart) return;
+    this._waitingStart = true;
+
+    this.setProgress(100, 'TAP / CLICK / ANY KEY TO START');
+    el.classList.add('ready-to-start');
+
+    let started = false;
+    let padPollId = null;
+
+    const cleanupListeners = () => {
+      el.removeEventListener('pointerdown', handlePointerStart, true);
+      el.removeEventListener('click', handleClickStart, true);
+      window.removeEventListener('keydown', handleKeyStart, true);
+      if (padPollId) {
+        clearInterval(padPollId);
+        padPollId = null;
+      }
+      el.classList.remove('ready-to-start');
+    };
+
+    const triggerStart = () => {
+      if (started) return;
+      started = true;
+      this._waitingStart = false;
+      cleanupListeners();
+      if (typeof ensureAudioCtxResumed === 'function') {
+        ensureAudioCtxResumed();
+      }
+      this.hide();
+      if (typeof syncPadSnapshotsAll === 'function') {
+        syncPadSnapshotsAll(350);
+      }
+      if (typeof onStart === 'function') {
+        onStart();
+      }
+    };
+
+    const handlePointerStart = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      triggerStart();
+    };
+    const handleClickStart = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      triggerStart();
+    };
+    const handleKeyStart = (e) => {
+      if (e.repeat) return;
+      e.preventDefault();
+      e.stopPropagation();
+      triggerStart();
+    };
+
+    el.addEventListener('pointerdown', handlePointerStart, true);
+    el.addEventListener('click', handleClickStart, true);
+    window.addEventListener('keydown', handleKeyStart, true);
+
+    let prevPads = {};
+    try {
+      const pads0 = navigator.getGamepads ? Array.from(navigator.getGamepads()) : [];
+      pads0.forEach((p, pi) => {
+        if (p && p.buttons) {
+          prevPads[pi] = p.buttons.map(b => !!b.pressed);
+        }
+      });
+    } catch (_) {}
+
+    padPollId = setInterval(() => {
+      if (started) return;
+      try {
+        const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()) : [];
+        for (let pi = 0; pi < pads.length; pi++) {
+          const p = pads[pi];
+          if (!p || !p.connected || !p.buttons) continue;
+          const prev = prevPads[pi] || [];
+          const pressedNow = p.buttons.some((b, bi) => b.pressed && !prev[bi]);
+          prevPads[pi] = p.buttons.map(b => !!b.pressed);
+          if (pressedNow) {
+            triggerStart();
+            return;
+          }
+        }
+      } catch (_) {}
+    }, 50);
+  },
   hide() {
     if (this._hidden) return;
     this._hidden = true;
+    this._waitingStart = false;
     const el = document.getElementById('app-loader-overlay');
     if (!el) return;
-    this.setProgress(100, '準備完了！');
+    el.classList.remove('ready-to-start');
+    this.setProgress(100, 'START!');
     setTimeout(() => {
       el.classList.add('fade-out');
       setTimeout(() => {
         if (this._hidden) el.style.display = 'none';
       }, 360);
-    }, 160);
+    }, 60);
   }
 };
 
@@ -130,14 +564,20 @@ const audioCtx = new AudioContext();
 
 function ensureAudioCtxResumed() {
   if (audioCtx.state === 'suspended') {
-    audioCtx.resume().catch(() => {});
+    audioCtx.resume().then(() => {
+      if (typeof SceneBgm !== 'undefined') SceneBgm.onAudioUnlocked();
+    }).catch(() => {});
+  } else {
+    if (typeof SceneBgm !== 'undefined') SceneBgm.onAudioUnlocked();
   }
   if (typeof SE !== 'undefined' && typeof SE.unlockFallbackAudios === 'function') {
     SE.unlockFallbackAudios();
   }
 }
-document.addEventListener('pointerdown', ensureAudioCtxResumed, { passive: true });
-document.addEventListener('keydown', ensureAudioCtxResumed, { passive: true });
+document.addEventListener('pointerdown', ensureAudioCtxResumed, { capture: true, passive: true });
+document.addEventListener('touchend', ensureAudioCtxResumed, { capture: true, passive: true });
+document.addEventListener('click', ensureAudioCtxResumed, { capture: true, passive: true });
+document.addEventListener('keydown', ensureAudioCtxResumed, { capture: true, passive: true });
 
 const SE = {
   files: {
@@ -336,6 +776,9 @@ const SE = {
     this.play(key);
   },
   play(key) {
+    if (key === 'select' && typeof triggerConfirmVibration === 'function') {
+      triggerConfirmVibration();
+    }
     const buf = this.customBuffers[key] || this.buffers[key];
     if (buf) {
       this.playBuffer(buf);
@@ -803,6 +1246,564 @@ class WebAudioBGMPlayer {
   }
 }
 
+// ==========================================
+// OP / メニュー〜モードセレクト用BGM制御（拡張子非依存・シームレスループ・1ループ目のみ0.5秒フェードイン）
+// ==========================================
+const SceneBgm = {
+  exts: ['m4a', 'mp3', 'wav', 'ogg', 'aac', 'opus', 'webm'],
+  fixedLoopBounds: {
+    mode_select: { loopStart: 0.0, loopEnd: 7.99 }
+  },
+  resolvedCache: {},
+  resolvingMap: {},
+  readyPromise: null,
+  currentTrack: null,
+  pendingTrack: null,
+  _reqToken: 0,
+  _source: null,
+  _fadeGain: null,
+  _volGain: null,
+  _fallbackAudio: null,
+  _fallbackNextAudio: null,
+  _fallbackMonitorId: null,
+  _fadeRafId: null,
+  _fadeFactor: 1,
+
+  getMasterVolume() {
+    const slider = document.getElementById('bgm-volume');
+    if (slider) {
+      const v = parseFloat(slider.value);
+      if (!Number.isNaN(v)) return Math.max(0, Math.min(1, v));
+    }
+    return typeof bgmAudio !== 'undefined' ? Math.max(0, Math.min(1, bgmAudio.volume)) : 0.5;
+  },
+
+  buildTrimmedLoopBuffer(buffer, loopStart, loopEnd) {
+    if (!buffer) return buffer;
+    const sr = buffer.sampleRate;
+    const len = buffer.length;
+    const startIdx = Math.max(0, Math.min(len - 1, Math.round(loopStart * sr)));
+    const endIdx = Math.max(startIdx + 1, Math.min(len, Math.round(loopEnd * sr)));
+    if (startIdx === 0 && endIdx === len) {
+      return buffer;
+    }
+    const frameCount = endIdx - startIdx;
+    const trimmed = audioCtx.createBuffer(buffer.numberOfChannels, frameCount, sr);
+    for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
+      const srcData = buffer.getChannelData(ch);
+      const dstData = trimmed.getChannelData(ch);
+      dstData.set(srcData.subarray(startIdx, endIdx));
+    }
+    return trimmed;
+  },
+
+  computeSeamlessLoopBounds(buffer) {
+    if (!buffer || !buffer.duration || buffer.duration < 0.8) {
+      return { loopStart: 0, loopEnd: buffer ? buffer.duration : 0 };
+    }
+    const sr = buffer.sampleRate;
+    const len = buffer.length;
+    const numCh = buffer.numberOfChannels;
+    const channels = [];
+    for (let ch = 0; ch < numCh; ch++) {
+      channels.push(buffer.getChannelData(ch));
+    }
+
+    const SILENCE_THRESHOLD = 0.0012;
+    const maxLeadSamples = Math.min(Math.floor(len * 0.2), Math.floor(sr * 1.0));
+    const maxTailSamples = Math.min(Math.floor(len * 0.25), Math.floor(sr * 1.5));
+
+    let startIdx = 0;
+    for (let i = 0; i < maxLeadSamples; i++) {
+      let maxAmp = 0;
+      for (let ch = 0; ch < numCh; ch++) {
+        const a = Math.abs(channels[ch][i]);
+        if (a > maxAmp) maxAmp = a;
+      }
+      if (maxAmp >= SILENCE_THRESHOLD) {
+        startIdx = i;
+        break;
+      }
+    }
+
+    let endIdx = len - 1;
+    const minEndBound = Math.max(startIdx + Math.floor(sr * 0.5), len - maxTailSamples);
+    for (let i = len - 1; i >= minEndBound; i--) {
+      let maxAmp = 0;
+      for (let ch = 0; ch < numCh; ch++) {
+        const a = Math.abs(channels[ch][i]);
+        if (a > maxAmp) maxAmp = a;
+      }
+      if (maxAmp >= SILENCE_THRESHOLD) {
+        endIdx = i;
+        break;
+      }
+    }
+
+    const snapRange = Math.min(256, Math.floor(sr * 0.006));
+    let bestStart = startIdx;
+    let minStartVal = Infinity;
+    for (let i = Math.max(0, startIdx - snapRange); i <= Math.min(len - 1, startIdx + 32); i++) {
+      let sum = 0;
+      for (let ch = 0; ch < numCh; ch++) sum += Math.abs(channels[ch][i]);
+      if (sum < minStartVal) {
+        minStartVal = sum;
+        bestStart = i;
+      }
+    }
+
+    let bestEnd = endIdx;
+    let minEndVal = Infinity;
+    for (let i = Math.max(bestStart + Math.floor(sr * 0.4), endIdx - 32); i <= Math.min(len - 1, endIdx + snapRange); i++) {
+      let sum = 0;
+      for (let ch = 0; ch < numCh; ch++) sum += Math.abs(channels[ch][i]);
+      if (sum < minEndVal) {
+        minEndVal = sum;
+        bestEnd = i;
+      }
+    }
+
+    const loopStart = bestStart / sr;
+    const loopEnd = Math.min(buffer.duration, (bestEnd + 1) / sr);
+    if (loopEnd - loopStart < 0.4) {
+      return { loopStart: 0, loopEnd: buffer.duration };
+    }
+    return { loopStart, loopEnd };
+  },
+
+  probeBgmUrl(url) {
+    return new Promise((resolve) => {
+      try {
+        const audio = new Audio();
+        let settled = false;
+        const done = (ok) => {
+          if (settled) return;
+          settled = true;
+          audio.onloadedmetadata = null;
+          audio.onloadeddata = null;
+          audio.oncanplay = null;
+          audio.onerror = null;
+          resolve(ok ? url : null);
+        };
+        audio.preload = 'metadata';
+        audio.onloadedmetadata = () => done(true);
+        audio.onloadeddata = () => done(true);
+        audio.oncanplay = () => done(true);
+        audio.onerror = () => done(false);
+        audio.src = url;
+        audio.load();
+        setTimeout(() => done(false), 3500);
+      } catch (_) {
+        resolve(null);
+      }
+    });
+  },
+
+  async resolveTrack(stem) {
+    if (!stem) return null;
+    if (this.resolvedCache[stem]) return this.resolvedCache[stem];
+    if (this.resolvingMap[stem]) return this.resolvingMap[stem];
+
+    const isFileProto = (location.protocol === 'file:');
+    const encodedStem = encodeURIComponent(stem);
+    const fixed = this.fixedLoopBounds[stem];
+    const task = (async () => {
+      for (const ext of this.exts) {
+        const rawPath = `assets/bgm/${stem}.${ext}`;
+        const urlPath = `assets/bgm/${encodedStem}.${ext}`;
+        if (isFileProto) {
+          const okUrl = await this.probeBgmUrl(rawPath);
+          if (okUrl) {
+            const entry = {
+              type: 'url',
+              data: okUrl,
+              loopStart: fixed ? fixed.loopStart : undefined,
+              loopEnd: fixed ? fixed.loopEnd : undefined
+            };
+            this.resolvedCache[stem] = entry;
+            return entry;
+          }
+          continue;
+        }
+        try {
+          const res = await fetch(urlPath);
+          if (!res || !res.ok) continue;
+          const buf = await res.arrayBuffer();
+          try {
+            const decoded = await new Promise((resolve, reject) => {
+              audioCtx.decodeAudioData(buf, resolve, reject);
+            });
+            let entry;
+            if (fixed) {
+              const clampedStart = Math.max(0, Math.min(fixed.loopStart, Math.max(0, decoded.duration - 0.1)));
+              const clampedEnd = Math.min(decoded.duration, fixed.loopEnd);
+              const trimmed = this.buildTrimmedLoopBuffer(decoded, clampedStart, clampedEnd);
+              entry = {
+                type: 'buffer',
+                data: trimmed,
+                loopStart: 0,
+                loopEnd: trimmed.duration
+              };
+            } else {
+              const bounds = this.computeSeamlessLoopBounds(decoded);
+              entry = {
+                type: 'buffer',
+                data: decoded,
+                loopStart: bounds.loopStart,
+                loopEnd: bounds.loopEnd
+              };
+            }
+            this.resolvedCache[stem] = entry;
+            return entry;
+          } catch (_) {
+            const entry = {
+              type: 'url',
+              data: urlPath,
+              loopStart: fixed ? fixed.loopStart : undefined,
+              loopEnd: fixed ? fixed.loopEnd : undefined
+            };
+            this.resolvedCache[stem] = entry;
+            return entry;
+          }
+        } catch (_) {}
+      }
+      return null;
+    })().finally(() => {
+      delete this.resolvingMap[stem];
+    });
+
+    this.resolvingMap[stem] = task;
+    return task;
+  },
+
+  preload() {
+    this.readyPromise = Promise.all([
+      this.resolveTrack('op').catch(() => null),
+      this.resolveTrack('mode_select').catch(() => null)
+    ]);
+    return this.readyPromise;
+  },
+
+  stopActiveNodes() {
+    if (this._fadeRafId) {
+      cancelAnimationFrame(this._fadeRafId);
+      this._fadeRafId = null;
+    }
+    if (this._fallbackMonitorId) {
+      cancelAnimationFrame(this._fallbackMonitorId);
+      this._fallbackMonitorId = null;
+    }
+    if (this._source) {
+      try { this._source.onended = null; } catch (_) {}
+      try { this._source.stop(); } catch (_) {}
+      try { this._source.disconnect(); } catch (_) {}
+      this._source = null;
+    }
+    if (this._fadeGain) {
+      try { this._fadeGain.disconnect(); } catch (_) {}
+      this._fadeGain = null;
+    }
+    if (this._volGain) {
+      try { this._volGain.disconnect(); } catch (_) {}
+      this._volGain = null;
+    }
+    if (this._fallbackAudio) {
+      try {
+        this._fallbackAudio.pause();
+        this._fallbackAudio.currentTime = 0;
+      } catch (_) {}
+      this._fallbackAudio = null;
+    }
+    if (this._fallbackNextAudio) {
+      try {
+        this._fallbackNextAudio.pause();
+        this._fallbackNextAudio.currentTime = 0;
+      } catch (_) {}
+      this._fallbackNextAudio = null;
+    }
+    this._fadeFactor = 1;
+  },
+
+  stop() {
+    this._reqToken++;
+    this.currentTrack = null;
+    this.pendingTrack = null;
+    this.stopActiveNodes();
+  },
+
+  updateVolume(vol) {
+    const v = Math.max(0, Math.min(1, parseFloat(vol)));
+    if (Number.isNaN(v)) return;
+    if (this._volGain) {
+      this._volGain.gain.value = v;
+    }
+    if (this._fallbackAudio) {
+      this._fallbackAudio.volume = v * this._fadeFactor;
+    }
+  },
+
+  isTrackContextValid(track) {
+    const gameArea = document.getElementById('game-area');
+    const isGameActive = gameArea && window.getComputedStyle(gameArea).display !== 'none';
+    if (track === 'op') {
+      return !isGameActive && typeof OpAnimation !== 'undefined' && OpAnimation.isActive && OpAnimation.isActive();
+    }
+    if (track === 'mode_select') {
+      if (isGameActive) return false;
+      if (typeof OpAnimation !== 'undefined' && OpAnimation.isActive && OpAnimation.isActive()) return false;
+      if (typeof isBgmPlaying !== 'undefined' && isBgmPlaying) return false;
+      const menuOverlay = document.getElementById('menu-overlay');
+      return !!menuOverlay && window.getComputedStyle(menuOverlay).display !== 'none';
+    }
+    return false;
+  },
+
+  startBufferPlayback(track, entry, token) {
+    if (token !== this._reqToken || !this.isTrackContextValid(track)) {
+      if (token === this._reqToken) this.currentTrack = null;
+      return;
+    }
+    if (audioCtx.state !== 'running') {
+      this.pendingTrack = track;
+      return;
+    }
+
+    const buffer = entry.data;
+    const isLoop = (track === 'mode_select');
+    const fadeInSec = (track === 'mode_select') ? 0.5 : 0;
+    const loopStart = (isLoop && entry.loopStart !== undefined) ? entry.loopStart : 0;
+    const loopEnd = (isLoop && entry.loopEnd !== undefined) ? entry.loopEnd : buffer.duration;
+
+    const fadeGain = audioCtx.createGain();
+    const volGain = audioCtx.createGain();
+    volGain.gain.value = this.getMasterVolume();
+    fadeGain.connect(volGain);
+    volGain.connect(audioCtx.destination);
+
+    const now = audioCtx.currentTime;
+    fadeGain.gain.cancelScheduledValues(now);
+    if (fadeInSec > 0) {
+      fadeGain.gain.setValueAtTime(0.0001, now);
+      fadeGain.gain.linearRampToValueAtTime(1.0, now + fadeInSec);
+    } else {
+      fadeGain.gain.setValueAtTime(1.0, now);
+    }
+
+    const source = audioCtx.createBufferSource();
+    source.buffer = buffer;
+    source.loop = isLoop;
+    if (isLoop) {
+      source.loopStart = loopStart;
+      source.loopEnd = loopEnd;
+    }
+    source.connect(fadeGain);
+    source.onended = () => {
+      if (this._source === source) {
+        this._source = null;
+        if (!isLoop && this.currentTrack === track) {
+          this.currentTrack = null;
+        }
+      }
+    };
+
+    this._fadeGain = fadeGain;
+    this._volGain = volGain;
+    this._source = source;
+    this._fadeFactor = 1;
+    this.pendingTrack = null;
+    source.start(now, isLoop ? loopStart : 0);
+  },
+
+  startHtmlAudioPlayback(track, entry, token) {
+    if (token !== this._reqToken || !this.isTrackContextValid(track)) {
+      if (token === this._reqToken) this.currentTrack = null;
+      return;
+    }
+
+    const url = typeof entry === 'string' ? entry : entry.data;
+    const isLoop = (track === 'mode_select');
+    const fadeInSec = (track === 'mode_select') ? 0.5 : 0;
+    const loopStart = (isLoop && typeof entry === 'object' && entry.loopStart !== undefined) ? entry.loopStart : 0;
+    const fixedLoopEnd = (isLoop && typeof entry === 'object' && entry.loopEnd !== undefined) ? entry.loopEnd : null;
+
+    const audio = new Audio(url);
+    audio.preload = 'auto';
+    audio.loop = false;
+    if (isLoop && loopStart > 0) {
+      try { audio.currentTime = loopStart; } catch (_) {}
+    }
+    this._fallbackAudio = audio;
+
+    let standby = null;
+    if (isLoop) {
+      standby = new Audio(url);
+      standby.preload = 'auto';
+      standby.loop = false;
+      this._fallbackNextAudio = standby;
+    }
+
+    if (fadeInSec > 0) {
+      this._fadeFactor = 0;
+      audio.volume = 0;
+    } else {
+      this._fadeFactor = 1;
+      audio.volume = this.getMasterVolume();
+    }
+
+    let isSwitchingLoop = false;
+    const triggerLoopSwap = () => {
+      if (isSwitchingLoop || token !== this._reqToken || !this._fallbackAudio || !this._fallbackNextAudio) return;
+      isSwitchingLoop = true;
+      const cur = this._fallbackAudio;
+      const nxt = this._fallbackNextAudio;
+      nxt.volume = this.getMasterVolume() * this._fadeFactor;
+      try { nxt.currentTime = loopStart; } catch (_) {}
+      const pNxt = nxt.play();
+      const finishSwap = () => {
+        if (token !== this._reqToken) return;
+        try { cur.pause(); cur.currentTime = loopStart; } catch (_) {}
+        this._fallbackAudio = nxt;
+        this._fallbackNextAudio = cur;
+        isSwitchingLoop = false;
+      };
+      if (pNxt && typeof pNxt.then === 'function') {
+        pNxt.then(finishSwap).catch(() => { isSwitchingLoop = false; });
+      } else {
+        finishSwap();
+      }
+    };
+
+    const monitorSeamlessLoop = () => {
+      if (token !== this._reqToken || !this._fallbackAudio) return;
+      const cur = this._fallbackAudio;
+      const nxt = this._fallbackNextAudio;
+      if (isLoop && nxt && !isSwitchingLoop) {
+        const hasDur = isFinite(cur.duration) && cur.duration > 0.5;
+        const targetEnd = fixedLoopEnd !== null
+          ? (hasDur ? Math.min(fixedLoopEnd, cur.duration) : fixedLoopEnd)
+          : (hasDur ? cur.duration : null);
+        if (targetEnd !== null) {
+          const remain = targetEnd - cur.currentTime;
+          if (remain <= 0.05) {
+            triggerLoopSwap();
+          }
+        }
+      }
+      this._fallbackMonitorId = requestAnimationFrame(monitorSeamlessLoop);
+    };
+
+    if (!isLoop) {
+      audio.addEventListener('ended', () => {
+        if (this._fallbackAudio === audio && this.currentTrack === track) {
+          this._fallbackAudio = null;
+          this.currentTrack = null;
+        }
+      });
+    } else {
+      const onEndedFallback = (ev) => {
+        if (token !== this._reqToken || this._fallbackAudio !== ev.target) return;
+        triggerLoopSwap();
+      };
+      audio.addEventListener('ended', onEndedFallback);
+      if (standby) standby.addEventListener('ended', onEndedFallback);
+    }
+
+    const p = audio.play();
+    if (p && typeof p.then === 'function') {
+      p.then(() => {
+        if (token !== this._reqToken || this._fallbackAudio !== audio || !this.isTrackContextValid(track)) {
+          try { audio.pause(); } catch (_) {}
+          if (this._fallbackAudio === audio) this._fallbackAudio = null;
+          return;
+        }
+        this.pendingTrack = null;
+        if (isLoop) {
+          this._fallbackMonitorId = requestAnimationFrame(monitorSeamlessLoop);
+        }
+        if (fadeInSec > 0) {
+          const fadeStart = performance.now();
+          const stepFade = (ts) => {
+            if (token !== this._reqToken || !this._fallbackAudio) return;
+            const progress = Math.min(1, (ts - fadeStart) / (fadeInSec * 1000));
+            this._fadeFactor = progress;
+            this._fallbackAudio.volume = this.getMasterVolume() * progress;
+            if (progress < 1) {
+              this._fadeRafId = requestAnimationFrame(stepFade);
+            } else {
+              this._fadeRafId = null;
+            }
+          };
+          this._fadeRafId = requestAnimationFrame(stepFade);
+        }
+      }).catch(() => {
+        if (token === this._reqToken) {
+          if (this._fallbackAudio === audio) this._fallbackAudio = null;
+          if (this._fallbackNextAudio === standby) this._fallbackNextAudio = null;
+          this.pendingTrack = track;
+        }
+      });
+    }
+  },
+
+  async play(track) {
+    if (!track) return;
+    if (track === 'mode_select' && typeof isBgmPlaying !== 'undefined' && isBgmPlaying && bgmPlaylist.length > 0) {
+      return;
+    }
+    if (this.currentTrack === track && (this._source || this._fallbackAudio || this.pendingTrack === track)) {
+      return;
+    }
+
+    const token = ++this._reqToken;
+    this.stopActiveNodes();
+    this.currentTrack = track;
+    this.pendingTrack = null;
+
+    if (track === 'op' && typeof stopBgm === 'function') {
+      stopBgm();
+    }
+
+    if (audioCtx.state === 'suspended') {
+      audioCtx.resume().then(() => {
+        this.onAudioUnlocked();
+      }).catch(() => {});
+    }
+
+    const cached = this.resolvedCache[track];
+    const resolved = cached || await this.resolveTrack(track);
+    if (token !== this._reqToken) return;
+
+    if (!resolved) {
+      this.currentTrack = null;
+      return;
+    }
+    if (!this.isTrackContextValid(track)) {
+      this.currentTrack = null;
+      return;
+    }
+
+    if (resolved.type === 'buffer') {
+      this.startBufferPlayback(track, resolved, token);
+    } else if (resolved.type === 'url') {
+      this.startHtmlAudioPlayback(track, resolved, token);
+    }
+  },
+
+  onAudioUnlocked() {
+    if (!this.pendingTrack) return;
+    const track = this.pendingTrack;
+    if (!this.isTrackContextValid(track)) {
+      this.pendingTrack = null;
+      if (this.currentTrack === track) this.currentTrack = null;
+      return;
+    }
+    this.pendingTrack = null;
+    this.currentTrack = null;
+    this.play(track);
+  }
+};
+SceneBgm.preload();
+
 let bgmAudio = new WebAudioBGMPlayer(audioCtx);
 let panicBgmAudio = new WebAudioBGMPlayer(audioCtx, 'assets/bgm/panic00.m4a');
 panicBgmAudio.loop = true;
@@ -847,6 +1848,7 @@ document.getElementById('bgm-volume').addEventListener('input', (e) => {
   const vol = parseFloat(e.target.value);
   bgmAudio.volume = vol;
   panicBgmAudio.volume = vol;
+  SceneBgm.updateVolume(vol);
   
   if (isPanic) {
     bgmAudio.muted = true;
@@ -886,6 +1888,7 @@ function toggleBgmPlay() {
   if (isBgmPlaying) {
     stopBgm();
   } else {
+    SceneBgm.stop();
     const expectedFile = bgmPlaylist[currentBgmIndex];
     if (bgmAudio._currentFile !== expectedFile) {
        bgmAudio.src = URL.createObjectURL(expectedFile);
@@ -935,6 +1938,7 @@ function stopBgm() {
 }
 
 function readyBgm() {
+  SceneBgm.stop();
   isBgmIntendedToPlay = false;
   isBgmPlaying = false;
   
@@ -972,6 +1976,7 @@ function readyBgm() {
 
 function resumeBgm() {
   if (matchState !== 'playing' || document.getElementById('game-area').style.display === 'none') return;
+  SceneBgm.stop();
   isBgmIntendedToPlay = true;
   isBgmPlaying = true;
   let bgmVol = parseFloat(document.getElementById('bgm-volume').value);
@@ -987,7 +1992,6 @@ function resumeBgm() {
     panicBgmAudio.play().catch(e => console.warn(e));
   }
 }
-
 // ==========================================
 // プルダウン選択モーダル（決定ボタンで一覧から選択）
 // ==========================================
@@ -1000,6 +2004,7 @@ function openSelectPickerModal(selectEl, titleText = null) {
   const optionsEl = document.getElementById('select-picker-options');
   if (!modal || !optionsEl) return;
 
+  clearSliderAdjusting();
   activeSelectPickerEl = selectEl;
   if (titleEl) {
     let label = titleText;
@@ -1060,8 +2065,31 @@ function closeSelectPickerModal(silent = false) {
 }
 
 // ==========================================
-// スライダー拡張（バー直接ジャンプ＋つまみドラッグ維持＋桁編集HUD）
+// スライダー拡張（バー直接ジャンプ＋つまみドラッグ維持＋共通2段階調整＋桁編集HUD）
 // ==========================================
+let activeAdjustSliderEl = null;
+
+function setSliderAdjusting(rangeEl) {
+  if (activeAdjustSliderEl && activeAdjustSliderEl !== rangeEl) {
+    activeAdjustSliderEl.classList.remove('slider-adjusting', 'local-slider-adjusting');
+  }
+  activeAdjustSliderEl = rangeEl || null;
+  if (activeAdjustSliderEl) {
+    activeAdjustSliderEl.classList.add('slider-adjusting', 'local-slider-adjusting');
+  }
+}
+
+function clearSliderAdjusting() {
+  if (activeAdjustSliderEl) {
+    activeAdjustSliderEl.classList.remove('slider-adjusting', 'local-slider-adjusting');
+    activeAdjustSliderEl = null;
+  }
+}
+
+function isSettingsSliderEl(rangeEl) {
+  return !!(rangeEl && rangeEl.closest && rangeEl.closest('#settings-overlay'));
+}
+
 function setRangeValueWithEvents(rangeEl, newVal) {
   const min = parseFloat(rangeEl.min) || 0;
   const max = parseFloat(rangeEl.max) || 100;
@@ -1081,6 +2109,12 @@ function enhanceRangeSlider(rangeEl) {
   if (!rangeEl || rangeEl.dataset.enhanced === '1' || rangeEl.classList.contains('cf-slider')) return;
   rangeEl.dataset.enhanced = '1';
 
+  rangeEl.addEventListener('blur', () => {
+    if (activeAdjustSliderEl === rangeEl) {
+      clearSliderAdjusting();
+    }
+  });
+
   let draggingFromBar = false;
   const calcValueFromClientX = (clientX) => {
     const rect = rangeEl.getBoundingClientRect();
@@ -1094,6 +2128,7 @@ function enhanceRangeSlider(rangeEl) {
 
   rangeEl.addEventListener('pointerdown', (e) => {
     if (e.button !== undefined && e.button !== 0) return;
+    clearSliderAdjusting();
     rangeEl.focus();
     const rect = rangeEl.getBoundingClientRect();
     const min = parseFloat(rangeEl.min) || 0;
@@ -1234,56 +2269,51 @@ function updateRangeDigitHUD() {
 
   const hint = document.createElement('div');
   hint.className = 'slider-digit-hint';
-  hint.innerText = '◀▶ 桁選択 / ▲▼ 数値変更 / 決定で終了';
+  hint.innerText = '◀▶ 桁選択 / ▲▼ 数値変更 / 決定・キャンセルで終了';
 
   hud.appendChild(row);
   hud.appendChild(hint);
   hud.style.display = 'flex';
 }
 
-// --- コンフィグ・ゲームパッド管理（1P〜4P対応） ---
+// --- コンフィグ・ゲームパッド管理（1P〜4P対応：初期値は方向・決定・キャンセル・ポーズのみ） ---
 const ACTION_LABELS = {
   Up: '上', Down: '下', Left: '左', Right: '右',
   Swap: '入れ替え / 決定',
-  GrabLeft: 'カーソル左つかみ', GrabRight: 'カーソル右つかみ',
-  ToggleContinuous: '連続移動オンオフ',
-  Rise1: 'せり上げ1', Rise2: 'せり上げ2',
-  TargetRight: '標的(右)', TargetLeft: '標的(左)',
   Skill: 'スキル発動 / キャンセル',
-  Pause: 'ポーズ/退出'
+  GrabLeft: 'カーソル左つかみ',
+  GrabRight: 'カーソル右つかみ',
+  ToggleContinuous: '連続移動オンオフ',
+  Pause: 'ポーズ/退出',
+  Rise1: 'せり上げ1',
+  Rise2: 'せり上げ2',
+  TargetLeft: '標的(左)',
+  TargetRight: '標的(右)'
 };
 
-let keyConfig = {
-  Up: 'ArrowUp', Down: 'ArrowDown', Left: 'ArrowLeft', Right: 'ArrowRight',
-  Swap: 'Space',
-  GrabLeft: 'KeyZ', GrabRight: 'KeyX',
-  ToggleContinuous: 'KeyC',
-  Rise1: 'ShiftLeft', Rise2: 'ShiftRight',
-  TargetRight: 'KeyE', TargetLeft: 'KeyQ',
-  Skill: 'KeyF',
-  Pause: 'Escape'
-};
-let padConfig = {
-  Up: 12, Down: 13, Left: 14, Right: 15,
-  Swap: 0,
-  GrabLeft: 2, GrabRight: 1,
-  ToggleContinuous: 3,
-  Rise1: 5, Rise2: 7,
-  TargetRight: 5, TargetLeft: 4,
-  Skill: 6,
-  Pause: 9
-};
+function createDefault1PKeyConfig() {
+  return {
+    Up: 'ArrowUp', Down: 'ArrowDown', Left: 'ArrowLeft', Right: 'ArrowRight',
+    Swap: 'Space',
+    Skill: 'KeyF',
+    Pause: 'Escape',
+    GrabLeft: '', GrabRight: '',
+    ToggleContinuous: '',
+    Rise1: '', Rise2: '',
+    TargetRight: '', TargetLeft: ''
+  };
+}
 
 function createDefaultPadConfig() {
   return {
     Up: 12, Down: 13, Left: 14, Right: 15,
     Swap: 0,
-    GrabLeft: 2, GrabRight: 1,
-    ToggleContinuous: 3,
-    Rise1: 5, Rise2: 7,
-    TargetRight: 5, TargetLeft: 4,
     Skill: 6,
-    Pause: 9
+    Pause: 9,
+    GrabLeft: null, GrabRight: null,
+    ToggleContinuous: null,
+    Rise1: null, Rise2: null,
+    TargetRight: null, TargetLeft: null
   };
 }
 
@@ -1297,14 +2327,17 @@ function createDefaultP2KeyConfig() {
   return {
     Up: 'KeyW', Down: 'KeyS', Left: 'KeyA', Right: 'KeyD',
     Swap: 'KeyG',
-    GrabLeft: 'KeyT', GrabRight: 'KeyY',
-    ToggleContinuous: 'KeyR',
-    Rise1: 'KeyV', Rise2: 'KeyB',
-    TargetRight: 'Digit2', TargetLeft: 'Digit1',
     Skill: 'KeyH',
-    Pause: ''
+    Pause: 'KeyP',
+    GrabLeft: '', GrabRight: '',
+    ToggleContinuous: '',
+    Rise1: '', Rise2: '',
+    TargetRight: '', TargetLeft: ''
   };
 }
+
+let keyConfig = createDefault1PKeyConfig();
+let padConfig = createDefaultPadConfig();
 
 try {
   const sKey = localStorage.getItem('pdw_key'), sPad = localStorage.getItem('pdw_pad');
@@ -1371,6 +2404,55 @@ let assignPadSnapshot = {};
 let pendingConfigFocus = null;
 let settingsSnapshot = null;
 
+function openKeyResetConfirmModal() {
+  const modal = document.getElementById('key-reset-confirm-modal');
+  const msgEl = document.getElementById('key-reset-confirm-message');
+  if (!modal) return;
+  if (msgEl) {
+    msgEl.innerText = `${settingsPlayerIdx + 1}Pのキー・ゲームパッド設定を初期状態に戻しますか？`;
+  }
+  assigningAction = null;
+  pendingConfigFocus = null;
+  modal.style.display = 'flex';
+  SE.play('select');
+  if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(180);
+  const cancelBtn = document.getElementById('key-reset-cancel-btn');
+  if (cancelBtn) requestAnimationFrame(() => cancelBtn.focus());
+}
+
+function closeKeyResetConfirmModal(silent = false) {
+  const modal = document.getElementById('key-reset-confirm-modal');
+  if (modal) modal.style.display = 'none';
+  if (!silent) SE.play('cancel');
+  const resetBtn = document.getElementById('settings-key-reset-btn');
+  if (resetBtn && document.getElementById('settings-overlay')?.style.display === 'block') {
+    requestAnimationFrame(() => resetBtn.focus());
+  }
+  if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(180);
+}
+
+function confirmKeyResetForSelectedPlayer() {
+  const idx = settingsPlayerIdx;
+  const defKey = idx === 0
+    ? createDefault1PKeyConfig()
+    : (idx === 1 ? createDefaultP2KeyConfig() : createEmptyKeyConfig());
+  const defPad = createDefaultPadConfig();
+
+  Object.keys(ACTION_LABELS).forEach(k => {
+    playerConfigs[idx].key[k] = defKey[k] !== undefined ? defKey[k] : '';
+    playerConfigs[idx].pad[k] = defPad[k] !== undefined ? defPad[k] : null;
+  });
+
+  assigningAction = null;
+  pendingConfigFocus = null;
+  renderConfigUI();
+  closeKeyResetConfirmModal(true);
+  SE.play('select');
+  if (typeof showToast === 'function') {
+    showToast(`${idx + 1}Pのキー・パッド設定を初期化しました`);
+  }
+}
+
 function capturePadAssignmentSnapshot() {
   const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()) : [];
   const snap = {};
@@ -1389,6 +2471,7 @@ function selectSettingsTab(tabKey) {
   currentSettingsTab = tabKey || 'audio';
   assigningAction = null;
   pendingConfigFocus = null;
+  clearSliderAdjusting();
   const tabKeys = ['audio', 'visual', 'zip', 'control'];
   const btns = document.querySelectorAll('#settings-category-tabs button');
   btns.forEach((btn, idx) => {
@@ -1401,6 +2484,7 @@ function selectSettingsTab(tabKey) {
   if (currentSettingsTab === 'control') {
     selectSettingsPlayer(settingsPlayerIdx);
   }
+  syncVisualControlSettingToggles();
   enhanceAllRangeSliders();
 }
 
@@ -1436,10 +2520,13 @@ function persistPlayerConfigsToStorage() {
 
 function openSettings() {
   SE.play('select');
+  clearSliderAdjusting();
   settingsSnapshot = {
     bgmVol: parseFloat(document.getElementById('bgm-volume')?.value ?? bgmAudio.volume),
     seVol: SE.volume,
     voiceVol: VOICE.volume,
+    gbMode: isGbMode,
+    swapVibrate: isSwapVibrateEnabled,
     playerCustomName: typeof playerCustomName !== 'undefined' ? playerCustomName : '',
     hubPortraitMode: typeof hubPortraitMode !== 'undefined' ? hubPortraitMode : 'random',
     selectedCharId: typeof selectedCharId !== 'undefined' ? selectedCharId : 'main00',
@@ -1466,17 +2553,21 @@ function openSettings() {
   if (typeof refreshHubCharSelectOptions === 'function') {
     refreshHubCharSelectOptions();
   }
+  syncVisualControlSettingToggles();
   document.getElementById('settings-overlay').style.display = 'block';
   selectSettingsTab(currentSettingsTab || 'audio');
   enhanceAllRangeSliders();
   const firstTabBtn = document.querySelector('#settings-category-tabs button');
   if (firstTabBtn) firstTabBtn.focus();
+  if (typeof updateVerticalBottomNav === 'function') updateVerticalBottomNav();
   if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(180);
 }
 
 async function cancelSettings() {
   closeRangeDigitEdit();
+  clearSliderAdjusting();
   closeSelectPickerModal(true);
+  closeKeyResetConfirmModal(true);
   assigningAction = null;
   pendingConfigFocus = null;
   if (settingsSnapshot) {
@@ -1485,6 +2576,11 @@ async function cancelSettings() {
     VOICE.volume = snap.voiceVol;
     bgmAudio.volume = snap.bgmVol;
     panicBgmAudio.volume = snap.bgmVol;
+    SceneBgm.updateVolume(snap.bgmVol);
+
+    applyGbMode(!!snap.gbMode);
+    isSwapVibrateEnabled = !!snap.swapVibrate;
+    syncVisualControlSettingToggles();
 
     const seEl = document.getElementById('se-volume');
     const seVal = document.getElementById('se-volume-val');
@@ -1559,24 +2655,27 @@ async function cancelSettings() {
       }
     }
 
+    if (typeof refreshCustomAssetsUI === 'function') refreshCustomAssetsUI();
+    if (typeof refreshMenuHeaderAndPreview === 'function') refreshMenuHeaderAndPreview();
+
     bgmPlaylist = [...snap.bgmPlaylist];
     currentBgmIndex = snap.currentBgmIndex;
     bgmNeedsPlay = snap.bgmNeedsPlay;
-
-    if (typeof refreshCustomAssetsUI === 'function') refreshCustomAssetsUI();
-    if (typeof refreshMenuHeaderAndPreview === 'function') refreshMenuHeaderAndPreview();
   }
 
   settingsSnapshot = null;
   document.getElementById('settings-overlay').style.display = 'none';
   SE.play('cancel');
   showToast('変更を保存せずに戻りました');
+  if (typeof updateVerticalBottomNav === 'function') updateVerticalBottomNav();
   if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(200);
 }
 
 function closeSettings() {
   closeRangeDigitEdit();
+  clearSliderAdjusting();
   closeSelectPickerModal(true);
+  closeKeyResetConfirmModal(true);
   document.getElementById('settings-overlay').style.display = 'none';
   assigningAction = null;
   pendingConfigFocus = null;
@@ -1585,6 +2684,10 @@ function closeSettings() {
   localStorage.setItem('pdw_se_vol', SE.volume);
   localStorage.setItem('pdw_voice_vol', VOICE.volume);
   localStorage.setItem('pdw_bgm_vol', bgmAudio.volume);
+  localStorage.setItem('pdw_gb_mode', String(!!isGbMode));
+  localStorage.setItem('pdw_swap_vibrate', String(!!isSwapVibrateEnabled));
+  syncBoardVibrateToggleUI();
+
   if (typeof playerCustomName !== 'undefined') {
     localStorage.setItem('pdw_player_name', playerCustomName);
   }
@@ -1605,8 +2708,12 @@ function closeSettings() {
   if (typeof refreshMenuHeaderAndPreview === 'function') {
     refreshMenuHeaderAndPreview(true);
   }
+  if (typeof updateVerticalBottomNav === 'function') {
+    updateVerticalBottomNav();
+  }
 
   if (bgmNeedsPlay && !isBgmPlaying && matchState !== 'playing') {
+    SceneBgm.stop();
     const expectedFile = bgmPlaylist[currentBgmIndex];
     if (bgmAudio._currentFile !== expectedFile) {
        bgmAudio.src = URL.createObjectURL(expectedFile);
@@ -1718,8 +2825,11 @@ function getConnectedPadsSummaryText() {
 
 function getActiveMenuFocusScope() {
   const modalIds = [
+    'key-reset-confirm-modal',
     'exit-confirm-modal',
+    'pwa-guide-modal',
     'select-picker-modal',
+    'custom-skill-modal',
     'confirm-match-modal',
     'skill-select-modal',
     'settings-overlay',
@@ -1943,10 +3053,23 @@ function processMenuNavigationInput(input) {
   if (rangeEditState.el && rangeEditState.el !== activeEl) {
     closeRangeDigitEdit();
   }
+  if (activeAdjustSliderEl && activeAdjustSliderEl !== activeEl) {
+    clearSliderAdjusting();
+  }
 
   if (input.cancel) {
     if (rangeEditState.el) {
       closeRangeDigitEdit();
+      SE.play('cancel');
+      return true;
+    }
+    if (activeAdjustSliderEl) {
+      clearSliderAdjusting();
+      SE.play('cancel');
+      return true;
+    }
+    if (isCoverFlowEl && typeof activeEl._cfIsEngaged === 'function' && activeEl._cfIsEngaged()) {
+      activeEl._cfSetEngaged(false);
       SE.play('cancel');
       return true;
     }
@@ -1976,26 +3099,51 @@ function processMenuNavigationInput(input) {
   }
 
   if (isCoverFlowEl) {
-    if (input.left && typeof activeEl._cfStep === 'function') {
-      activeEl._cfStep(-1);
-      return true;
-    }
-    if (input.right && typeof activeEl._cfStep === 'function') {
-      activeEl._cfStep(1);
-      return true;
-    }
-    if (input.up) { moveMenuFocus2D(0, -1); return true; }
-    if (input.down) { moveMenuFocus2D(0, 1); return true; }
-    if (input.confirm) {
-      if (typeof activeEl._cfConfirm === 'function') {
-        SE.play('select');
-        activeEl._cfConfirm();
-      } else {
-        advanceFromCoverFlow(activeEl);
+    const isEngaged = (typeof activeEl._cfIsEngaged === 'function') ? activeEl._cfIsEngaged() : true;
+    if (isEngaged) {
+      if (input.left && typeof activeEl._cfStep === 'function') {
+        activeEl._cfStep(-1);
+        return true;
       }
-      return true;
+      if (input.right && typeof activeEl._cfStep === 'function') {
+        activeEl._cfStep(1);
+        return true;
+      }
+      if (input.up || input.down) {
+        return true;
+      }
+      if (input.confirm) {
+        if (typeof activeEl._cfSetEngaged === 'function') {
+          activeEl._cfSetEngaged(false);
+        }
+        if (typeof activeEl._cfConfirm === 'function') {
+          SE.play('select');
+          activeEl._cfConfirm();
+        } else {
+          advanceFromCoverFlow(activeEl);
+        }
+        return true;
+      }
+      return false;
+    } else {
+      if (input.left) { moveMenuFocus2D(-1, 0); return true; }
+      if (input.right) { moveMenuFocus2D(1, 0); return true; }
+      if (input.up) { moveMenuFocus2D(0, -1); return true; }
+      if (input.down) { moveMenuFocus2D(0, 1); return true; }
+      if (input.confirm) {
+        if (typeof activeEl._cfSetEngaged === 'function') {
+          activeEl._cfSetEngaged(true);
+          SE.play('select');
+        } else if (typeof activeEl._cfConfirm === 'function') {
+          SE.play('select');
+          activeEl._cfConfirm();
+        } else {
+          advanceFromCoverFlow(activeEl);
+        }
+        return true;
+      }
+      return false;
     }
-    return false;
   }
 
   if (isRange) {
@@ -2033,27 +3181,73 @@ function processMenuNavigationInput(input) {
       return false;
     }
 
-    let val = parseFloat(activeEl.value);
-    if (input.left) {
-      setRangeValueWithEvents(activeEl, Math.max(min, val - step));
-      SE.play('cursorMove');
-      return true;
+    if (isSettingsSliderEl(activeEl)) {
+      let val = parseFloat(activeEl.value);
+      if (input.left) {
+        setRangeValueWithEvents(activeEl, Math.max(min, val - step));
+        SE.play('cursorMove');
+        return true;
+      }
+      if (input.right) {
+        setRangeValueWithEvents(activeEl, Math.min(max, val + step));
+        SE.play('cursorMove');
+        return true;
+      }
+      if (input.up) { moveMenuFocus2D(0, -1); return true; }
+      if (input.down) { moveMenuFocus2D(0, 1); return true; }
+      if (input.confirm) {
+        rangeEditState.el = activeEl;
+        rangeEditState.digitIndex = 0;
+        updateRangeDigitHUD();
+        SE.play('select');
+        return true;
+      }
+      return false;
     }
-    if (input.right) {
-      setRangeValueWithEvents(activeEl, Math.min(max, val + step));
-      SE.play('cursorMove');
-      return true;
+
+    if (activeAdjustSliderEl === activeEl) {
+      let val = parseFloat(activeEl.value);
+      if (input.left) {
+        setRangeValueWithEvents(activeEl, Math.max(min, val - step));
+        SE.play('cursorMove');
+        return true;
+      }
+      if (input.right) {
+        setRangeValueWithEvents(activeEl, Math.min(max, val + step));
+        SE.play('cursorMove');
+        return true;
+      }
+      if (input.confirm) {
+        clearSliderAdjusting();
+        rangeEditState.el = activeEl;
+        rangeEditState.digitIndex = 0;
+        updateRangeDigitHUD();
+        SE.play('select');
+        return true;
+      }
+      if (input.up) {
+        clearSliderAdjusting();
+        moveMenuFocus2D(0, -1);
+        return true;
+      }
+      if (input.down) {
+        clearSliderAdjusting();
+        moveMenuFocus2D(0, 1);
+        return true;
+      }
+      return false;
+    } else {
+      if (input.left) { moveMenuFocus2D(-1, 0); return true; }
+      if (input.right) { moveMenuFocus2D(1, 0); return true; }
+      if (input.up) { moveMenuFocus2D(0, -1); return true; }
+      if (input.down) { moveMenuFocus2D(0, 1); return true; }
+      if (input.confirm) {
+        setSliderAdjusting(activeEl);
+        SE.play('select');
+        return true;
+      }
+      return false;
     }
-    if (input.up) { moveMenuFocus2D(0, -1); return true; }
-    if (input.down) { moveMenuFocus2D(0, 1); return true; }
-    if (input.confirm) {
-      rangeEditState.el = activeEl;
-      rangeEditState.digitIndex = 0;
-      updateRangeDigitHUD();
-      SE.play('select');
-      return true;
-    }
-    return false;
   }
 
   if (input.up) {
@@ -2147,15 +3341,32 @@ function handleMenuKeyDown(e) {
 }
 
 // ==========================================
-// ゲームパッド統一ポーリング・誤複数押し完全防止・コンテキスト切替スナップショット
+// ゲームパッド統一ポーリング・二重操作完全防止・時間ベースDAS/ARR
 // ==========================================
 let globalPadPrevState = {};
-let globalPadHold = { Up: 0, Down: 0, Left: 0, Right: 0 };
+let globalPadWaitRelease = {};
+let globalPadLastPressAt = {};
+let globalPadDirState = {
+  Up:    { held: false, startAt: 0, lastAt: 0 },
+  Down:  { held: false, startAt: 0, lastAt: 0 },
+  Left:  { held: false, startAt: 0, lastAt: 0 },
+  Right: { held: false, startAt: 0, lastAt: 0 }
+};
 let lastPadContextKey = '';
 let padInputLockUntil = 0;
 let padActionLastTime = {};
-const GLOBAL_PAD_DAS = 10;
-const GLOBAL_PAD_ARR = 2;
+const GLOBAL_PAD_DAS_MS = 230;
+const GLOBAL_PAD_ARR_MS = 65;
+const GLOBAL_PAD_BOUNCE_MS = 95;
+
+function resetGlobalPadDirState() {
+  globalPadDirState = {
+    Up:    { held: false, startAt: 0, lastAt: 0 },
+    Down:  { held: false, startAt: 0, lastAt: 0 },
+    Left:  { held: false, startAt: 0, lastAt: 0 },
+    Right: { held: false, startAt: 0, lastAt: 0 }
+  };
+}
 
 function getPad0Object(pads) {
   const slot0 = playerConfigs[0].padSlot;
@@ -2177,8 +3388,12 @@ function readPadButtonsMap(pad) {
 }
 
 function getCurrentPadContextKey() {
+  if (document.getElementById('op-overlay')?.style.display === 'flex') return 'op';
+  if (document.getElementById('key-reset-confirm-modal')?.style.display === 'flex') return 'key-reset-confirm';
   if (document.getElementById('exit-confirm-modal')?.style.display === 'flex') return 'exit-confirm';
+  if (document.getElementById('pwa-guide-modal')?.style.display === 'flex') return 'pwa-guide';
   if (document.getElementById('select-picker-modal')?.style.display === 'flex') return 'select-picker';
+  if (document.getElementById('custom-skill-modal')?.style.display === 'flex') return 'custom-skill-modal';
   if (document.getElementById('confirm-match-modal')?.style.display === 'flex') return 'confirm-modal';
   if (document.getElementById('skill-select-modal')?.style.display === 'flex') return 'skill-modal';
   if (document.getElementById('settings-overlay')?.style.display === 'block') return 'settings';
@@ -2204,17 +3419,39 @@ function syncPadSnapshotsAll(lockMs = 150) {
   const pad0 = getPad0Object(pads);
   const pressed0 = readPadButtonsMap(pad0);
   globalPadPrevState = { ...pressed0 };
-  globalPadHold = { Up: 0, Down: 0, Left: 0, Right: 0 };
+  globalPadWaitRelease = {};
+  Object.keys(pressed0).forEach(k => {
+    if (pressed0[k]) globalPadWaitRelease[k] = true;
+  });
+  resetGlobalPadDirState();
   padInputLockUntil = Math.max(padInputLockUntil, performance.now() + lockMs);
 
   if (typeof p1InputState !== 'undefined' && p1InputState) {
     p1InputState.prevPadState = { ...pressed0 };
     p1InputState.padState = { ...pressed0 };
     p1InputState.padHoldFrames = { Up: 0, Down: 0, Left: 0, Right: 0 };
+    p1InputState.padDirTime = {
+      Up: { held: false, startAt: 0, lastAt: 0 },
+      Down: { held: false, startAt: 0, lastAt: 0 },
+      Left: { held: false, startAt: 0, lastAt: 0 },
+      Right: { held: false, startAt: 0, lastAt: 0 }
+    };
+    p1InputState.padWaitRelease = {};
+    Object.keys(pressed0).forEach(k => {
+      if (pressed0[k]) p1InputState.padWaitRelease[k] = true;
+    });
   }
   if (typeof localMenuPadPrev !== 'undefined' && Array.isArray(localMenuPadPrev)) {
     for (let i = 0; i < 4; i++) {
-      localMenuPadPrev[i] = readPadButtonsMap(pads[i] || null);
+      const m = readPadButtonsMap(pads[i] || null);
+      localMenuPadPrev[i] = m;
+      if (typeof localMenuPadWaitRelease !== 'undefined' && localMenuPadWaitRelease[i]) {
+        localMenuPadWaitRelease[i] = {};
+        Object.keys(m).forEach(k => {
+          if (m[k]) localMenuPadWaitRelease[i][k] = true;
+        });
+      }
+      if (typeof resetLocalMenuPadDir === 'function') resetLocalMenuPadDir(i);
     }
   }
   lastPadContextKey = getCurrentPadContextKey();
@@ -2229,6 +3466,11 @@ setInterval(() => {
   const pad0 = getPad0Object(pads);
   const pressed = readPadButtonsMap(pad0);
   const ctxKey = getCurrentPadContextKey();
+  const now = performance.now();
+
+  Object.keys(globalPadWaitRelease).forEach(k => {
+    if (!pressed[k]) delete globalPadWaitRelease[k];
+  });
 
   const settingsPadStatus = document.getElementById('settings-pad-status');
   if (settingsPadStatus && document.getElementById('settings-overlay').style.display === 'block') {
@@ -2240,15 +3482,12 @@ setInterval(() => {
     localPadStatus.innerText = getConnectedPadsSummaryText();
   }
 
-  // キー割り当て中はゲームパッドの誤操作を完全抑止
   if (assigningAction && assignType === 'key') {
     globalPadPrevState = { ...pressed };
     return;
   }
 
-  // ゲームパッド割り当て待機中（初期押下ボタンを離した後の新規押下のみ受付）
   if (assigningAction && assignType === 'pad') {
-    const nowAssign = performance.now();
     for (let i = 0; i < 4; i++) {
       const p = pads[i];
       if (!assignPadSnapshot[i]) assignPadSnapshot[i] = {};
@@ -2259,7 +3498,7 @@ setInterval(() => {
       }
     }
 
-    if (nowAssign - assignStartedAt >= 80) {
+    if (now - assignStartedAt >= 80) {
       const targetSlot = playerConfigs[settingsPlayerIdx].padSlot;
       const scanIndices = [];
       if (targetSlot >= 0 && pads[targetSlot] && pads[targetSlot].connected) {
@@ -2293,8 +3532,23 @@ setInterval(() => {
   if (ctxKey !== lastPadContextKey) {
     lastPadContextKey = ctxKey;
     globalPadPrevState = { ...pressed };
-    globalPadHold = { Up: 0, Down: 0, Left: 0, Right: 0 };
-    padInputLockUntil = Math.max(padInputLockUntil, performance.now() + 140);
+    Object.keys(pressed).forEach(k => {
+      if (pressed[k]) globalPadWaitRelease[k] = true;
+    });
+    resetGlobalPadDirState();
+    padInputLockUntil = Math.max(padInputLockUntil, now + 150);
+    return;
+  }
+
+  if (ctxKey === 'op') {
+    if (now >= padInputLockUntil) {
+      const anyNewBtn = Object.keys(pressed).some(k => pressed[k] && !globalPadPrevState[k] && !globalPadWaitRelease[k]);
+      if (anyNewBtn && typeof OpAnimation !== 'undefined') {
+        ensureAudioCtxResumed();
+        OpAnimation.skip();
+      }
+    }
+    globalPadPrevState = { ...pressed };
     return;
   }
 
@@ -2307,19 +3561,19 @@ setInterval(() => {
   }
 
   if (ctxKey === 'game' || ctxKey === 'battle-end' || ctxKey === 'share-prep') {
-    globalPadHold = { Up: 0, Down: 0, Left: 0, Right: 0 };
+    resetGlobalPadDirState();
     if (rangeEditState.el) closeRangeDigitEdit();
     globalPadPrevState = { ...pressed };
     return;
   }
 
   if (!pad0) {
-    globalPadHold = { Up: 0, Down: 0, Left: 0, Right: 0 };
+    resetGlobalPadDirState();
     globalPadPrevState = {};
+    globalPadWaitRelease = {};
     return;
   }
 
-  const now = performance.now();
   if (now < padInputLockUntil) {
     globalPadPrevState = { ...pressed };
     return;
@@ -2327,36 +3581,75 @@ setInterval(() => {
 
   const justPressed = (btnIdx, actionTag = '') => {
     if (btnIdx === null || btnIdx === undefined) return false;
-    if (!pressed[btnIdx] || globalPadPrevState[btnIdx]) return false;
+    if (!pressed[btnIdx] || globalPadPrevState[btnIdx] || globalPadWaitRelease[btnIdx]) return false;
+    const lastBtnT = globalPadLastPressAt[btnIdx] || 0;
+    if (now - lastBtnT < GLOBAL_PAD_BOUNCE_MS) return false;
     if (actionTag) {
       const lastT = padActionLastTime[actionTag] || 0;
-      if (now - lastT < 150) return false;
+      if (now - lastT < 130) return false;
       padActionLastTime[actionTag] = now;
     }
+    globalPadLastPressAt[btnIdx] = now;
     return true;
   };
+
   const isDirRepeat = (dirName, btnIdx) => {
+    const st = globalPadDirState[dirName];
     if (btnIdx === null || btnIdx === undefined || !pressed[btnIdx]) {
-      globalPadHold[dirName] = 0;
+      st.held = false;
       return false;
     }
-    const f = globalPadHold[dirName]++;
-    return f === 0 || (f >= GLOBAL_PAD_DAS && (f - GLOBAL_PAD_DAS) % GLOBAL_PAD_ARR === 0);
+    if (globalPadWaitRelease[btnIdx]) {
+      st.held = true;
+      st.startAt = now;
+      st.lastAt = now;
+      return false;
+    }
+    if (!st.held) {
+      const lastBtnT = globalPadLastPressAt[`dir_${dirName}`] || 0;
+      st.held = true;
+      st.startAt = now;
+      st.lastAt = now;
+      if (now - lastBtnT < 55) return false;
+      globalPadLastPressAt[`dir_${dirName}`] = now;
+      return true;
+    }
+    if ((now - st.startAt) >= GLOBAL_PAD_DAS_MS && (now - st.lastAt) >= GLOBAL_PAD_ARR_MS) {
+      st.lastAt = now;
+      return true;
+    }
+    return false;
   };
 
-  const canMenuPadControl = (ctxKey !== 'game') && (typeof matchState === 'undefined' || matchState !== 'playing' || ctxKey === 'result' || ctxKey === 'exit-confirm' || ctxKey === 'settings' || ctxKey === 'select-picker' || (ctxKey === 'local-menu' && !!rangeEditState.el));
+  const canMenuPadControl = (ctxKey !== 'game') && (typeof matchState === 'undefined' || matchState !== 'playing' || ctxKey === 'result' || ctxKey === 'exit-confirm' || ctxKey === 'key-reset-confirm' || ctxKey === 'settings' || ctxKey === 'select-picker' || ctxKey === 'custom-skill-modal' || ctxKey === 'pwa-guide' || (ctxKey === 'local-menu' && !!rangeEditState.el));
 
   if (canMenuPadControl) {
-    const cancelTrig = justPressed(padConfig.Skill, 'cancel');
-    const startTrig = justPressed(padConfig.Pause, 'start');
-    const confirmTrig = justPressed(padConfig.Swap, 'confirm');
-    const altConfirmTrig = justPressed(padConfig.GrabRight, 'altConfirm');
+    let cancelTrig = justPressed(padConfig.Skill, 'cancel');
+    let startTrig = justPressed(padConfig.Pause, 'start');
+    let confirmTrig = justPressed(padConfig.Swap, 'confirm');
+    let altConfirmTrig = justPressed(padConfig.GrabRight, 'altConfirm');
+
+    if (cancelTrig) {
+      startTrig = false;
+      confirmTrig = false;
+      altConfirmTrig = false;
+    } else if (startTrig) {
+      confirmTrig = false;
+      altConfirmTrig = false;
+    } else if (confirmTrig) {
+      altConfirmTrig = false;
+    }
+
+    const upTrig = isDirRepeat('Up', padConfig.Up);
+    const downTrig = isDirRepeat('Down', padConfig.Down);
+    const leftTrig = isDirRepeat('Left', padConfig.Left);
+    const rightTrig = isDirRepeat('Right', padConfig.Right);
 
     const didAction = processMenuNavigationInput({
-      up: isDirRepeat('Up', padConfig.Up),
-      down: isDirRepeat('Down', padConfig.Down),
-      left: isDirRepeat('Left', padConfig.Left),
-      right: isDirRepeat('Right', padConfig.Right),
+      up: upTrig && !downTrig,
+      down: downTrig && !upTrig,
+      left: leftTrig && !rightTrig,
+      right: rightTrig && !leftTrig,
       confirm: confirmTrig,
       altConfirm: altConfirmTrig,
       start: startTrig,
@@ -2364,13 +3657,17 @@ setInterval(() => {
     });
 
     if (didAction && (confirmTrig || altConfirmTrig || startTrig || cancelTrig)) {
-      padInputLockUntil = Math.max(padInputLockUntil, performance.now() + 140);
+      if (confirmTrig && padConfig.Swap !== null && padConfig.Swap !== undefined) globalPadWaitRelease[padConfig.Swap] = true;
+      if (altConfirmTrig && padConfig.GrabRight !== null && padConfig.GrabRight !== undefined) globalPadWaitRelease[padConfig.GrabRight] = true;
+      if (startTrig && padConfig.Pause !== null && padConfig.Pause !== undefined) globalPadWaitRelease[padConfig.Pause] = true;
+      if (cancelTrig && padConfig.Skill !== null && padConfig.Skill !== undefined) globalPadWaitRelease[padConfig.Skill] = true;
+      padInputLockUntil = Math.max(padInputLockUntil, now + 130);
     }
   } else {
-    globalPadHold = { Up: 0, Down: 0, Left: 0, Right: 0 };
+    resetGlobalPadDirState();
     if (rangeEditState.el) closeRangeDigitEdit();
   }
 
   globalPadPrevState = { ...pressed };
   lastPadContextKey = getCurrentPadContextKey();
-}, 1000 / 30);
+}, 1000 / 60);

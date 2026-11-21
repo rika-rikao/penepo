@@ -1,5 +1,5 @@
 // ==========================================
-// キャラクター定義 & ループ型3Dカバーフロー & ハブ立ち絵設定 & カスタム画像・ボイス・SE・ZIP一括読込 & 描画補助
+// キャラクター定義 & ループ型3Dカバーフロー & スキル定義/自作ラボ & カスタムアセット管理
 // ==========================================
 const IMG_EXTS = ['webp', 'png', 'gif', 'jpg', 'jpeg'];
 
@@ -14,7 +14,6 @@ const CHARACTERS = [
   { id: 'enemy04',name: 'マーオ',   role: 'enemy', file: 'assets/img/chara/nomal/マーオ.png',   color: '#ff007f' }
 ];
 
-// カバーフロー並び順
 const CHAR_PICKER_ORDER = [
   'main00', 'sub01', 'sub02', 'sub03',
   'enemy01', 'enemy02', 'enemy03', 'enemy04',
@@ -36,7 +35,8 @@ const SKILL_DESCRIPTIONS = {
   seal_skill: '相手（ターゲット優先）のスキル発動までに必要な残りスコアを300点追加して、スキルを遠ざけます！',
   convert_blocks: '盤面にあるマークの中からランダムで3色のブロックを、別の2色のブロックに一斉変換します！大連鎖の大チャンス！',
   sacrifice: '発動不可・被弾お邪魔1.2倍・送信お邪魔2段階低下(6個/4連鎖〜)・3分で自動敗北する代わりに、常時、連鎖猶予が1.5倍、天井判定時間が2倍に！',
-  no_skill: 'スキルを使用しません。自分だけスキルなし・純粋なパズル勝負で挑みます。'
+  no_skill: 'スキルを使用しません。自分だけスキルなし・純粋なパズル勝負で挑みます。',
+  random: '試合開始時に使用可能なスキルの中からランダムで1つが選ばれ、その試合中はそのスキルで固定されます！'
 };
 
 const SKILL_ICONS = {
@@ -47,7 +47,8 @@ const SKILL_ICONS = {
   seal_skill: '🔒',
   convert_blocks: '🔄',
   sacrifice: '💀',
-  no_skill: '🚫'
+  no_skill: '🚫',
+  random: '🎲'
 };
 
 const SKILL_COLORS = {
@@ -58,12 +59,530 @@ const SKILL_COLORS = {
   seal_skill: '#a855f7',
   convert_blocks: '#38bdf8',
   sacrifice: '#dc2626',
-  no_skill: '#94a3b8'
+  no_skill: '#94a3b8',
+  random: '#fbbf24'
 };
 
+// ==========================================
+// 自作スキルシステム（初期100pt / メリット消費 / デメリット還元 / 3スロット）
+// ==========================================
+const CUSTOM_SKILL_BASE_POINTS = 100;
+const CUSTOM_SKILL_STORAGE_KEY = 'pdw_custom_skills_v1';
+
+const CUSTOM_SKILL_MERITS = [
+  {
+    id: 'erase_colors',
+    name: 'マーク全消し',
+    isActive: true,
+    costs: [0, 45, 85, 130],
+    levelTexts: ['OFF', 'Lv1: 1色全消し', 'Lv2: 2色全消し', 'Lv3: 3色全消し']
+  },
+  {
+    id: 'erase_rows',
+    name: '横一列消し',
+    isActive: true,
+    costs: [0, 45, 85, 135],
+    levelTexts: ['OFF', 'Lv1: 下1・5段消し', 'Lv2: 1・5・9段消し', 'Lv3: 1・3・5・7・9段']
+  },
+  {
+    id: 'purify_garbage',
+    name: 'お邪魔浄化',
+    isActive: true,
+    costs: [0, 50, 90, 130],
+    levelTexts: ['OFF', 'Lv1: 1段せり上げ浄化', 'Lv2: 2段せり上げ浄化', 'Lv3: 2段浄化+200点']
+  },
+  {
+    id: 'corrupt_enemy',
+    name: '相手お邪魔侵食',
+    isActive: true,
+    costs: [0, 50, 90, 140],
+    levelTexts: ['OFF', 'Lv1: 相手1段侵食', 'Lv2: 1段侵食+幅3落下', 'Lv3: 2段侵食+幅5落下']
+  },
+  {
+    id: 'seal_enemy',
+    name: '相手スキル封印',
+    isActive: true,
+    costs: [0, 40, 75, 115],
+    levelTexts: ['OFF', 'Lv1: 相手必要点+200', 'Lv2: 相手必要点+350', 'Lv3: 相手必要点+550']
+  },
+  {
+    id: 'convert_colors',
+    name: '盤面色変換',
+    isActive: true,
+    costs: [0, 45, 85, 135],
+    levelTexts: ['OFF', 'Lv1: 2色→2色変換', 'Lv2: 3色→2色変換', 'Lv3: 4色→1色変換']
+  },
+  {
+    id: 'merit_extra_uses',
+    name: '最大使用回数増加',
+    isActive: false,
+    requiresActive: true,
+    costs: [0, 45, 85, 130],
+    levelTexts: ['OFF', 'Lv1: 最大回数+1回', 'Lv2: 最大回数+2回', 'Lv3: 最大回数+3回']
+  },
+  {
+    id: 'passive_grace',
+    name: '常時：猶予&天井延長',
+    isActive: false,
+    costs: [0, 65, 120, 185],
+    levelTexts: ['OFF', 'Lv1: 猶予1.25x/天井1.5x', 'Lv2: 猶予1.5x/天井2.0x', 'Lv3: 猶予2.0x/天井2.5x']
+  }
+];
+
+const CUSTOM_SKILL_DEMERITS = [
+  {
+    id: 'dem_vuln_garbage',
+    name: '被弾お邪魔増加',
+    gains: [0, 15, 30, 45],
+    levelTexts: ['OFF', 'Lv1: 被弾1.15倍', 'Lv2: 被弾1.30倍', 'Lv3: 被弾1.50倍']
+  },
+  {
+    id: 'dem_weak_attack',
+    name: '送信お邪魔低下',
+    gains: [0, 15, 30, 45],
+    levelTexts: ['OFF', 'Lv1: 送信量-2個', 'Lv2: 送信量0.75倍', 'Lv3: 4連鎖/6個〜に低下']
+  },
+  {
+    id: 'dem_fast_rise',
+    name: 'せり上がり高速化',
+    gains: [0, 15, 30, 45],
+    levelTexts: ['OFF', 'Lv1: 速度1.20倍', 'Lv2: 速度1.45倍', 'Lv3: 速度1.80倍']
+  },
+  {
+    id: 'dem_high_cost',
+    name: '発動必要スコア増加',
+    gains: [0, 15, 30, 45],
+    levelTexts: ['OFF', 'Lv1: 400点毎', 'Lv2: 550点毎', 'Lv3: 750点毎']
+  },
+  {
+    id: 'dem_fewer_uses',
+    name: '最大使用回数減少',
+    gains: [0, 20, 40],
+    levelTexts: ['OFF', 'Lv1: 最大回数-1回', 'Lv2: 最大回数-2回']
+  },
+  {
+    id: 'dem_time_limit',
+    name: '時間制限で自動敗北',
+    gains: [0, 25, 45, 75],
+    levelTexts: ['OFF', 'Lv1: 3分で自動敗北', 'Lv2: 2分で自動敗北', 'Lv3: 1分で自動敗北']
+  },
+  {
+    id: 'dem_start_garbage',
+    name: '開幕お邪魔落下',
+    gains: [0, 15, 30, 45],
+    levelTexts: ['OFF', 'Lv1: 幅6×1段落下', 'Lv2: 幅6×2段落下', 'Lv3: 幅6×3段落下']
+  }
+];
+
+let customSkillSlots = [null, null, null];
+try {
+  const savedCs = localStorage.getItem(CUSTOM_SKILL_STORAGE_KEY);
+  if (savedCs) {
+    const parsed = JSON.parse(savedCs);
+    if (Array.isArray(parsed)) {
+      customSkillSlots = [parsed[0] || null, parsed[1] || null, parsed[2] || null];
+    }
+  }
+} catch (_) {}
+
+function persistCustomSkills() {
+  try {
+    localStorage.setItem(CUSTOM_SKILL_STORAGE_KEY, JSON.stringify(customSkillSlots));
+  } catch (_) {}
+}
+
+function getCustomSkillSlotIndex(skillId) {
+  if (typeof skillId !== 'string' || !skillId.startsWith('custom_')) return -1;
+  const idx = parseInt(skillId.slice(7), 10);
+  return (idx >= 0 && idx < 3) ? idx : -1;
+}
+
+function getCustomSkillConfig(skillId) {
+  const idx = getCustomSkillSlotIndex(skillId);
+  if (idx === -1) return null;
+  return customSkillSlots[idx] || null;
+}
+
+function computeCustomSkillBuildInfo(draft) {
+  const merits = (draft && draft.merits) || {};
+  const demerits = (draft && draft.demerits) || {};
+  let meritCost = 0;
+  let demeritGain = 0;
+  let hasMerit = false;
+  let hasActiveMerit = false;
+  let hasEffectiveNonUseMerit = false;
+  const meritSummaries = [];
+  const demeritSummaries = [];
+
+  CUSTOM_SKILL_MERITS.forEach(m => {
+    const lv = Math.max(0, Math.min(m.costs.length - 1, parseInt(merits[m.id] || 0, 10)));
+    if (lv > 0) {
+      hasMerit = true;
+      if (m.isActive) hasActiveMerit = true;
+      if (!m.requiresActive) hasEffectiveNonUseMerit = true;
+      meritCost += m.costs[lv];
+      meritSummaries.push(m.levelTexts[lv].replace(/^Lv\d:\s*/, ''));
+    }
+  });
+
+  CUSTOM_SKILL_DEMERITS.forEach(d => {
+    const lv = Math.max(0, Math.min(d.gains.length - 1, parseInt(demerits[d.id] || 0, 10)));
+    if (lv > 0) {
+      demeritGain += d.gains[lv];
+      demeritSummaries.push(d.levelTexts[lv].replace(/^Lv\d:\s*/, ''));
+    }
+  });
+
+  const totalPoints = CUSTOM_SKILL_BASE_POINTS - meritCost + demeritGain;
+  const extraUsesLv = parseInt(merits.merit_extra_uses || 0, 10);
+  const invalidExtraOnly = (extraUsesLv > 0 && !hasActiveMerit);
+  const isValid = hasEffectiveNonUseMerit && totalPoints >= 0 && !invalidExtraOnly;
+
+  const costLv = parseInt(demerits.dem_high_cost || 0, 10);
+  const scoreStepMap = [300, 400, 550, 750];
+  const scoreStep = scoreStepMap[costLv] || 300;
+
+  const fewerUsesLv = parseInt(demerits.dem_fewer_uses || 0, 10);
+  const maxUses = hasActiveMerit ? Math.max(1, 3 + extraUsesLv - fewerUsesLv) : 0;
+
+  let desc = meritSummaries.length > 0 ? `【効果】${meritSummaries.join('・')}` : '【効果】未選択';
+  if (demeritSummaries.length > 0) desc += ` / 【代償】${demeritSummaries.join('・')}`;
+  if (hasActiveMerit) desc += ` (${maxUses}回 / ${scoreStep}点毎)`;
+  else if (hasEffectiveNonUseMerit) desc += ' (常時発動パッシブ)';
+
+  return {
+    totalPoints,
+    meritCost,
+    demeritGain,
+    hasMerit,
+    hasEffectiveNonUseMerit,
+    hasActiveMerit,
+    invalidExtraOnly,
+    isValid,
+    scoreStep,
+    maxUses,
+    desc
+  };
+}
+
+function getBaseSkillIdsList() {
+  return [
+    'erase_color',
+    'erase_rows',
+    'purify_garbage',
+    'corrupt_enemy_row',
+    'seal_skill',
+    'convert_blocks',
+    'sacrifice',
+    'no_skill',
+    'random'
+  ];
+}
+
+function getSelectableSkillIds(allowCustom = true) {
+  const list = getBaseSkillIdsList();
+  if (allowCustom) {
+    for (let i = 0; i < 3; i++) {
+      if (customSkillSlots[i]) list.push(`custom_${i}`);
+    }
+  }
+  return list;
+}
+
+function getSkillLabel(skillId) {
+  const custom = getCustomSkillConfig(skillId);
+  if (custom) return custom.name || `自作${getCustomSkillSlotIndex(skillId) + 1}`;
+  if (typeof SKILL_LABELS !== 'undefined' && SKILL_LABELS[skillId]) return SKILL_LABELS[skillId];
+  const fallback = {
+    erase_color: 'マーク全消し',
+    erase_rows: '1・5・9段消し',
+    purify_garbage: 'お邪魔浄化',
+    corrupt_enemy_row: 'お邪魔侵食',
+    seal_skill: 'スキル封印',
+    convert_blocks: 'ブロック変換',
+    sacrifice: '代償',
+    no_skill: 'ノースキル',
+    random: 'ランダム'
+  };
+  return fallback[skillId] || skillId;
+}
+
+function getSkillIcon(skillId) {
+  if (getCustomSkillSlotIndex(skillId) !== -1) return '🛠️';
+  return SKILL_ICONS[skillId] || '⚡';
+}
+
+function getSkillDesc(skillId) {
+  const custom = getCustomSkillConfig(skillId);
+  if (custom) {
+    return computeCustomSkillBuildInfo(custom).desc;
+  }
+  return SKILL_DESCRIPTIONS[skillId] || '';
+}
+
+function getSkillColor(skillId) {
+  if (getCustomSkillSlotIndex(skillId) !== -1) return '#38bdf8';
+  return SKILL_COLORS[skillId] || '#ff007f';
+}
+
+function getSkillSubLabel(skillId) {
+  if (skillId === 'no_skill') return '使用不可（スキルなし）';
+  if (skillId === 'sacrifice') return '常時発動（代償効果）';
+  if (skillId === 'random') return '開始時に1種をランダム固定';
+  const custom = getCustomSkillConfig(skillId);
+  if (custom) {
+    const info = computeCustomSkillBuildInfo(custom);
+    return info.hasActiveMerit ? `最大${info.maxUses}回 / ${info.scoreStep}点毎` : '常時発動（自作パッシブ）';
+  }
+  return '最大3回 / 300点毎';
+}
+
+function resolvePlayableSkillId(skillId, allowCustom = true, fallbackId = 'erase_color') {
+  if (skillId === 'random') {
+    const pool = [
+      'erase_color',
+      'erase_rows',
+      'purify_garbage',
+      'corrupt_enemy_row',
+      'seal_skill',
+      'convert_blocks',
+      'sacrifice'
+    ];
+    if (allowCustom) {
+      for (let i = 0; i < 3; i++) {
+        if (customSkillSlots[i]) pool.push(`custom_${i}`);
+      }
+    }
+    return pool[Math.floor(Math.random() * pool.length)];
+  }
+  if (getCustomSkillSlotIndex(skillId) !== -1) {
+    if (!allowCustom || !getCustomSkillConfig(skillId)) {
+      const safeFb = (fallbackId && getCustomSkillSlotIndex(fallbackId) === -1) ? fallbackId : 'erase_color';
+      return safeFb === 'random' ? resolvePlayableSkillId('random', false) : safeFb;
+    }
+  }
+  return skillId || 'erase_color';
+}
+
+// ==========================================
+// 自作スキルモーダル UIロジック
+// ==========================================
+let editingCustomSkillSlotIdx = 0;
+let editingCustomSkillDraft = { name: '', merits: {}, demerits: {} };
+
+function makeBlankCustomSkillDraft(slotIdx) {
+  return {
+    name: `自作${slotIdx + 1}`,
+    merits: {},
+    demerits: {}
+  };
+}
+
+function openCustomSkillModal(slotIdx = null) {
+  const modal = document.getElementById('custom-skill-modal');
+  if (!modal) return;
+  if (typeof SE !== 'undefined') SE.play('select');
+  const initialIdx = (slotIdx !== null && slotIdx >= 0 && slotIdx < 3) ? slotIdx : editingCustomSkillSlotIdx;
+  selectCustomSkillSlot(initialIdx, true);
+  modal.style.display = 'flex';
+  const nameEl = document.getElementById('custom-skill-name-input');
+  if (nameEl) nameEl.focus();
+  if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(180);
+}
+
+function closeCustomSkillModal(silent = false) {
+  const modal = document.getElementById('custom-skill-modal');
+  if (modal) modal.style.display = 'none';
+  if (!silent && typeof SE !== 'undefined') SE.play('cancel');
+  if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(180);
+}
+
+function selectCustomSkillSlot(idx, silent = false) {
+  editingCustomSkillSlotIdx = Math.max(0, Math.min(2, idx));
+  if (!silent && typeof SE !== 'undefined') SE.play('cursorMove');
+  document.querySelectorAll('#custom-skill-slot-tabs button').forEach((btn, i) => {
+    btn.classList.toggle('active', i === editingCustomSkillSlotIdx);
+    const hasSaved = !!customSkillSlots[i];
+    btn.innerText = hasSaved ? `スロット${i + 1} ★` : `スロット${i + 1}`;
+  });
+  const saved = customSkillSlots[editingCustomSkillSlotIdx];
+  editingCustomSkillDraft = saved
+    ? JSON.parse(JSON.stringify(saved))
+    : makeBlankCustomSkillDraft(editingCustomSkillSlotIdx);
+
+  const nameInput = document.getElementById('custom-skill-name-input');
+  if (nameInput) nameInput.value = editingCustomSkillDraft.name || `自作${editingCustomSkillSlotIdx + 1}`;
+  renderCustomSkillBuilder();
+}
+
+function setCustomSkillEffectLevel(kind, effectId, lv) {
+  const target = kind === 'merit' ? editingCustomSkillDraft.merits : editingCustomSkillDraft.demerits;
+  if (lv <= 0) delete target[effectId];
+  else target[effectId] = lv;
+  if (typeof SE !== 'undefined') SE.play('cursorMove');
+  renderCustomSkillBuilder();
+}
+
+function resetCurrentCustomSkillSlot() {
+  editingCustomSkillDraft = makeBlankCustomSkillDraft(editingCustomSkillSlotIdx);
+  const nameInput = document.getElementById('custom-skill-name-input');
+  if (nameInput) nameInput.value = editingCustomSkillDraft.name;
+  if (typeof SE !== 'undefined') SE.play('cancel');
+  renderCustomSkillBuilder();
+}
+
+function deleteCurrentCustomSkillSlot() {
+  const delId = `custom_${editingCustomSkillSlotIdx}`;
+  customSkillSlots[editingCustomSkillSlotIdx] = null;
+  persistCustomSkills();
+  if (typeof selectedPlayerSkill !== 'undefined' && selectedPlayerSkill === delId) {
+    const fb = (typeof selectedFallbackSkill !== 'undefined' && getCustomSkillSlotIndex(selectedFallbackSkill) === -1)
+      ? selectedFallbackSkill
+      : 'erase_color';
+    if (typeof onPlayerSkillSelectChange === 'function') onPlayerSkillSelectChange(fb);
+  }
+  editingCustomSkillDraft = makeBlankCustomSkillDraft(editingCustomSkillSlotIdx);
+  const nameInput = document.getElementById('custom-skill-name-input');
+  if (nameInput) nameInput.value = editingCustomSkillDraft.name;
+  if (typeof SE !== 'undefined') SE.play('cancel');
+  selectCustomSkillSlot(editingCustomSkillSlotIdx, true);
+  syncSkillPickersAfterCustomChange();
+  showToast(`スロット${editingCustomSkillSlotIdx + 1}を削除しました`);
+}
+
+function saveCurrentCustomSkillSlot() {
+  const nameInput = document.getElementById('custom-skill-name-input');
+  const rawName = (nameInput ? nameInput.value : editingCustomSkillDraft.name || '').trim();
+  editingCustomSkillDraft.name = (rawName || `自作${editingCustomSkillSlotIdx + 1}`).slice(0, 10);
+
+  const info = computeCustomSkillBuildInfo(editingCustomSkillDraft);
+  if (info.invalidExtraOnly) {
+    if (typeof SE !== 'undefined') SE.play('cancel');
+    showToast('最大使用回数増加は発動できるメリット効果と組み合わせてください');
+    return;
+  }
+  if (!info.hasEffectiveNonUseMerit) {
+    if (typeof SE !== 'undefined') SE.play('cancel');
+    showToast('メリット効果を1つ以上選んでください');
+    return;
+  }
+  if (info.totalPoints < 0) {
+    if (typeof SE !== 'undefined') SE.play('cancel');
+    showToast('合計ポイントが0以上になるよう調整してください');
+    return;
+  }
+
+  customSkillSlots[editingCustomSkillSlotIdx] = JSON.parse(JSON.stringify(editingCustomSkillDraft));
+  persistCustomSkills();
+
+  const savedId = `custom_${editingCustomSkillSlotIdx}`;
+  if (typeof onPlayerSkillSelectChange === 'function') {
+    onPlayerSkillSelectChange(savedId);
+  }
+  if (typeof SE !== 'undefined') SE.play('select');
+  closeCustomSkillModal(true);
+  syncSkillPickersAfterCustomChange(savedId);
+  showToast(`自作スキル「${editingCustomSkillDraft.name}」を保存しました！`);
+}
+
+function syncSkillPickersAfterCustomChange(focusSkillId = null) {
+  const modal = document.getElementById('skill-select-modal');
+  if (modal && modal.style.display === 'flex') {
+    if (typeof renderSkillModalPicker === 'function') {
+      renderSkillModalPicker(focusSkillId);
+    } else {
+      renderSkillCarousel('skill-modal-picker', {
+        currentSkillId: focusSkillId || (typeof selectedPlayerSkill !== 'undefined' ? selectedPlayerSkill : 'erase_color'),
+        allowCustom: true,
+        onSelect: (skId) => { if (typeof onPlayerSkillSelectChange === 'function') onPlayerSkillSelectChange(skId); },
+        onCenterClick: () => { if (typeof confirmSkillSelectModal === 'function') confirmSkillSelectModal(); }
+      });
+    }
+  }
+  if (document.getElementById('local-menu')?.style.display === 'flex' && typeof renderLocalMenuUI === 'function') {
+    renderLocalMenuUI();
+  }
+  if (document.getElementById('share-prep-overlay')?.style.display === 'flex' && typeof renderSharePrepUI === 'function') {
+    renderSharePrepUI();
+  }
+}
+
+function renderCustomSkillBuilder() {
+  const info = computeCustomSkillBuildInfo(editingCustomSkillDraft);
+  const ptValEl = document.getElementById('custom-skill-points-val');
+  const ptBadgeEl = document.getElementById('custom-skill-points-badge');
+  const summaryEl = document.getElementById('custom-skill-summary');
+  const saveBtn = document.getElementById('custom-skill-save-btn');
+
+  if (ptValEl) ptValEl.innerText = String(info.totalPoints);
+  if (ptBadgeEl) {
+    ptBadgeEl.classList.toggle('invalid', info.totalPoints < 0);
+  }
+  if (summaryEl) {
+    if (info.invalidExtraOnly) {
+      summaryEl.innerText = '⚠️ 「最大使用回数増加」を使うには、他のアクティブ系メリット効果も選択してください';
+    } else {
+      summaryEl.innerText = info.hasMerit
+        ? info.desc
+        : '初期100ptからメリット効果を選び、足りなければデメリットでPtを増やしてください';
+    }
+  }
+  if (saveBtn) {
+    saveBtn.disabled = !info.isValid;
+  }
+
+  const renderEffects = (containerId, defs, kind) => {
+    const box = document.getElementById(containerId);
+    if (!box) return;
+    box.innerHTML = '';
+    const map = kind === 'merit' ? editingCustomSkillDraft.merits : editingCustomSkillDraft.demerits;
+
+    defs.forEach(def => {
+      const curLv = parseInt(map[def.id] || 0, 10);
+      const maxLv = (kind === 'merit' ? def.costs.length : def.gains.length) - 1;
+
+      const row = document.createElement('div');
+      row.className = 'cs-effect-row' + (curLv > 0 ? ` active ${kind}` : '');
+
+      const head = document.createElement('div');
+      head.className = 'cs-effect-head';
+      const title = document.createElement('span');
+      title.className = 'cs-effect-name';
+      title.innerText = def.name;
+      const curText = document.createElement('span');
+      curText.className = 'cs-effect-cur';
+      curText.innerText = def.levelTexts[curLv] || 'OFF';
+      head.append(title, curText);
+
+      const btns = document.createElement('div');
+      btns.className = 'cs-lv-btns';
+      for (let lv = 0; lv <= maxLv; lv++) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'cs-lv-btn' + (curLv === lv ? ' active' : '');
+        if (lv === 0) {
+          b.innerText = 'OFF';
+        } else if (kind === 'merit') {
+          b.innerText = `Lv${lv} (-${def.costs[lv]})`;
+        } else {
+          b.innerText = `Lv${lv} (+${def.gains[lv]})`;
+        }
+        b.onclick = () => setCustomSkillEffectLevel(kind, def.id, lv);
+        btns.appendChild(b);
+      }
+
+      row.append(head, btns);
+      box.appendChild(row);
+    });
+  };
+
+  renderEffects('custom-skill-merits-list', CUSTOM_SKILL_MERITS, 'merit');
+  renderEffects('custom-skill-demerits-list', CUSTOM_SKILL_DEMERITS, 'demerit');
+}
+
 const AssetCache = new Map();
-const ResolvedCharImgCache = {}; // { 'normal::フレア': url | null, 'lose::フレア': url | null, 'frame::フレア': url | null, 'pazzle_back::フレア': url | null, 'story_back::フレア': url | null }
-const ResolvingCharImgMap = {};  // { 'variant::key': Promise<string|null> }
+const ResolvedCharImgCache = {};
+const ResolvingCharImgMap = {};
 const CustomAssets = { chara: null, bg: null, frame: null };
 let selectedCharId = localStorage.getItem('pdw_char_id') || 'main00';
 let storySelectedCharId = localStorage.getItem('pdw_story_char_id') || (selectedCharId === 'custom' ? 'custom' : 'main00');
@@ -128,12 +647,12 @@ function refreshHubCharSelectOptions() {
     sel.appendChild(opt);
   });
 
-  if (CustomAssets.chara) {
-    const optCustom = document.createElement('option');
-    optCustom.value = 'custom';
-    optCustom.innerText = `固定: ${getPlayerDisplayName()} (マイ)`;
-    sel.appendChild(optCustom);
-  }
+  const optCustom = document.createElement('option');
+  optCustom.value = 'custom';
+  optCustom.innerText = CustomAssets.chara
+    ? `固定: ${getPlayerDisplayName()}`
+    : `固定: ${getPlayerDisplayName()} (未登録時フレア)`;
+  sel.appendChild(optCustom);
 
   const hasCur = Array.from(sel.options).some(o => o.value === curVal);
   sel.value = hasCur ? curVal : 'random';
@@ -461,10 +980,8 @@ async function preloadDefaultCharImages(onProgress = null) {
     if (typeof onProgress === 'function') onProgress(done, total);
   };
 
-  // 最優先：メイン画面背景を先行解決
   await resolveSystemMainImage().finally(tick);
 
-  // 優先順：選択中キャラ & 主人公(フレア)を先に並べ、残りを6並列で安全に解決
   const priorityChars = [];
   const addedNames = new Set();
   const pushCharById = (cid) => {
@@ -505,6 +1022,7 @@ async function preloadDefaultCharImages(onProgress = null) {
 
 // ==========================================
 // 汎用・ループ型 CSS 3D カバーフローエンジン
+// （キーボード/ゲームパッド操作時は一度選択＝決定してから左右切替モードに入る）
 // ==========================================
 function createCoverFlow(container, config) {
   const items = config.items || [];
@@ -541,10 +1059,22 @@ function createCoverFlow(container, config) {
   stage.className = 'cf-stage';
   stageWrap.appendChild(stage);
 
+  const engageHint = document.createElement('div');
+  engageHint.className = 'cf-engage-hint';
+  engageHint.setAttribute('aria-hidden', 'true');
+  stageWrap.appendChild(engageHint);
+
   stageWrap._cfStep = (dir) => stepIndex(dir);
   stageWrap._cfConfirm = (typeof config.onCenterClick === 'function')
     ? () => config.onCenterClick(items[activeIdx], activeIdx)
     : null;
+  stageWrap._cfIsEngaged = () => stageWrap.classList.contains('cf-engaged');
+  stageWrap._cfSetEngaged = (flag) => {
+    stageWrap.classList.toggle('cf-engaged', !!flag);
+  };
+  stageWrap.addEventListener('blur', () => {
+    stageWrap.classList.remove('cf-engaged');
+  });
 
   const cardEls = items.map((item, idx) => {
     const card = document.createElement('div');
@@ -574,6 +1104,7 @@ function createCoverFlow(container, config) {
 
     card.addEventListener('click', () => {
       if (suppressNextClick) return;
+      stageWrap.classList.remove('cf-engaged');
       stageWrap.focus({ preventScroll: true });
       if (idx === activeIdx) {
         if (typeof config.onCenterClick === 'function') {
@@ -602,7 +1133,10 @@ function createCoverFlow(container, config) {
     prevBtn.className = 'cf-nav-btn';
     prevBtn.tabIndex = -1;
     prevBtn.innerText = '◀';
-    prevBtn.onclick = () => stepIndex(-1);
+    prevBtn.onclick = () => {
+      stageWrap.classList.remove('cf-engaged');
+      stepIndex(-1);
+    };
 
     sliderEl = document.createElement('input');
     sliderEl.type = 'range';
@@ -628,7 +1162,10 @@ function createCoverFlow(container, config) {
     nextBtn.className = 'cf-nav-btn';
     nextBtn.tabIndex = -1;
     nextBtn.innerText = '▶';
-    nextBtn.onclick = () => stepIndex(1);
+    nextBtn.onclick = () => {
+      stageWrap.classList.remove('cf-engaged');
+      stepIndex(1);
+    };
 
     ctrlRow.append(prevBtn, sliderEl, nextBtn);
     wrapper.appendChild(ctrlRow);
@@ -651,6 +1188,7 @@ function createCoverFlow(container, config) {
 
   stageWrap.addEventListener('pointerdown', (e) => {
     if (e.button !== undefined && e.button !== 0) return;
+    stageWrap.classList.remove('cf-engaged');
     dragPointerId = e.pointerId;
     dragStartX = e.clientX;
     dragAccumX = 0;
@@ -819,9 +1357,7 @@ function renderCharPicker(containerId, options = {}) {
   let initialIndex = items.findIndex(it => it.id === currentId);
   if (initialIndex < 0) initialIndex = 0;
 
-  const titleText = options.title || (storyOnly
-    ? '使用キャラ選択（左右で切替 / 決定で次へ）'
-    : '使用キャラ選択（左右で切替 / 決定で次へ）');
+  const titleText = options.title || '使用キャラ選択（左右で切替 / 決定で次へ）';
 
   const syncInlineNameBox = (selectedId) => {
     let nameRow = container.querySelector('.char-name-inline-row');
@@ -907,30 +1443,12 @@ function renderCharPicker(containerId, options = {}) {
 
   syncInlineNameBox(currentId);
 }
-
-// --- スキル選択（ループ型3Dカバーフロー・新4種＆ノースキル対応） ---
-function getSkillSubLabel(skillId) {
-  if (skillId === 'no_skill') return '使用不可（スキルなし）';
-  if (skillId === 'sacrifice') return '常時発動（代償効果）';
-  return '最大3回 / 300点毎';
-}
-
+// --- スキル選択（ループ型3Dカバーフロー・自作スキルON/OFF対応） ---
 function renderSkillCarousel(containerId, options = {}) {
   const container = document.getElementById(containerId);
   if (!container) return;
-  const ids = (typeof SKILL_IDS !== 'undefined')
-    ? SKILL_IDS
-    : ['erase_color', 'erase_rows', 'purify_garbage', 'corrupt_enemy_row', 'seal_skill', 'convert_blocks', 'sacrifice', 'no_skill'];
-  const labels = (typeof SKILL_LABELS !== 'undefined') ? SKILL_LABELS : {
-    erase_color: 'マーク全消し',
-    erase_rows: '1・5・9段消し',
-    purify_garbage: 'お邪魔浄化',
-    corrupt_enemy_row: 'お邪魔侵食',
-    seal_skill: 'スキル封印',
-    convert_blocks: 'ブロック変換',
-    sacrifice: '代償',
-    no_skill: 'ノースキル'
-  };
+  const allowCustom = options.allowCustom !== false;
+  const ids = getSelectableSkillIds(allowCustom);
 
   let curId = options.currentSkillId !== undefined
     ? options.currentSkillId
@@ -940,11 +1458,11 @@ function renderSkillCarousel(containerId, options = {}) {
 
   const items = ids.map(id => ({
     id,
-    label: labels[id] || id,
-    icon: SKILL_ICONS[id] || '⚡',
-    desc: SKILL_DESCRIPTIONS[id] || '',
+    label: getSkillLabel(id),
+    icon: getSkillIcon(id),
+    desc: getSkillDesc(id),
     sub: getSkillSubLabel(id),
-    accentColor: SKILL_COLORS[id] || '#ff007f'
+    accentColor: getSkillColor(id)
   }));
 
   createCoverFlow(container, {
@@ -960,7 +1478,9 @@ function renderSkillCarousel(containerId, options = {}) {
       iconBox.innerText = item.icon;
       const lbl = document.createElement('div');
       lbl.className = 'cf-card-label';
-      lbl.style.color = item.id === 'sacrifice' ? '#f87171' : (item.id === 'no_skill' ? '#cbd5e1' : '#ffd700');
+      lbl.style.color = item.id === 'sacrifice'
+        ? '#f87171'
+        : (item.id === 'no_skill' ? '#cbd5e1' : (item.id.startsWith('custom_') ? '#38bdf8' : '#ffd700'));
       lbl.innerText = item.label;
       const sub = document.createElement('div');
       sub.className = 'cf-card-sub';
@@ -986,7 +1506,10 @@ function refreshAllSkillCarousels() {
   const modalPicker = document.getElementById('skill-modal-picker');
   if (modalPicker && document.getElementById('skill-select-modal')?.style.display === 'flex') {
     const curStage = modalPicker.querySelector('.cf-stage-wrap');
-    if (!curStage) renderSkillCarousel('skill-modal-picker');
+    if (!curStage) {
+      if (typeof renderSkillModalPicker === 'function') renderSkillModalPicker();
+      else renderSkillCarousel('skill-modal-picker');
+    }
   }
 }
 
@@ -1084,7 +1607,6 @@ async function loadAllCustomAssets() {
   }
 }
 
-// --- アスペクト比識別＆自動圧縮 ---
 function loadImageFromFile(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -1177,6 +1699,7 @@ async function handleCustomAssetUpload(kind, inputEl) {
     const record = await compressImageSmart(file, kind);
     CustomAssets[kind] = record;
     AssetCache.delete(record.dataUrl);
+    ToneImageCache.delete(record.dataUrl);
     getCachedImage(record.dataUrl);
     await saveCustomAssetDB(kind, record);
     if (kind === 'chara') {
@@ -1299,7 +1822,6 @@ function refreshCustomAssetsUI() {
   refreshHubCharSelectOptions();
 }
 
-// --- 純JS ZIPパーサ＆カスタムセット一括読込 ---
 async function extractZipEntries(arrayBuffer) {
   const bytes = new Uint8Array(arrayBuffer);
   const view = new DataView(arrayBuffer);
@@ -1468,6 +1990,7 @@ async function handleCustomZipUpload(inputEl) {
           const record = await compressImageSmart(blob, kind, entry.baseName);
           CustomAssets[kind] = record;
           AssetCache.delete(record.dataUrl);
+          ToneImageCache.delete(record.dataUrl);
           getCachedImage(record.dataUrl);
           await saveCustomAssetDB(kind, record);
           if (kind === 'chara') {
@@ -1588,7 +2111,6 @@ function buildThemeForCharacter(charId, customCharaDataUrl = null, includeMyGlob
   };
 }
 
-// 盤面外枠のフレームレイヤーを最背面に配置・更新
 function applyBoardFrame(wrapperId, frameSrc) {
   const wrapper = document.getElementById(wrapperId);
   if (!wrapper) return;
@@ -1613,7 +2135,6 @@ function applyBoardFrame(wrapperId, frameSrc) {
   }
 }
 
-// 各種ボタンの背景となる部分・画面全体へのフレーム適用
 function applyGlobalFrameTheme(frameSrc) {
   const absUrl = toAbsoluteAssetUrl(frameSrc);
   const zoneBgEl = document.getElementById('my-zone-frame-bg');
@@ -1637,7 +2158,105 @@ function applyGlobalFrameTheme(frameSrc) {
   }
 }
 
-// --- Canvas 描画補助（縦横アス比対応・高さ基準トリミング） ---
+// ==========================================
+// GB風モード用：スクリーントーン（網点＋4階調ディザ）変換＆キャッシュ
+// ==========================================
+const ToneImageCache = new Map();
+let cachedScreenTonePatternCanvas = null;
+
+function getScreenTonePatternCanvas() {
+  if (cachedScreenTonePatternCanvas) return cachedScreenTonePatternCanvas;
+  const pCvs = document.createElement('canvas');
+  pCvs.width = 4;
+  pCvs.height = 4;
+  const pCtx = pCvs.getContext('2d');
+  pCtx.clearRect(0, 0, 4, 4);
+  pCtx.fillStyle = 'rgba(0, 0, 0, 0.34)';
+  pCtx.fillRect(0, 0, 1, 1);
+  pCtx.fillRect(2, 2, 1, 1);
+  pCtx.fillStyle = 'rgba(255, 255, 255, 0.14)';
+  pCtx.fillRect(2, 0, 1, 1);
+  pCtx.fillRect(0, 2, 1, 1);
+  cachedScreenTonePatternCanvas = pCvs;
+  return pCvs;
+}
+
+function getToneCanvasForImage(img) {
+  if (!img) return null;
+  const srcKey = img.src || '';
+  if (srcKey && ToneImageCache.has(srcKey)) {
+    return ToneImageCache.get(srcKey);
+  }
+  const iw = img.naturalWidth || img.width;
+  const ih = img.naturalHeight || img.height;
+  if (!iw || !ih) return img;
+
+  const maxDim = 420;
+  const scale = Math.min(1, maxDim / Math.max(iw, ih));
+  const tw = Math.max(1, Math.round(iw * scale));
+  const th = Math.max(1, Math.round(ih * scale));
+
+  const cvs = document.createElement('canvas');
+  cvs.width = tw;
+  cvs.height = th;
+  const tCtx = cvs.getContext('2d');
+  tCtx.drawImage(img, 0, 0, tw, th);
+
+  try {
+    const imgData = tCtx.getImageData(0, 0, tw, th);
+    const data = imgData.data;
+    // 4x4 ハーフトーン（網点スクリーン）閾値行列
+    const halftoneMatrix = [
+      12,  5,  6, 13,
+       4,  0,  1,  7,
+      11,  3,  2, 10,
+      14,  8,  9, 15
+    ];
+    const palette = [18, 92, 174, 240];
+
+    for (let y = 0; y < th; y++) {
+      const rowOff = (y & 3) << 2;
+      for (let x = 0; x < tw; x++) {
+        const idx = (y * tw + x) << 2;
+        const a = data[idx + 3];
+        if (a < 24) {
+          data[idx + 3] = 0;
+          continue;
+        }
+        const lum = 0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2];
+        const norm = Math.max(0, Math.min(1, (lum - 14) / 228));
+        const threshold = (halftoneMatrix[rowOff + (x & 3)] + 0.5) / 16 - 0.5;
+        const val = Math.max(0, Math.min(2.999, norm * 3.0 + threshold * 0.92));
+        const level = Math.round(val);
+        const shade = palette[Math.max(0, Math.min(3, level))];
+        data[idx] = shade;
+        data[idx + 1] = shade;
+        data[idx + 2] = shade;
+      }
+    }
+    tCtx.putImageData(imgData, 0, 0);
+  } catch (_) {
+    // file:// 等で getImageData が制限される場合は高コントラストグレースケール＋網点パターン合成へフォールバック
+    tCtx.clearRect(0, 0, tw, th);
+    tCtx.save();
+    tCtx.filter = 'grayscale(100%) contrast(1.48) brightness(1.06)';
+    tCtx.drawImage(img, 0, 0, tw, th);
+    tCtx.restore();
+
+    const pat = tCtx.createPattern(getScreenTonePatternCanvas(), 'repeat');
+    if (pat) {
+      tCtx.save();
+      tCtx.globalCompositeOperation = 'source-atop';
+      tCtx.fillStyle = pat;
+      tCtx.fillRect(0, 0, tw, th);
+      tCtx.restore();
+    }
+  }
+
+  if (srcKey) ToneImageCache.set(srcKey, cvs);
+  return cvs;
+}
+
 function drawImageCover(ctx, img, x, y, w, h) {
   const iw = img.naturalWidth || img.width;
   const ih = img.naturalHeight || img.height;
@@ -1668,6 +2287,7 @@ function drawBoardBgAddon(ctx, canvas, engine, renderer) {
   if (!theme) return;
   const W = canvas.width;
   const H = canvas.height;
+  const gb = (typeof isGbMode !== 'undefined' && isGbMode);
 
   if (!theme.hasCustomBg && !theme.bgSrc && theme.charId && theme.charId !== 'custom' && theme.voiceName) {
     const resolvedBg = getResolvedDefaultPazzleBack(theme.voiceName);
@@ -1686,22 +2306,37 @@ function drawBoardBgAddon(ctx, canvas, engine, renderer) {
     }
   }
 
+  ctx.save();
   if (theme.bgSrc) {
     const bgImg = getCachedImage(theme.bgSrc);
     if (bgImg) {
-      drawImageFitHeight(ctx, bgImg, 0, 0, W, H);
+      const drawBg = gb ? (getToneCanvasForImage(bgImg) || bgImg) : bgImg;
+      drawImageFitHeight(ctx, drawBg, 0, 0, W, H);
     }
   }
 
   const charImg = getThemeNormalImage(theme);
   if (charImg) {
     ctx.save();
-    ctx.globalAlpha = theme.bgSrc ? 0.65 : 0.75;
-    drawImageCover(ctx, charImg, 0, 0, W, H);
+    ctx.globalAlpha = gb ? (theme.bgSrc ? 0.44 : 0.56) : (theme.bgSrc ? 0.65 : 0.75);
+    const drawCh = gb ? (getToneCanvasForImage(charImg) || charImg) : charImg;
+    drawImageCover(ctx, drawCh, 0, 0, W, H);
     ctx.restore();
   }
+  ctx.restore();
 
-  if (theme.bgSrc || charImg) {
+  if (gb) {
+    const pat = ctx.createPattern(getScreenTonePatternCanvas(), 'repeat');
+    if (pat) {
+      ctx.save();
+      ctx.globalAlpha = 0.55;
+      ctx.fillStyle = pat;
+      ctx.fillRect(0, 0, W, H);
+      ctx.restore();
+    }
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.34)';
+    ctx.fillRect(0, 0, W, H);
+  } else if (theme.bgSrc || charImg) {
     ctx.fillStyle = 'rgba(0, 0, 0, 0.16)';
     ctx.fillRect(0, 0, W, H);
   }
@@ -1711,6 +2346,7 @@ function drawBoardFgAddon(ctx, canvas, engine, renderer) {
   const theme = renderer.theme;
   const W = canvas.width;
   const H = canvas.height;
+  const gb = (typeof isGbMode !== 'undefined' && isGbMode);
 
   if ((engine.allowBoardCutin || !engine.isPlayer) && engine.cutinTimer && engine.cutinTimer > 0) {
     engine.cutinTimer--;
@@ -1723,9 +2359,9 @@ function drawBoardFgAddon(ctx, canvas, engine, renderer) {
     const bandY = H * 0.28;
     const bandH = 96;
 
-    ctx.fillStyle = theme ? theme.color : '#ff007f';
+    ctx.fillStyle = gb ? '#f0f0f0' : (theme ? theme.color : '#ff007f');
     ctx.fillRect(0, bandY, W, bandH);
-    ctx.fillStyle = 'rgba(10, 15, 30, 0.86)';
+    ctx.fillStyle = gb ? 'rgba(14, 14, 14, 0.94)' : 'rgba(10, 15, 30, 0.86)';
     ctx.fillRect(0, bandY + 4, W, bandH - 8);
 
     const charImg = getThemeNormalImage(theme);
@@ -1734,12 +2370,13 @@ function drawBoardFgAddon(ctx, canvas, engine, renderer) {
       ctx.beginPath();
       ctx.rect(0, bandY + 4, W, bandH - 8);
       ctx.clip();
-      const iw = charImg.naturalWidth || charImg.width;
-      const ih = charImg.naturalHeight || charImg.height;
+      const srcImg = gb ? (getToneCanvasForImage(charImg) || charImg) : charImg;
+      const iw = srcImg.naturalWidth || srcImg.width;
+      const ih = srcImg.naturalHeight || srcImg.height;
       const cropH = ih > iw * 1.1 ? ih * 0.55 : ih;
       const drawW = 88;
       const drawH = drawW * (cropH / iw);
-      ctx.drawImage(charImg, 0, 0, iw, cropH, 6 + slideX, bandY + 4, drawW, drawH);
+      ctx.drawImage(srcImg, 0, 0, iw, cropH, 6 + slideX, bandY + 4, drawW, drawH);
       ctx.restore();
     }
 
@@ -1758,22 +2395,50 @@ function drawBoardFgAddon(ctx, canvas, engine, renderer) {
 
 async function initAssetsSystem() {
   if (typeof AppLoader !== 'undefined') {
-    AppLoader.show('カスタム・効果音データを準備中...');
+    AppLoader.show('更新データを確認中...');
   }
 
+  if (typeof checkServerUpdatesOnBoot === 'function') {
+    const reloading = await checkServerUpdatesOnBoot();
+    if (reloading) return;
+  }
+
+  let opLaunched = false;
+  const startOpAfterUserGesture = () => {
+    if (opLaunched) return;
+    opLaunched = true;
+    if (typeof OpAnimation !== 'undefined' && typeof OpAnimation.start === 'function') {
+      OpAnimation.start();
+    } else if (typeof SceneBgm !== 'undefined') {
+      SceneBgm.play('mode_select');
+    }
+  };
+
+  const finishBootAndWaitStart = () => {
+    if (typeof AppLoader !== 'undefined' && typeof AppLoader.waitForUserStart === 'function') {
+      AppLoader.waitForUserStart(startOpAfterUserGesture);
+    } else {
+      if (typeof AppLoader !== 'undefined') AppLoader.hide();
+      setTimeout(startOpAfterUserGesture, 180);
+    }
+  };
+
   const safetyTimer = setTimeout(() => {
-    if (typeof AppLoader !== 'undefined') AppLoader.hide();
+    finishBootAndWaitStart();
   }, 4500);
 
   try {
+    if (typeof AppLoader !== 'undefined') {
+      AppLoader.setProgress(22, 'カスタム・効果音データを準備中...');
+    }
     await loadAllCustomAssets();
     if (typeof AppLoader !== 'undefined') {
-      AppLoader.setProgress(30, 'キャラクター・背景画像を読み込み中...');
+      AppLoader.setProgress(35, 'キャラクター・背景画像を読み込み中...');
     }
 
     const preloadPromise = preloadDefaultCharImages((done, total) => {
       if (typeof AppLoader !== 'undefined' && total > 0) {
-        const pct = 30 + Math.round((done / total) * 60);
+        const pct = 35 + Math.round((done / total) * 58);
         AppLoader.setProgress(pct, `キャラクター・背景画像を読み込み中... (${done}/${total})`);
       }
     });
@@ -1782,8 +2447,12 @@ async function initAssetsSystem() {
       ? SE.readyPromise.catch(() => {})
       : Promise.resolve();
 
+    const bgmWait = (typeof SceneBgm !== 'undefined' && SceneBgm.readyPromise)
+      ? SceneBgm.readyPromise.catch(() => {})
+      : Promise.resolve();
+
     await Promise.race([
-      Promise.all([preloadPromise, seWait]),
+      Promise.all([preloadPromise, seWait, bgmWait]),
       new Promise(resolve => setTimeout(resolve, 4000))
     ]);
 
@@ -1793,8 +2462,6 @@ async function initAssetsSystem() {
     }
   } finally {
     clearTimeout(safetyTimer);
-    if (typeof AppLoader !== 'undefined') {
-      AppLoader.hide();
-    }
+    finishBootAndWaitStart();
   }
 }

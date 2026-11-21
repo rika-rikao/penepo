@@ -1,5 +1,5 @@
 // ==========================================
-// COM用 Cheat AI クラス & プレイヤー共用スキルロジック
+// COM用 Cheat AI クラス & プレイヤー共用スキルロジック（ランダム・自作スキル対応）
 // ==========================================
 const SKILL_IDS = [
   'erase_color',
@@ -9,7 +9,8 @@ const SKILL_IDS = [
   'seal_skill',
   'convert_blocks',
   'sacrifice',
-  'no_skill'
+  'no_skill',
+  'random'
 ];
 const ACTIVE_COM_SKILLS = [
   'erase_color',
@@ -27,7 +28,8 @@ const SKILL_LABELS = {
   seal_skill: 'スキル封印',
   convert_blocks: 'ブロック変換',
   sacrifice: '代償',
-  no_skill: 'ノースキル'
+  no_skill: 'ノースキル',
+  random: 'ランダム'
 };
 
 class cheat extends ComAI {
@@ -35,8 +37,19 @@ class cheat extends ComAI {
     super(engine, level, id);
     this.turnCount = 0;
 
+    const allowCustom = options.allowCustom !== false;
     this.skillType = options.skillType || (Math.random() < 0.5 ? 'single' : 'smart_all');
-    this.fixedSkill = options.fixedSkill || ACTIVE_COM_SKILLS[Math.floor(Math.random() * ACTIVE_COM_SKILLS.length)];
+    let chosenFixed = options.fixedSkill || ACTIVE_COM_SKILLS[Math.floor(Math.random() * ACTIVE_COM_SKILLS.length)];
+    if (chosenFixed === 'random') {
+      chosenFixed = (typeof resolvePlayableSkillId === 'function')
+        ? resolvePlayableSkillId('random', allowCustom)
+        : ACTIVE_COM_SKILLS[Math.floor(Math.random() * ACTIVE_COM_SKILLS.length)];
+    } else if (!allowCustom && typeof getCustomSkillSlotIndex === 'function' && getCustomSkillSlotIndex(chosenFixed) !== -1) {
+      chosenFixed = (typeof resolvePlayableSkillId === 'function')
+        ? resolvePlayableSkillId(chosenFixed, false, options.fallbackSkill || 'erase_color')
+        : 'erase_color';
+    }
+    this.fixedSkill = chosenFixed;
 
     if (this.fixedSkill === 'sacrifice') {
       this.engine.setSacrifice(true);
@@ -45,6 +58,11 @@ class cheat extends ComAI {
     } else if (this.fixedSkill === 'no_skill') {
       this.maxSkillUses = 0;
       this.skillUsesLeft = 0;
+    } else if (allowCustom && typeof getCustomSkillConfig === 'function' && getCustomSkillConfig(this.fixedSkill)) {
+      const customCfg = getCustomSkillConfig(this.fixedSkill);
+      const info = applyCustomSkillStartEffects(this.engine, customCfg);
+      this.maxSkillUses = info.hasActiveMerit ? info.maxUses : 0;
+      this.skillUsesLeft = this.maxSkillUses;
     } else {
       const maxUses = (options.maxSkillUses !== undefined) ? options.maxSkillUses : 10;
       this.maxSkillUses = maxUses;
@@ -67,6 +85,12 @@ class cheat extends ComAI {
 
   getRemainingSkills() {
     return this.skillUsesLeft;
+  }
+
+  getSkillDisplayName() {
+    if (this.skillType === 'smart_all') return 'オールスキル';
+    if (typeof getSkillLabel === 'function') return getSkillLabel(this.fixedSkill);
+    return SKILL_LABELS[this.fixedSkill] || this.fixedSkill;
   }
 
   update() {
@@ -182,6 +206,16 @@ class cheat extends ComAI {
   }
 
   tryActivateCheatSkill(analysis) {
+    if (this.skillType === 'single' && typeof getCustomSkillConfig === 'function') {
+      const customCfg = getCustomSkillConfig(this.fixedSkill);
+      if (customCfg) {
+        const preferred = this.level >= 40 ? this.pickStrongestOrTallestEnemyId() : -1;
+        const res = executeCustomPlayerSkill(this.engine, this.id, preferred, customCfg);
+        if (res && res.success) { this.triggerSkillBanner(res.text); return true; }
+        return false;
+      }
+    }
+
     const orderedSkills = this.pickOrderedSkills(analysis);
     for (const skill of orderedSkills) {
       if (skill === 'erase_color') {
@@ -302,6 +336,118 @@ class cheat extends ComAI {
   }
 }
 
+function applyCustomSkillStartEffects(engine, customConfig) {
+  const info = (typeof computeCustomSkillBuildInfo === 'function')
+    ? computeCustomSkillBuildInfo(customConfig)
+    : { hasActiveMerit: true, scoreStep: 300, maxUses: 3 };
+
+  if (!engine || !customConfig) return info;
+
+  const m = customConfig.merits || {};
+  const d = customConfig.demerits || {};
+
+  const graceLv = parseInt(m.passive_grace || 0, 10);
+  const graceFramesMap = [0, 45, 68, 96];
+  const dangerMultMap = [1.0, 1.5, 2.0, 2.5];
+
+  const vulnLv = parseInt(d.dem_vuln_garbage || 0, 10);
+  const incMultMap = [1.0, 1.15, 1.30, 1.50];
+
+  const weakLv = parseInt(d.dem_weak_attack || 0, 10);
+  const flatSub = weakLv === 1 ? 2 : 0;
+  const outMult = weakLv === 2 ? 0.75 : 1.0;
+  const twoTierDrop = weakLv === 3;
+
+  const fastLv = parseInt(d.dem_fast_rise || 0, 10);
+  const speedMultMap = [1.0, 1.20, 1.45, 1.80];
+
+  const timeLv = parseInt(d.dem_time_limit || 0, 10);
+  const autoLoseMap = [0, 180000, 120000, 60000];
+
+  if (typeof engine.setCustomSkillModifiers === 'function') {
+    engine.setCustomSkillModifiers({
+      dangerTimerMult: dangerMultMap[graceLv] || 1.0,
+      chainGraceFrames: graceFramesMap[graceLv] || 0,
+      incomingGarbageMult: incMultMap[vulnLv] || 1.0,
+      outgoingGarbageMult: outMult,
+      outgoingGarbageFlatSub: flatSub,
+      outgoingTwoTierDrop: twoTierDrop,
+      riseSpeedMult: speedMultMap[fastLv] || 1.0,
+      autoLoseMs: autoLoseMap[timeLv] || 0
+    });
+  }
+
+  const startGarbageLv = parseInt(d.dem_start_garbage || 0, 10);
+  if (startGarbageLv > 0) {
+    engine.addGarbage(6, startGarbageLv, false, true);
+    if (engine.garbageQueue.length > 0) {
+      engine.garbageQueue[engine.garbageQueue.length - 1].delay = 40;
+    }
+  }
+
+  return info;
+}
+
+function executeCustomPlayerSkill(engine, senderId, preferredTarget, customConfig) {
+  if (!engine || !customConfig) return { success: false };
+  const m = customConfig.merits || {};
+  let anySuccess = false;
+
+  const eraseColorsLv = parseInt(m.erase_colors || 0, 10);
+  if (eraseColorsLv > 0) {
+    const res = execSkillEraseColor(engine, senderId, eraseColorsLv);
+    if (res && res.success) anySuccess = true;
+  }
+
+  const eraseRowsLv = parseInt(m.erase_rows || 0, 10);
+  if (eraseRowsLv > 0) {
+    const rowSets = {
+      1: [ROWS - 1, ROWS - 5],
+      2: [ROWS - 1, ROWS - 5, ROWS - 9],
+      3: [ROWS - 1, ROWS - 3, ROWS - 5, ROWS - 7, ROWS - 9]
+    };
+    const res = execSkillEraseRows(engine, senderId, rowSets[eraseRowsLv] || rowSets[2]);
+    if (res && res.success) anySuccess = true;
+  }
+
+  const purifyLv = parseInt(m.purify_garbage || 0, 10);
+  if (purifyLv > 0) {
+    const riseSteps = purifyLv === 1 ? 1 : 2;
+    const res = execSkillPurifyGarbage(engine, riseSteps);
+    if (res && res.success) {
+      anySuccess = true;
+      if (purifyLv >= 3) engine.score += 200;
+    }
+  }
+
+  const corruptLv = parseInt(m.corrupt_enemy || 0, 10);
+  if (corruptLv > 0) {
+    const res = execSkillCorruptEnemyRow(senderId, preferredTarget, {
+      rowCount: corruptLv >= 3 ? 2 : 1,
+      dropWidth: corruptLv === 1 ? 0 : (corruptLv === 2 ? 3 : 5)
+    });
+    if (res && res.success) anySuccess = true;
+  }
+
+  const sealLv = parseInt(m.seal_enemy || 0, 10);
+  if (sealLv > 0) {
+    const sealMap = [0, 200, 350, 550];
+    const res = execSkillSealSkill(senderId, preferredTarget, sealMap[sealLv] || 300);
+    if (res && res.success) anySuccess = true;
+  }
+
+  const convertLv = parseInt(m.convert_colors || 0, 10);
+  if (convertLv > 0) {
+    const srcCount = convertLv === 1 ? 2 : (convertLv === 2 ? 3 : 4);
+    const dstCount = convertLv >= 3 ? 1 : 2;
+    const res = execSkillConvertBlocks(engine, srcCount, dstCount);
+    if (res && res.success) anySuccess = true;
+  }
+
+  if (!anySuccess) return { success: false };
+  return { success: true, text: `SKILL: ${customConfig.name || '自作スキル'}!` };
+}
+
 function hasGarbageInEngine(engine) {
   if (!engine) return false;
   for (let r = 0; r < ROWS; r++) {
@@ -345,6 +491,13 @@ function rebalanceGarbageGroupIds(engine) {
 
 function executePlayerCheatSkill(engine, senderId, preferredTarget = -1, chosenSkill = 'erase_color') {
   if (!engine) return { success: false };
+  if (typeof getCustomSkillConfig === 'function') {
+    const customCfg = getCustomSkillConfig(chosenSkill);
+    if (customCfg) {
+      return executeCustomPlayerSkill(engine, senderId, preferredTarget, customCfg);
+    }
+  }
+
   const skill = SKILL_IDS.includes(chosenSkill) ? chosenSkill : 'erase_color';
 
   if (skill === 'no_skill' || skill === 'sacrifice') {
@@ -371,7 +524,7 @@ function executePlayerCheatSkill(engine, senderId, preferredTarget = -1, chosenS
   return { success: false };
 }
 
-function execSkillEraseColor(engine, senderId) {
+function execSkillEraseColor(engine, senderId, colorCount = 2) {
   const presentTypes = new Set();
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
@@ -388,7 +541,7 @@ function execSkillEraseColor(engine, senderId) {
     const j = Math.floor(Math.random() * (i + 1));
     [typeList[i], typeList[j]] = [typeList[j], typeList[i]];
   }
-  const pickedTypes = typeList.slice(0, 2);
+  const pickedTypes = typeList.slice(0, Math.max(1, colorCount));
   const pickedSet = new Set(pickedTypes);
 
   let erased = 0;
@@ -456,15 +609,14 @@ function execSkillEraseRows(engine, senderId, targetRows) {
   return { success: true, text: 'SKILL: 1・5・9段消し!' };
 }
 
-function execSkillPurifyGarbage(engine) {
+function execSkillPurifyGarbage(engine, riseSteps = 2) {
   if (!engine || typeof engine.startPurifySkill !== 'function') return { success: false };
-  const started = engine.startPurifySkill();
+  const started = engine.startPurifySkill(riseSteps);
   if (!started) return { success: false };
   return { success: true, text: 'SKILL: お邪魔浄化!' };
 }
 
-// ランダムで3色のブロックを別の2色のブロックに変える
-function execSkillConvertBlocks(engine) {
+function execSkillConvertBlocks(engine, sourceCount = 3, destCount = 2) {
   const normalIds = COLORS.filter(col => !col.isSpecial).map(col => col.id);
   const presentNormalSet = new Set();
   for (let r = 0; r < ROWS; r++) {
@@ -483,18 +635,18 @@ function execSkillConvertBlocks(engine) {
     const j = Math.floor(Math.random() * (i + 1));
     [presentList[i], presentList[j]] = [presentList[j], presentList[i]];
   }
-  const sourceColors = presentList.slice(0, Math.min(3, presentList.length));
+  const sourceColors = presentList.slice(0, Math.min(sourceCount, presentList.length));
   const sourceSet = new Set(sourceColors);
 
   let otherColors = normalIds.filter(id => !sourceSet.has(id));
-  if (otherColors.length < 2) {
+  if (otherColors.length < destCount) {
     otherColors = normalIds.filter(id => id !== sourceColors[0]);
   }
   for (let i = otherColors.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [otherColors[i], otherColors[j]] = [otherColors[j], otherColors[i]];
   }
-  const destColors = otherColors.slice(0, 2);
+  const destColors = otherColors.slice(0, Math.max(1, destCount));
 
   let converted = 0;
   for (let r = 0; r < ROWS; r++) {
@@ -543,12 +695,11 @@ function collectSkillTargets(senderId, preferredTarget = -1) {
   return target;
 }
 
-// 相手のスキル発動までの残りスコアを300追加する
-function execSkillSealSkill(senderId, preferredTarget = -1) {
+function execSkillSealSkill(senderId, preferredTarget = -1, sealAmount = 300) {
   const target = collectSkillTargets(senderId, preferredTarget);
   if (!target) return { success: false };
 
-  const SEAL_AMOUNT = 300;
+  const SEAL_AMOUNT = sealAmount || 300;
   if (target.isRemote && currentMode === 'online') {
     onlineConnections.forEach(c => {
       if (c && c.open) c.send({ type: 'cheat_seal_skill', senderId, targetId: target.id, amount: SEAL_AMOUNT });
@@ -567,7 +718,7 @@ function execSkillSealSkill(senderId, preferredTarget = -1) {
       if (typeof updateSkillButtonUI === 'function') updateSkillButtonUI();
     } else if (opp.ai) {
       if (typeof opp.ai.skillCooldown === 'number') {
-        opp.ai.skillCooldown += 480;
+        opp.ai.skillCooldown += Math.round(SEAL_AMOUNT * 1.6);
       }
       opp.engine.cutinMax = 50;
       opp.engine.cutinTimer = 50;
@@ -581,9 +732,12 @@ function execSkillSealSkill(senderId, preferredTarget = -1) {
   return { success: true, text: 'SKILL: スキル封印!' };
 }
 
-function execSkillCorruptEnemyRow(senderId, preferredTarget = -1) {
+function execSkillCorruptEnemyRow(senderId, preferredTarget = -1, options = {}) {
   const target = collectSkillTargets(senderId, preferredTarget);
   if (!target) return { success: false };
+
+  const rowCount = Math.max(1, options.rowCount || 1);
+  const dropWidth = options.dropWidth !== undefined ? options.dropWidth : 3;
 
   const candidateRows = [];
   const fallbackRows = [];
@@ -606,16 +760,25 @@ function execSkillCorruptEnemyRow(senderId, preferredTarget = -1) {
   const rowPool = candidateRows.length > 0 ? candidateRows : fallbackRows;
   if (rowPool.length === 0) return { success: false };
 
-  const chosenRow = rowPool[Math.floor(Math.random() * rowPool.length)];
+  for (let i = rowPool.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [rowPool[i], rowPool[j]] = [rowPool[j], rowPool[i]];
+  }
+  const chosenRows = rowPool.slice(0, Math.min(rowCount, rowPool.length));
+
   if (target.isRemote && currentMode === 'online') {
-    onlineConnections.forEach(c => {
-      if (c && c.open) c.send({ type: 'cheat_corrupt_row', senderId, targetId: target.id, row: chosenRow });
+    chosenRows.forEach((chosenRow) => {
+      onlineConnections.forEach(c => {
+        if (c && c.open) c.send({ type: 'cheat_corrupt_row', senderId, targetId: target.id, row: chosenRow, dropWidth });
+      });
     });
   } else {
-    applyCorruptRowToEngine(target.engine, chosenRow);
-    target.engine.addGarbage(3, 1, false);
-    if (target.engine.garbageQueue.length > 0) {
-      target.engine.garbageQueue[target.engine.garbageQueue.length - 1].delay = 45;
+    chosenRows.forEach(r => applyCorruptRowToEngine(target.engine, r));
+    if (dropWidth > 0) {
+      target.engine.addGarbage(dropWidth, 1, false);
+      if (target.engine.garbageQueue.length > 0) {
+        target.engine.garbageQueue[target.engine.garbageQueue.length - 1].delay = 45;
+      }
     }
   }
 

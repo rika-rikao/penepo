@@ -1,5 +1,5 @@
 // ==========================================
-// ゲームエンジン
+// ゲームエンジン（落下・浮遊テンポ高速化 / スワップ・お邪魔着地フック / GB風モノクロ・ドット識別描画 / COM個性・ランダム思考対応）
 // ==========================================
 function createSeededRng(seed) {
   let s = seed >>> 0;
@@ -23,8 +23,19 @@ class PonEngine {
     this.isPractice = false;
     this.isSacrifice = false;
     this.chainGraceTimer = 0;
-    this.chainGraceMax = 68;
+    this.chainGraceMax = 0;
     this.nextGroupId = 1;
+
+    this.skillModifiers = {
+      dangerTimerMult: 1.0,
+      chainGraceFrames: 0,
+      incomingGarbageMult: 1.0,
+      outgoingGarbageMult: 1.0,
+      outgoingGarbageFlatSub: 0,
+      outgoingTwoTierDrop: false,
+      riseSpeedMult: 1.0,
+      autoLoseMs: 0
+    };
     
     this.baseRiseSpeed = 0.0012 - (handicap - 3) * 0.0003;
     if (this.baseRiseSpeed < 0.0003) this.baseRiseSpeed = 0.0003;
@@ -44,6 +55,8 @@ class PonEngine {
     this.onStateChange = onStateChange;
     this.onSendGarbage = onSendGarbage;
     this.onRowPushed = null;
+    this.onSwap = null;
+    this.onGarbageLanded = null;
     
     this.isRisingManualBtn = false;
     this.isRisingManualKey = false;
@@ -53,13 +66,60 @@ class PonEngine {
   }
 
   getMaxDangerTimer() {
-    return this.isSacrifice ? 360 : 180;
+    const mult = this.skillModifiers ? (this.skillModifiers.dangerTimerMult || 1.0) : 1.0;
+    return Math.round(180 * mult);
   }
 
   setSacrifice(enabled) {
     this.isSacrifice = !!enabled;
-    this.dangerTimer = this.getMaxDangerTimer();
+    if (enabled) {
+      this.setCustomSkillModifiers({
+        dangerTimerMult: 2.0,
+        chainGraceFrames: 68,
+        incomingGarbageMult: 1.2,
+        outgoingGarbageMult: 1.0,
+        outgoingGarbageFlatSub: 0,
+        outgoingTwoTierDrop: true,
+        riseSpeedMult: 1.0,
+        autoLoseMs: 180000
+      });
+    } else {
+      this.setCustomSkillModifiers(null);
+    }
+  }
+
+  setCustomSkillModifiers(mods) {
+    if (!mods) {
+      this.skillModifiers = {
+        dangerTimerMult: 1.0,
+        chainGraceFrames: 0,
+        incomingGarbageMult: 1.0,
+        outgoingGarbageMult: 1.0,
+        outgoingGarbageFlatSub: 0,
+        outgoingTwoTierDrop: false,
+        riseSpeedMult: 1.0,
+        autoLoseMs: 0
+      };
+    } else {
+      this.skillModifiers = {
+        dangerTimerMult: mods.dangerTimerMult || 1.0,
+        chainGraceFrames: mods.chainGraceFrames || 0,
+        incomingGarbageMult: mods.incomingGarbageMult || 1.0,
+        outgoingGarbageMult: mods.outgoingGarbageMult || 1.0,
+        outgoingGarbageFlatSub: mods.outgoingGarbageFlatSub || 0,
+        outgoingTwoTierDrop: !!mods.outgoingTwoTierDrop,
+        riseSpeedMult: mods.riseSpeedMult || 1.0,
+        autoLoseMs: mods.autoLoseMs || 0
+      };
+    }
+    this.chainGraceMax = this.skillModifiers.chainGraceFrames;
     this.chainGraceTimer = 0;
+    this.dangerTimer = this.getMaxDangerTimer();
+    this.riseSpeed = this.baseRiseSpeed * (this.skillModifiers.riseSpeedMult || 1.0);
+  }
+
+  hasChainGraceEnabled() {
+    return this.isSacrifice || (this.skillModifiers && this.skillModifiers.chainGraceFrames > 0);
   }
 
   hasAnyMovingBlock() {
@@ -292,16 +352,17 @@ class PonEngine {
     
     if (this.grid[r][c]) {
        this.grid[r][c].chainEligible = false;
-       this.grid[r][c].swapAnim = { dir: -1, timer: 6 };
+       this.grid[r][c].swapAnim = { dir: -1, timer: 5 };
     }
     if (this.grid[r][c+1]) {
        this.grid[r][c+1].chainEligible = false;
-       this.grid[r][c+1].swapAnim = { dir: 1, timer: 6 };
+       this.grid[r][c+1].swapAnim = { dir: 1, timer: 5 };
     }
 
-    if (this.grid[r][c] && r+1 < this.rows && this.grid[r+1][c] === null) { this.grid[r][c].state = 'hover'; this.grid[r][c].timer = 14; }
-    if (this.grid[r][c+1] && r+1 < this.rows && this.grid[r+1][c+1] === null) { this.grid[r][c+1].state = 'hover'; this.grid[r][c+1].timer = 14; }
+    if (this.grid[r][c] && r+1 < this.rows && this.grid[r+1][c] === null) { this.grid[r][c].state = 'hover'; this.grid[r][c].timer = 10; }
+    if (this.grid[r][c+1] && r+1 < this.rows && this.grid[r+1][c+1] === null) { this.grid[r][c+1].state = 'hover'; this.grid[r][c+1].timer = 10; }
 
+    if (this.onSwap) this.onSwap();
     this.checkMatches();
     return true;
   }
@@ -339,7 +400,7 @@ class PonEngine {
     if (this.onRowPushed) this.onRowPushed();
   }
 
-  startPurifySkill() {
+  startPurifySkill(riseSteps = 2) {
     if (this.purifyState && this.purifyState.active) return false;
     let garbageCount = 0;
     for (let r = 0; r < this.rows; r++) {
@@ -363,7 +424,8 @@ class PonEngine {
 
     this.purifyState = {
       active: true,
-      step: 'rise1',
+      step: riseSteps >= 1 ? 'rise1' : 'wait_anim',
+      remainingRises: Math.max(0, riseSteps),
       stepTimer: 0,
       animTimer: 46,
       overflowRows: []
@@ -397,8 +459,12 @@ class PonEngine {
       this.riseOffset += 0.09;
       if (this.riseOffset >= 1.0) {
         this.pushRowForPurifySkill();
-        ps.step = 'pause_between';
-        ps.stepTimer = 8;
+        if (ps.remainingRises >= 2) {
+          ps.step = 'pause_between';
+          ps.stepTimer = 8;
+        } else {
+          ps.step = 'wait_anim';
+        }
       }
     } else if (ps.step === 'pause_between') {
       ps.stepTimer--;
@@ -468,15 +534,16 @@ class PonEngine {
     this.checkMatches();
   }
 
-  addGarbage(w, h, isHard = false, skipSacrificeMult = false) { 
+  addGarbage(w, h, isHard = false, skipIncomingMult = false) { 
     let adjustedH = h;
     if (this.handicap === 1) adjustedH = Math.floor(h * 1.5);
     else if (this.handicap === 2) adjustedH = Math.floor(h * 1.25);
     else if (this.handicap === 4) adjustedH = Math.ceil(h * 0.75);
     else if (this.handicap === 5) adjustedH = Math.ceil(h * 0.5);
 
-    if (this.isSacrifice && !skipSacrificeMult) {
-      adjustedH = Math.ceil(adjustedH * 1.2);
+    const incMult = this.skillModifiers ? (this.skillModifiers.incomingGarbageMult || 1.0) : (this.isSacrifice ? 1.2 : 1.0);
+    if (!skipIncomingMult && incMult > 1.0) {
+      adjustedH = Math.ceil(adjustedH * incMult);
     }
     
     if (adjustedH < 1) adjustedH = 1;
@@ -614,16 +681,17 @@ class PonEngine {
     
     this.timeElapsed += deltaTime;
 
-    // スキル「代償」：3分（180,000ms）経過で自動敗北
-    if (this.isSacrifice && !this.isPractice && this.timeElapsed >= 180000 && !this.gameOver) {
+    const autoLoseMs = this.skillModifiers ? (this.skillModifiers.autoLoseMs || 0) : (this.isSacrifice ? 180000 : 0);
+    if (autoLoseMs > 0 && !this.isPractice && this.timeElapsed >= autoLoseMs && !this.gameOver) {
       this.gameOver = true;
       this.startGameOverFillAnim();
       if (this.onStateChange) this.onStateChange('gameover');
       return;
     }
 
+    const speedMult = this.skillModifiers ? (this.skillModifiers.riseSpeedMult || 1.0) : 1.0;
     if (this.timeElapsed > 30000 && !this.keepSpeed) {
-      this.riseSpeed = this.baseRiseSpeed * Math.pow(1.05, Math.floor((this.timeElapsed - 30000) / 20000));
+      this.riseSpeed = this.baseRiseSpeed * speedMult * Math.pow(1.05, Math.floor((this.timeElapsed - 30000) / 20000));
     }
 
     let needsMatchCheck = false;
@@ -698,7 +766,7 @@ class PonEngine {
         blocks.forEach(b => {
           if (b.state === 'transformed_wait' || b.state === 'transforming_wait') {
             b.state = 'hover';
-            b.timer = 15;
+            b.timer = 10;
             b.fallY = 0;
             if (typeof b.type === 'number') {
               delete b.groupId;
@@ -819,7 +887,7 @@ class PonEngine {
                   && !ub.transformGroupId
                   && ub.state !== 'transforming' && ub.state !== 'transforming_wait' && ub.state !== 'transformed_wait') {
                 ub.state = 'hover';
-                ub.timer = 17;
+                ub.timer = 11;
                 ub.chainEligible = true;
               } else {
                 break;
@@ -887,9 +955,10 @@ class PonEngine {
               item.block.fallY = 0;
             });
             needsMatchCheck = true;
+            if (this.onGarbageLanded) this.onGarbageLanded();
           }
         } else {
-          leader.fallY += 0.35;
+          leader.fallY += 0.48;
           cells.forEach(item => item.block.fallY = leader.fallY);
           if (leader.fallY >= 1.0) {
             cells.sort((a, b) => b.r - a.r);
@@ -923,6 +992,7 @@ class PonEngine {
               needsMatchCheck = true;
               SE.play('falledBlock');
               this.shakeTimer = 15;
+              if (this.onGarbageLanded) this.onGarbageLanded();
             }
           }
         }
@@ -938,7 +1008,7 @@ class PonEngine {
         if (!supported) {
           cells.forEach(item => {
             item.block.state = 'hover';
-            item.block.timer = 12;
+            item.block.timer = 9;
           });
         }
       }
@@ -981,7 +1051,7 @@ class PonEngine {
 
           if (leader.state === 'normal') {
             leader.state = 'hover';
-            leader.timer = 14;
+            leader.timer = 10;
           }
 
           for (const item of stack) item.block.state = leader.state;
@@ -1006,7 +1076,7 @@ class PonEngine {
               for (const item of stack) { item.block.state = 'normal'; item.block.fallY = 0; }
               needsMatchCheck = true;
             } else {
-              leader.fallY += 0.35;
+              leader.fallY += 0.48;
               for (const item of stack) item.block.fallY = leader.fallY;
               
               if (leader.fallY >= 1.0) {
@@ -1033,8 +1103,7 @@ class PonEngine {
 
     if (needsMatchCheck) this.checkMatches();
 
-    // 代償：盤面静止後も連鎖猶予時間（chainGraceTimer）が0になるまで連鎖判定を維持
-    if (this.isSacrifice && this.chain >= 1 && !this.hasAnyMovingBlock()) {
+    if (this.hasChainGraceEnabled() && this.chain >= 1 && !this.hasAnyMovingBlock()) {
       if (this.chainGraceTimer > 0) {
         this.chainGraceTimer--;
       }
@@ -1083,7 +1152,7 @@ class PonEngine {
       let chainActive = false;
       let hasSpecial = false;
 
-      if (this.isSacrifice && this.chain >= 1 && this.chainGraceTimer > 0) {
+      if (this.hasChainGraceEnabled() && this.chain >= 1 && this.chainGraceTimer > 0) {
         chainActive = true;
       }
 
@@ -1096,7 +1165,7 @@ class PonEngine {
       });
 
       if (chainActive) this.chain++; else this.chain = 1;
-      if (this.isSacrifice) {
+      if (this.hasChainGraceEnabled()) {
         this.chainGraceTimer = this.chainGraceMax;
       }
 
@@ -1146,9 +1215,9 @@ class PonEngine {
 
       this.score += matchedPositions.size * 10 * this.chain;
 
+      const twoTierDrop = this.isSacrifice || (this.skillModifiers && this.skillModifiers.outgoingTwoTierDrop);
       let totalBlocks = 0;
-      if (this.isSacrifice) {
-        // 代償：送信お邪魔2段階低下（4連鎖〜 / 同時消し6個〜）
+      if (twoTierDrop) {
         if (this.chain >= 4) {
           totalBlocks += (this.chain - 3) * 6;
         }
@@ -1162,6 +1231,15 @@ class PonEngine {
         else if (matchedPositions.size === 5) totalBlocks += 4;
         else if (matchedPositions.size === 6) totalBlocks += 5;
         else if (matchedPositions.size >= 7) totalBlocks += 6;
+      }
+
+      if (totalBlocks > 0 && this.skillModifiers) {
+        if (this.skillModifiers.outgoingGarbageMult < 1.0) {
+          totalBlocks = Math.max(0, Math.floor(totalBlocks * this.skillModifiers.outgoingGarbageMult));
+        }
+        if (this.skillModifiers.outgoingGarbageFlatSub > 0) {
+          totalBlocks = Math.max(0, totalBlocks - this.skillModifiers.outgoingGarbageFlatSub);
+        }
       }
 
       if (hasSpecial) {
@@ -1179,7 +1257,7 @@ class PonEngine {
       }
     } else {
       if (!this.hasAnyMovingBlock()) {
-        if (this.isSacrifice && this.chain >= 1 && this.chainGraceTimer > 0) {
+        if (this.hasChainGraceEnabled() && this.chain >= 1 && this.chainGraceTimer > 0) {
           return;
         }
         this.finishChain();
@@ -1187,8 +1265,20 @@ class PonEngine {
     }
   }
 }
+// ==========================================
+// GB風モード用：ブロック濃淡＆大柄識別パターン定義
+// ==========================================
+const GB_BLOCK_PALETTE = {
+  1: { bg: '#101010', text: '#ffffff', textStroke: '#000000', stroke: '#ffffff', accent: 'rgba(255,255,255,0.9)', pattern: 'double_box_dark' },
+  2: { bg: '#f8f8f8', text: '#0a0a0a', textStroke: '#ffffff', stroke: '#111111', accent: '#111111',               pattern: 'corner_triangles' },
+  3: { bg: '#303030', text: '#000000', textStroke: '#ffffff', stroke: '#ffffff', accent: '#ececec',               pattern: 'checker_bold' },
+  4: { bg: '#e2e2e2', text: '#000000', textStroke: '#ffffff', stroke: '#111111', accent: '#222222',               pattern: 'h_stripes_bold' },
+  5: { bg: '#585858', text: '#ffffff', textStroke: '#000000', stroke: '#e8e8e8', accent: '#f0f0f0',               pattern: 'diag_bold' },
+  6: { bg: '#9e9e9e', text: '#ffffff', textStroke: '#000000', stroke: '#141414', accent: '#ffffff',               pattern: 'cross_frame' },
+  7: { bg: '#ffffff', text: '#000000', textStroke: '#ffffff', stroke: '#000000', accent: '#000000',               pattern: 'special_frame' }
+};
 
-// --- 描画エンジン（追加素材なしで視認性・立体感＆4隅外飛び出しパーティクル＆代償赤黒オーラ強化） ---
+// --- 描画エンジン ---
 class BoardRenderer {
   constructor(canvasId) {
     this.canvas = document.getElementById(canvasId);
@@ -1198,42 +1288,120 @@ class BoardRenderer {
     this.theme = null;
   }
 
+  isGbActive() {
+    return (typeof isGbMode !== 'undefined' && isGbMode);
+  }
+
   drawSacrificeAura(ctx, engine) {
-    if (!engine.isSacrifice || engine.endAnim) return;
+    const hasAutoLose = engine.skillModifiers && engine.skillModifiers.autoLoseMs > 0;
+    const hasGrace = engine.hasChainGraceEnabled && engine.hasChainGraceEnabled();
+    if ((!engine.isSacrifice && !hasAutoLose && !hasGrace) || engine.endAnim) return;
+
     const W = this.canvas.width;
     const H = this.canvas.height;
     const t = Date.now() * 0.004;
     const pulse = 0.5 + 0.5 * Math.sin(t);
+    const gb = this.isGbActive();
 
     ctx.save();
-    const edgeGrad = ctx.createRadialGradient(
-      W / 2, H / 2, W * 0.22,
-      W / 2, H / 2, Math.max(W, H) * 0.65
-    );
-    edgeGrad.addColorStop(0, 'rgba(0, 0, 0, 0)');
-    edgeGrad.addColorStop(0.65, `rgba(60, 0, 12, ${0.18 + pulse * 0.12})`);
-    edgeGrad.addColorStop(1, `rgba(185, 28, 28, ${0.38 + pulse * 0.18})`);
-    ctx.fillStyle = edgeGrad;
-    ctx.fillRect(0, 0, W, H);
+    if (engine.isSacrifice || hasAutoLose) {
+      const edgeGrad = ctx.createRadialGradient(
+        W / 2, H / 2, W * 0.22,
+        W / 2, H / 2, Math.max(W, H) * 0.65
+      );
+      edgeGrad.addColorStop(0, 'rgba(0, 0, 0, 0)');
+      edgeGrad.addColorStop(0.65, gb ? `rgba(30, 30, 30, ${0.22 + pulse * 0.14})` : `rgba(60, 0, 12, ${0.18 + pulse * 0.12})`);
+      edgeGrad.addColorStop(1, gb ? `rgba(220, 220, 220, ${0.32 + pulse * 0.18})` : `rgba(185, 28, 28, ${0.38 + pulse * 0.18})`);
+      ctx.fillStyle = edgeGrad;
+      ctx.fillRect(0, 0, W, H);
 
-    for (let i = 0; i < 8; i++) {
-      const seed = i * 1.73;
-      const px = ((Math.sin(seed * 3.1 + t * 0.5) * 0.5 + 0.5) * (W - 16)) + 8;
-      const py = H - (((t * 38 + i * 54) % (H + 20)) - 10);
-      const rad = 3 + (i % 3) * 2;
-      ctx.fillStyle = i % 2 === 0 ? 'rgba(220, 38, 38, 0.32)' : 'rgba(20, 0, 5, 0.45)';
-      ctx.beginPath();
-      ctx.arc(px, py, rad, 0, Math.PI * 2);
-      ctx.fill();
+      for (let i = 0; i < 8; i++) {
+        const seed = i * 1.73;
+        const px = ((Math.sin(seed * 3.1 + t * 0.5) * 0.5 + 0.5) * (W - 16)) + 8;
+        const py = H - (((t * 38 + i * 54) % (H + 20)) - 10);
+        const rad = 3 + (i % 3) * 2;
+        ctx.fillStyle = gb
+          ? (i % 2 === 0 ? 'rgba(220, 220, 220, 0.35)' : 'rgba(20, 20, 20, 0.45)')
+          : (i % 2 === 0 ? 'rgba(220, 38, 38, 0.32)' : 'rgba(20, 0, 5, 0.45)');
+        ctx.beginPath();
+        ctx.arc(px, py, rad, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
 
-    // 連鎖猶予発動中は上端に薄いゴールドの猶予ゲージを表示
     if (engine.chain >= 1 && engine.chainGraceTimer > 0 && !engine.hasAnyMovingBlock()) {
       const ratio = Math.max(0, Math.min(1, engine.chainGraceTimer / (engine.chainGraceMax || 68)));
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
       ctx.fillRect(4, 3, W - 8, 4);
-      ctx.fillStyle = '#ffd700';
+      ctx.fillStyle = gb ? '#ffffff' : '#ffd700';
       ctx.fillRect(4, 3, (W - 8) * ratio, 4);
+    }
+    ctx.restore();
+  }
+
+  drawGbDotPattern(ctx, bx, by, bw, bh, radius, gbStyle) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.roundRect(bx + 1, by + 1, bw - 2, bh - 2, Math.max(4, radius - 1));
+    ctx.clip();
+
+    if (gbStyle.pattern === 'double_box_dark') {
+      // ID 1 (♥): 濃黒 + 内側白二重枠
+      ctx.strokeStyle = gbStyle.accent;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(bx + 4.5, by + 4.5, bw - 9, bh - 9);
+    } else if (gbStyle.pattern === 'corner_triangles') {
+      // ID 2 (★): 純白 + 四隅の大きい黒三角コーナーマーク
+      ctx.fillStyle = gbStyle.accent;
+      const cSize = 8;
+      // 左上
+      ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(bx + cSize, by); ctx.lineTo(bx, by + cSize); ctx.closePath(); ctx.fill();
+      // 右上
+      ctx.beginPath(); ctx.moveTo(bx + bw, by); ctx.lineTo(bx + bw - cSize, by); ctx.lineTo(bx + bw, by + cSize); ctx.closePath(); ctx.fill();
+      // 左下
+      ctx.beginPath(); ctx.moveTo(bx, by + bh); ctx.lineTo(bx + cSize, by + bh); ctx.lineTo(bx, by + bh - cSize); ctx.closePath(); ctx.fill();
+      // 右下
+      ctx.beginPath(); ctx.moveTo(bx + bw, by + bh); ctx.lineTo(bx + bw - cSize, by + bh); ctx.lineTo(bx + bw, by + bh - cSize); ctx.closePath(); ctx.fill();
+    } else if (gbStyle.pattern === 'checker_bold') {
+      // ID 3 (◆): 大きくくっきりした市松模様（チェッカー）
+      ctx.fillStyle = gbStyle.accent;
+      const cell = 6;
+      for (let py = by, r = 0; py < by + bh; py += cell, r++) {
+        for (let px = bx, c = 0; px < bx + bw; px += cell, c++) {
+          if ((r + c) % 2 === 0) {
+            ctx.fillRect(px, py, cell, cell);
+          }
+        }
+      }
+    } else if (gbStyle.pattern === 'h_stripes_bold') {
+      // ID 4 (♣): 明灰に太い横ボーダー帯
+      ctx.fillStyle = gbStyle.accent;
+      ctx.fillRect(bx, by + 4, bw, 4);
+      ctx.fillRect(bx, by + Math.floor(bh / 2) - 2, bw, 4);
+      ctx.fillRect(bx, by + bh - 8, bw, 4);
+    } else if (gbStyle.pattern === 'diag_bold') {
+      // ID 5 (▲): 暗灰に太い斜め45°ストライプ
+      ctx.strokeStyle = gbStyle.accent;
+      ctx.lineWidth = 3.2;
+      for (let d = -bh; d < bw + bh; d += 9) {
+        ctx.beginPath();
+        ctx.moveTo(bx + d, by + bh);
+        ctx.lineTo(bx + d + bh, by);
+        ctx.stroke();
+      }
+    } else if (gbStyle.pattern === 'cross_frame') {
+      // ID 6 (●): 中灰に太い白枠＋縦横の太十字バー
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.58)';
+      ctx.fillRect(bx + bw / 2 - 2.5, by, 5, bh);
+      ctx.fillRect(bx, by + bh / 2 - 2.5, bw, 5);
+      ctx.strokeStyle = '#141414';
+      ctx.lineWidth = 1.6;
+      ctx.strokeRect(bx + 3.5, by + 3.5, bw - 7, bh - 7);
+    } else if (gbStyle.pattern === 'special_frame') {
+      // ID 7 (！): 二重太枠＋角ドット
+      ctx.strokeStyle = gbStyle.accent;
+      ctx.lineWidth = 2.4;
+      ctx.strokeRect(bx + 4, by + 4, bw - 8, bh - 8);
     }
     ctx.restore();
   }
@@ -1244,11 +1412,13 @@ class BoardRenderer {
     const by = y + pad;
     const bw = CELL_PX - pad * 2;
     const bh = CELL_PX - pad * 2;
-    const radius = 8;
+    const radius = 7;
+    const gb = this.isGbActive();
+    const gbStyle = gb ? (GB_BLOCK_PALETTE[conf.id] || GB_BLOCK_PALETTE[3]) : null;
 
     ctx.save();
     if (isNextRow) {
-      ctx.globalAlpha = 0.42;
+      ctx.globalAlpha = gb ? 0.36 : 0.42;
     }
 
     if (matchTimer > 0 && matchTimer <= 12) {
@@ -1258,33 +1428,55 @@ class BoardRenderer {
       ctx.translate(-(x + CELL_PX / 2), -(y + CELL_PX / 2));
     }
 
-    ctx.fillStyle = isFlashing ? '#94a3b8' : conf.bg;
-    ctx.beginPath();
-    ctx.roundRect(bx, by, bw, bh, radius);
-    ctx.fill();
-
-    if (!isFlashing) {
-      const topGrad = ctx.createLinearGradient(bx, by, bx, by + bh);
-      topGrad.addColorStop(0, 'rgba(255, 255, 255, 0.42)');
-      topGrad.addColorStop(0.42, 'rgba(255, 255, 255, 0.08)');
-      topGrad.addColorStop(0.55, 'rgba(0, 0, 0, 0.0)');
-      topGrad.addColorStop(1, 'rgba(0, 0, 0, 0.34)');
-      ctx.fillStyle = topGrad;
+    if (gb) {
+      ctx.fillStyle = isFlashing ? '#ffffff' : gbStyle.bg;
       ctx.beginPath();
       ctx.roundRect(bx, by, bw, bh, radius);
       ctx.fill();
 
-      ctx.strokeStyle = conf.isSpecial ? 'rgba(0, 0, 0, 0.25)' : 'rgba(255, 255, 255, 0.36)';
-      ctx.lineWidth = 1.25;
-      ctx.beginPath();
-      ctx.roundRect(bx + 1.5, by + 1.5, bw - 3, bh - 3, Math.max(4, radius - 2));
-      ctx.stroke();
+      if (!isFlashing) {
+        this.drawGbDotPattern(ctx, bx, by, bw, bh, radius, gbStyle);
+        ctx.strokeStyle = gbStyle.stroke;
+        ctx.lineWidth = 2.2;
+        ctx.beginPath();
+        ctx.roundRect(bx + 0.8, by + 0.8, bw - 1.6, bh - 1.6, Math.max(4, radius - 1));
+        ctx.stroke();
+      } else {
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 2.4;
+        ctx.beginPath();
+        ctx.roundRect(bx + 1, by + 1, bw - 2, bh - 2, radius);
+        ctx.stroke();
+      }
     } else {
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
-      ctx.lineWidth = 1.5;
+      ctx.fillStyle = isFlashing ? '#94a3b8' : conf.bg;
       ctx.beginPath();
-      ctx.roundRect(bx + 1, by + 1, bw - 2, bh - 2, radius);
-      ctx.stroke();
+      ctx.roundRect(bx, by, bw, bh, radius);
+      ctx.fill();
+
+      if (!isFlashing) {
+        const topGrad = ctx.createLinearGradient(bx, by, bx, by + bh);
+        topGrad.addColorStop(0, 'rgba(255, 255, 255, 0.42)');
+        topGrad.addColorStop(0.42, 'rgba(255, 255, 255, 0.08)');
+        topGrad.addColorStop(0.55, 'rgba(0, 0, 0, 0.0)');
+        topGrad.addColorStop(1, 'rgba(0, 0, 0, 0.34)');
+        ctx.fillStyle = topGrad;
+        ctx.beginPath();
+        ctx.roundRect(bx, by, bw, bh, radius);
+        ctx.fill();
+
+        ctx.strokeStyle = conf.isSpecial ? 'rgba(0, 0, 0, 0.25)' : 'rgba(255, 255, 255, 0.36)';
+        ctx.lineWidth = 1.25;
+        ctx.beginPath();
+        ctx.roundRect(bx + 1.5, by + 1.5, bw - 3, bh - 3, Math.max(4, radius - 2));
+        ctx.stroke();
+      } else {
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.roundRect(bx + 1, by + 1, bw - 2, bh - 2, radius);
+        ctx.stroke();
+      }
     }
 
     if (isNextRow) {
@@ -1296,21 +1488,37 @@ class BoardRenderer {
 
     const cx = x + CELL_PX / 2;
     const cy = y + CELL_PX / 2 + bounceY;
-    ctx.font = 'bold 16px sans-serif';
+    ctx.font = gb ? '900 19px sans-serif' : 'bold 16px sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    if (!isFlashing && !conf.isSpecial) {
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
-      ctx.fillText(conf.symbol, cx, cy + 1.5);
+
+    if (gb) {
+      if (!isFlashing) {
+        ctx.lineJoin = 'round';
+        ctx.lineWidth = 4.2;
+        ctx.strokeStyle = gbStyle.textStroke;
+        ctx.strokeText(conf.symbol, cx, cy);
+        ctx.fillStyle = gbStyle.text;
+        ctx.fillText(conf.symbol, cx, cy);
+      } else {
+        ctx.fillStyle = '#000000';
+        ctx.fillText(conf.symbol, cx, cy);
+      }
+    } else {
+      if (!isFlashing && !conf.isSpecial) {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+        ctx.fillText(conf.symbol, cx, cy + 1.5);
+      }
+      ctx.fillStyle = isFlashing ? '#ffffff' : (conf.textColor || '#ffffff');
+      ctx.fillText(conf.symbol, cx, cy);
     }
-    ctx.fillStyle = isFlashing ? '#ffffff' : (conf.textColor || '#ffffff');
-    ctx.fillText(conf.symbol, cx, cy);
 
     ctx.restore();
   }
 
   drawMatchParticles(ctx, engine, offsetY) {
     const dirs = [[-1, -1], [1, -1], [-1, 1], [1, 1]];
+    const gb = this.isGbActive();
     for (let r = 0; r < engine.rows; r++) {
       for (let c = 0; c < engine.cols; c++) {
         const b = engine.grid[r][c];
@@ -1320,7 +1528,7 @@ class BoardRenderer {
         const cx = c * CELL_PX + CELL_PX / 2;
         const cy = r * CELL_PX - offsetY + (b.fallY * CELL_PX) + CELL_PX / 2;
         const conf = b.type === 'garbage' ? null : COLORS.find(item => item.id === b.type);
-        const color = conf ? conf.bg : '#e2e8f0';
+        const color = gb ? '#d4d4d4' : (conf ? conf.bg : '#e2e8f0');
 
         const dist = CELL_PX * 0.34 + p * (CELL_PX * 0.40);
         const size = Math.max(2.0, (1 - p * 0.55) * 5.8);
@@ -1353,20 +1561,34 @@ class BoardRenderer {
 
   drawGarbageCell(ctx, x, y, b, sameTop, sameBottom, sameLeft, sameRight) {
     const isFlashing = (b.state === 'match' && Math.floor(b.timer / 4) % 2 === 0);
-    ctx.fillStyle = isFlashing ? '#ffffff' : (b.isHard ? '#a8b2bd' : '#5c636a');
+    const gb = this.isGbActive();
+    ctx.fillStyle = isFlashing
+      ? '#ffffff'
+      : (gb ? (b.isHard ? '#cccccc' : '#4a4a4a') : (b.isHard ? '#a8b2bd' : '#5c636a'));
     ctx.fillRect(x, y, CELL_PX, CELL_PX);
 
     if (!isFlashing) {
-      const gGrad = ctx.createLinearGradient(x, y, x, y + CELL_PX);
-      gGrad.addColorStop(0, 'rgba(255, 255, 255, 0.18)');
-      gGrad.addColorStop(0.5, 'rgba(255, 255, 255, 0.0)');
-      gGrad.addColorStop(1, 'rgba(0, 0, 0, 0.28)');
-      ctx.fillStyle = gGrad;
-      ctx.fillRect(x, y, CELL_PX, CELL_PX);
+      if (gb) {
+        // GB風お邪魔用：細かなトーン網点（通常ブロックの大柄模様と区別）
+        ctx.fillStyle = b.isHard ? 'rgba(0, 0, 0, 0.22)' : 'rgba(255, 255, 255, 0.20)';
+        for (let py = y + 3; py < y + CELL_PX - 2; py += 4) {
+          const sh = (((py - y) / 4) % 2) * 2;
+          for (let px = x + 3 + sh; px < x + CELL_PX - 2; px += 4) {
+            ctx.fillRect(px, py, 1.5, 1.5);
+          }
+        }
+      } else {
+        const gGrad = ctx.createLinearGradient(x, y, x, y + CELL_PX);
+        gGrad.addColorStop(0, 'rgba(255, 255, 255, 0.18)');
+        gGrad.addColorStop(0.5, 'rgba(255, 255, 255, 0.0)');
+        gGrad.addColorStop(1, 'rgba(0, 0, 0, 0.28)');
+        ctx.fillStyle = gGrad;
+        ctx.fillRect(x, y, CELL_PX, CELL_PX);
+      }
     }
 
-    ctx.strokeStyle = '#dee2e6';
-    ctx.lineWidth = 2;
+    ctx.strokeStyle = gb ? (b.isHard ? '#111111' : '#f0f0f0') : '#dee2e6';
+    ctx.lineWidth = gb ? 2.4 : 2;
     ctx.beginPath();
     if (!sameTop) { ctx.moveTo(x, y + 1); ctx.lineTo(x + CELL_PX, y + 1); }
     if (!sameBottom) { ctx.moveTo(x, y + CELL_PX - 1); ctx.lineTo(x + CELL_PX, y + CELL_PX - 1); }
@@ -1375,15 +1597,15 @@ class BoardRenderer {
     ctx.stroke();
 
     if (!isFlashing) {
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';
-      if (!sameTop && !sameLeft) { ctx.beginPath(); ctx.arc(x + 5, y + 5, 1.5, 0, Math.PI * 2); ctx.fill(); }
-      if (!sameTop && !sameRight) { ctx.beginPath(); ctx.arc(x + CELL_PX - 5, y + 5, 1.5, 0, Math.PI * 2); ctx.fill(); }
-      if (!sameBottom && !sameLeft) { ctx.beginPath(); ctx.arc(x + 5, y + CELL_PX - 5, 1.5, 0, Math.PI * 2); ctx.fill(); }
-      if (!sameBottom && !sameRight) { ctx.beginPath(); ctx.arc(x + CELL_PX - 5, y + CELL_PX - 5, 1.5, 0, Math.PI * 2); ctx.fill(); }
+      ctx.fillStyle = gb ? (b.isHard ? '#111111' : '#ffffff') : 'rgba(255, 255, 255, 0.35)';
+      if (!sameTop && !sameLeft) { ctx.beginPath(); ctx.arc(x + 5, y + 5, 1.8, 0, Math.PI * 2); ctx.fill(); }
+      if (!sameTop && !sameRight) { ctx.beginPath(); ctx.arc(x + CELL_PX - 5, y + 5, 1.8, 0, Math.PI * 2); ctx.fill(); }
+      if (!sameBottom && !sameLeft) { ctx.beginPath(); ctx.arc(x + 5, y + CELL_PX - 5, 1.8, 0, Math.PI * 2); ctx.fill(); }
+      if (!sameBottom && !sameRight) { ctx.beginPath(); ctx.arc(x + CELL_PX - 5, y + CELL_PX - 5, 1.8, 0, Math.PI * 2); ctx.fill(); }
     }
 
     if (b.isHard) {
-      ctx.strokeStyle = 'rgba(15, 23, 42, 0.35)';
+      ctx.strokeStyle = gb ? '#111111' : 'rgba(15, 15, 15, 0.45)';
       ctx.lineWidth = 5;
       ctx.beginPath();
       ctx.moveTo(x + CELL_PX * 0.25, y + CELL_PX * 0.25);
@@ -1392,16 +1614,16 @@ class BoardRenderer {
       ctx.lineTo(x + CELL_PX * 0.25, y + CELL_PX * 0.75);
       ctx.stroke();
 
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.45)';
-      ctx.lineWidth = 3;
+      ctx.strokeStyle = gb ? '#ffffff' : 'rgba(255, 255, 255, 0.5)';
+      ctx.lineWidth = 2.4;
       ctx.beginPath();
       ctx.moveTo(x + CELL_PX * 0.25, y + CELL_PX * 0.25);
       ctx.lineTo(x + CELL_PX * 0.75, y + CELL_PX * 0.75);
       ctx.moveTo(x + CELL_PX * 0.75, y + CELL_PX * 0.25);
       ctx.lineTo(x + CELL_PX * 0.25, y + CELL_PX * 0.75);
       ctx.stroke();
-    } else {
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.09)';
+    } else if (!gb) {
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
       ctx.beginPath();
       ctx.arc(x + CELL_PX / 2, y + CELL_PX / 2, CELL_PX / 4, 0, Math.PI * 2);
       ctx.fill();
@@ -1422,6 +1644,7 @@ class BoardRenderer {
 
   draw(engine) {
     const ctx = this.ctx;
+    const gb = this.isGbActive();
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     if (typeof drawBoardBgAddon === 'function') drawBoardBgAddon(ctx, this.canvas, engine, this);
     this.drawSacrificeAura(ctx, engine);
@@ -1462,8 +1685,8 @@ class BoardRenderer {
     if (isEnginePanic) {
       const warnAlpha = 0.14 + Math.sin(Date.now() / 140) * 0.08;
       const warnGrad = ctx.createLinearGradient(0, 0, 0, CELL_PX * 2.5);
-      warnGrad.addColorStop(0, `rgba(255, 0, 85, ${warnAlpha})`);
-      warnGrad.addColorStop(1, 'rgba(255, 0, 85, 0)');
+      warnGrad.addColorStop(0, gb ? `rgba(255, 255, 255, ${warnAlpha + 0.08})` : `rgba(255, 0, 85, ${warnAlpha})`);
+      warnGrad.addColorStop(1, gb ? 'rgba(255, 255, 255, 0)' : 'rgba(255, 0, 85, 0)');
       ctx.fillStyle = warnGrad;
       ctx.fillRect(0, 0, this.canvas.width, CELL_PX * 2.5);
     }
@@ -1474,7 +1697,7 @@ class BoardRenderer {
         if (b) {
           let drawX = c * CELL_PX;
           if (b.swapAnim) {
-             drawX += -(b.swapAnim.dir) * (b.swapAnim.timer / 6) * CELL_PX;
+             drawX += -(b.swapAnim.dir) * (b.swapAnim.timer / 5) * CELL_PX;
           }
           const x = drawX;
           const y = r * CELL_PX - offsetY + (b.fallY * CELL_PX);
@@ -1488,9 +1711,9 @@ class BoardRenderer {
               const shrink = progress * (CELL_PX * 0.24);
               ctx.save();
               ctx.globalAlpha = Math.max(0.12, remRatio);
-              ctx.fillStyle = isFlash ? '#ffffff' : '#4ecca3';
+              ctx.fillStyle = isFlash ? '#ffffff' : (gb ? '#a3a3a3' : '#4ecca3');
               ctx.fillRect(x + shrink, y + shrink, CELL_PX - shrink * 2, CELL_PX - shrink * 2);
-              ctx.strokeStyle = '#ffd700';
+              ctx.strokeStyle = gb ? '#ffffff' : '#ffd700';
               ctx.lineWidth = 2;
               ctx.strokeRect(x + shrink + 1, y + shrink + 1, CELL_PX - shrink * 2 - 2, CELL_PX - shrink * 2 - 2);
               ctx.restore();
@@ -1550,7 +1773,7 @@ class BoardRenderer {
       const cw = CELL_PX * 2 + 4;
       const ch = CELL_PX + 4;
       ctx.save();
-      ctx.strokeStyle = 'rgba(0, 0, 0, 0.6)';
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.75)';
       ctx.lineWidth = 5;
       ctx.strokeRect(cx, cy, cw, ch);
       ctx.strokeStyle = '#ffffff';
@@ -1570,12 +1793,12 @@ class BoardRenderer {
         const progress = 1 - p.timer / p.initialTimer;
         const floatY = progress * 22;
         ctx.globalAlpha = Math.max(0, p.timer / 15); 
-        ctx.fillStyle = p.color || '#ffdf00'; 
+        ctx.fillStyle = gb ? '#ffffff' : (p.color || '#ffdf00'); 
         ctx.font = p.isNumber ? 'bold 24px sans-serif' : 'bold 18px sans-serif';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.lineWidth = 3;
-        ctx.strokeStyle = '#0f172a'; 
+        ctx.strokeStyle = gb ? '#000000' : '#0f172a'; 
         ctx.strokeText(p.text, p.x, p.y - offsetY - floatY);
         ctx.fillText(p.text, p.x, p.y - offsetY - floatY);
         ctx.globalAlpha = 1.0;
@@ -1588,14 +1811,17 @@ class BoardRenderer {
     const isVictoryAnim = engine.endAnim && engine.endAnim.type === 'victory_clear';
     if (engine.gameOver && !engine.isPractice && !isEndAnimRunning && !isVictoryAnim) {
       ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-      ctx.fillStyle = '#ff3366'; ctx.font = 'bold 22px sans-serif'; ctx.textAlign = 'center'; ctx.fillText('GAME OVER', this.canvas.width/2, this.canvas.height/2);
+      ctx.fillStyle = gb ? '#ffffff' : '#ff3366';
+      ctx.font = 'bold 22px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('GAME OVER', this.canvas.width/2, this.canvas.height/2);
     }
     
     ctx.restore();
   }
 }
 
-// --- COM(AI) エンジン（盤面全体一括把握・最大5手先ビームサーチ・予告お邪魔把握・思考停止防止） ---
+// --- COM(AI) エンジン（個体ごとの性格・重み差・確率的候補選択・ランダム手混合対応） ---
 class ComAI {
   constructor(engine, level, id) {
     this.engine = engine;
@@ -1628,24 +1854,53 @@ class ComAI {
       this.beamWidth = 14;
     }
 
-    this.actionTimer = this.thinkInterval;
+    this.actionTimer = this.thinkInterval + Math.floor(Math.random() * 7);
     this.moveTimer = 0;
 
     this.engine.baseRiseSpeed = 0.0009 + this.level * 0.000018;
     this.engine.riseSpeed = this.engine.baseRiseSpeed;
 
-    this.riseTryProb = Math.min(0.98, 0.30 + (this.level / 50) * 0.62);
-    this.topChoiceNoise = Math.max(0, (40 - this.level) * 0.005);
+    this.riseTryProb = Math.max(0.18, Math.min(0.98, 0.28 + (this.level / 50) * 0.58 + (Math.random() - 0.5) * 0.18));
+    this.topChoiceNoise = Math.max(0.05, (45 - this.level) * 0.006);
 
-    const patterns = ['small_chain', 'big_chain', 'multi_match', 'survival'];
+    const patterns = ['small_chain', 'big_chain', 'multi_match', 'survival', 'tricky'];
     this.pattern = patterns[Math.floor(Math.random() * patterns.length)];
+
+    const lvRatio = (this.level - 1) / 98;
+    this.styleWeights = {
+      chainWeight: this.pattern === 'big_chain'
+        ? (128 + Math.random() * 45)
+        : (this.pattern === 'small_chain' ? (70 + Math.random() * 28) : (85 + Math.random() * 38)),
+      clearWeight: this.pattern === 'multi_match'
+        ? (54 + Math.random() * 24)
+        : (36 + Math.random() * 20),
+      sentWeight: this.pattern === 'survival'
+        ? (92 + Math.random() * 28)
+        : (118 + Math.random() * 38),
+      heightBonus: this.pattern === 'survival'
+        ? (84 + Math.random() * 34)
+        : (46 + Math.random() * 28),
+      bumpPenalty: 7 + Math.random() * 9,
+      holePenalty: 14 + Math.random() * 14,
+      evalNoise: Math.max(12, (106 - this.level) * 1.55) * (0.75 + Math.random() * 0.65)
+    };
+
+    this.altBestProb = Math.max(0.12, Math.min(0.56, 0.48 - lvRatio * 0.34 + (Math.random() - 0.5) * 0.10));
+    this.randomMoveProb = Math.max(0.04, Math.min(0.32, 0.24 - lvRatio * 0.19 + (Math.random() - 0.5) * 0.06));
 
     this.movePlan = [];
     this.planSignature = '';
     this.recentSwaps = [];
     this.frameCount = 0;
     this.risingTargetMaxH = 0;
-    this.riseCooldown = 0;
+    this.riseCooldown = Math.floor(Math.random() * 18);
+  }
+
+  getNextThinkDelay() {
+    const jitter = this.level >= 75
+      ? (Math.random() < 0.28 ? 1 : 0)
+      : Math.floor(Math.random() * 3);
+    return this.thinkInterval + jitter;
   }
 
   canSwapAt(r, c) {
@@ -1965,6 +2220,7 @@ class ComAI {
       }
     }
 
+    const sw = this.styleWeights;
     let score = 0;
 
     if (effH >= 9) {
@@ -1973,14 +2229,14 @@ class ComAI {
       score += 120;
     }
     const heightReduced = snap.maxH - maxH;
-    score += heightReduced * (snap.isPinch ? 260 : 65);
-    score -= bumpiness * (snap.isPinch ? 28 : 10);
-    score -= holes * 22;
+    score += heightReduced * (snap.isPinch ? 260 : sw.heightBonus);
+    score -= bumpiness * (snap.isPinch ? 28 : sw.bumpPenalty);
+    score -= holes * sw.holePenalty;
 
-    score += accStats.sent * (snap.isPinch ? 65 : 135);
-    score += accStats.cleared * 48;
+    score += accStats.sent * (snap.isPinch ? 65 : sw.sentWeight);
+    score += accStats.cleared * sw.clearWeight;
     if (accStats.maxChain >= 2) {
-      score += accStats.maxChain * accStats.maxChain * (this.pattern === 'big_chain' ? 140 : 95);
+      score += accStats.maxChain * accStats.maxChain * sw.chainWeight;
     }
     score += accStats.special * 180;
 
@@ -1994,6 +2250,33 @@ class ComAI {
     score -= accStats.steps * 18;
 
     return score;
+  }
+
+  pushTopCandidate(list, candidate, maxKeep = 6) {
+    list.push(candidate);
+    if (list.length > maxKeep) {
+      list.sort((a, b) => b.score - a.score);
+      list.length = maxKeep;
+    }
+  }
+
+  pickCandidateFromList(list, isPinch, minThreshold = -Infinity) {
+    if (!list || list.length === 0) return null;
+    list.sort((a, b) => b.score - a.score);
+    const valid = list.filter(n => n.score > minThreshold);
+    if (valid.length === 0) return null;
+    if (valid.length === 1) return valid[0];
+
+    const altProb = isPinch ? this.altBestProb * 0.35 : this.altBestProb;
+    if (Math.random() < altProb) {
+      const topScore = valid[0].score;
+      const maxDrop = isPinch ? 180 : 280;
+      const pool = valid.filter((n, idx) => idx < 3 && (topScore - n.score) <= maxDrop);
+      if (pool.length > 1) {
+        return pool[Math.floor(Math.random() * pool.length)];
+      }
+    }
+    return valid[0];
   }
 
   runBeamSearch(snap) {
@@ -2015,8 +2298,9 @@ class ComAI {
       firstClearedStep: -1
     }];
 
-    let bestClearNode = null;
-    let bestPrepNode = null;
+    const clearCandidates = [];
+    const prepCandidates = [];
+    const noiseAmp = snap.isPinch ? this.styleWeights.evalNoise * 0.35 : this.styleWeights.evalNoise;
 
     for (let depth = 0; depth < maxDepth; depth++) {
       const nextCandidates = [];
@@ -2053,7 +2337,7 @@ class ComAI {
               ? node.firstClearedStep
               : (res.cleared > 0 ? nextMoves.length : -1);
 
-            let finalScore = evalScore;
+            let finalScore = evalScore + (Math.random() - 0.5) * noiseAmp;
             if (res.cleared > 0 && snap.isPinch) {
               finalScore += (ROWS - res.minClearedRow) * 55 - nextMoves.length * 40;
             }
@@ -2072,13 +2356,9 @@ class ComAI {
             };
 
             if (nextAcc.cleared > 0) {
-              if (!bestClearNode || childNode.score > bestClearNode.score) {
-                bestClearNode = childNode;
-              }
+              this.pushTopCandidate(clearCandidates, childNode, 6);
             } else {
-              if (!bestPrepNode || childNode.score > bestPrepNode.score) {
-                bestPrepNode = childNode;
-              }
+              this.pushTopCandidate(prepCandidates, childNode, 6);
             }
 
             if (depth + 1 < maxDepth && res.cleared === 0) {
@@ -2099,12 +2379,14 @@ class ComAI {
       beam = nextCandidates.slice(0, beamWidth);
     }
 
-    if (bestClearNode && bestClearNode.moves.length > 0) {
-      return { type: 'clear', moves: bestClearNode.moves, score: bestClearNode.score };
+    const pickedClear = this.pickCandidateFromList(clearCandidates, snap.isPinch);
+    if (pickedClear && pickedClear.moves.length > 0) {
+      return { type: 'clear', moves: pickedClear.moves, score: pickedClear.score };
     }
     const prepThreshold = this.level <= 20 ? 2 : 12;
-    if (bestPrepNode && bestPrepNode.score > baseEval + prepThreshold && bestPrepNode.moves.length > 0) {
-      return { type: 'prep', moves: [bestPrepNode.moves[0]], score: bestPrepNode.score };
+    const pickedPrep = this.pickCandidateFromList(prepCandidates, snap.isPinch, baseEval + prepThreshold);
+    if (pickedPrep && pickedPrep.moves.length > 0) {
+      return { type: 'prep', moves: [pickedPrep.moves[0]], score: pickedPrep.score };
     }
     return null;
   }
@@ -2193,7 +2475,7 @@ class ComAI {
           this.movePlan = [];
         }
 
-        this.actionTimer = this.thinkInterval;
+        this.actionTimer = this.getNextThinkDelay();
       }
     } else {
       this.actionTimer--;
@@ -2203,11 +2485,33 @@ class ComAI {
 
   think() {
     if (this.engine.gameOver || matchState !== 'playing') return;
-    this.actionTimer = this.thinkInterval;
+    this.actionTimer = this.getNextThinkDelay();
     this.engine.isRisingManualPad = false;
     this.movePlan = [];
 
     const snap = this.captureSnapshot();
+
+    if (!snap.isPinch && Math.random() < this.randomMoveProb) {
+      const rndRoll = Math.random();
+      if (rndRoll < 0.45) {
+        const exploreMove = this.findExploratorySwap(snap);
+        if (exploreMove) {
+          this.target = exploreMove;
+          this.moveTimer = Math.max(0, this.moveInterval - 1);
+          return;
+        }
+      } else if (rndRoll < 0.80) {
+        const flattenMove = this.findFlattenOrSafeMove(snap);
+        if (flattenMove) {
+          this.target = flattenMove;
+          this.moveTimer = Math.max(0, this.moveInterval - 1);
+          return;
+        }
+      } else {
+        this.actionTimer = this.getNextThinkDelay() + Math.floor(Math.random() * 4);
+        return;
+      }
+    }
 
     const plan = this.runBeamSearch(snap);
     if (plan && plan.moves && plan.moves.length > 0) {
@@ -2227,10 +2531,10 @@ class ComAI {
       && this.riseCooldown <= 0;
 
     if (canSafeRise && Math.random() < this.riseTryProb) {
-      const targetRiseRows = snap.maxH <= 4 ? 2 : 1;
+      const targetRiseRows = snap.maxH <= 4 ? (Math.random() < 0.65 ? 2 : 1) : 1;
       this.risingTargetMaxH = Math.min(7, snap.maxH + targetRiseRows);
       this.engine.isRisingManualPad = true;
-      this.riseCooldown = 34;
+      this.riseCooldown = 28 + Math.floor(Math.random() * 18);
       this.target = null;
       return;
     }
@@ -2242,7 +2546,6 @@ class ComAI {
       return;
     }
 
-    // 消し手や段差整地が見つからない場合も長時間停止せず安全な組み替えを行う
     const explore = this.findExploratorySwap(snap);
     if (explore) {
       this.target = explore;
@@ -2253,18 +2556,17 @@ class ComAI {
     if (canSafeRise) {
       this.risingTargetMaxH = Math.min(7, snap.maxH + 1);
       this.engine.isRisingManualPad = true;
-      this.riseCooldown = 28;
+      this.riseCooldown = 24 + Math.floor(Math.random() * 14);
       this.target = null;
       return;
     }
 
     this.target = null;
-    this.actionTimer = Math.min(8, this.thinkInterval);
+    this.actionTimer = Math.min(8, this.thinkInterval) + Math.floor(Math.random() * 3);
   }
 
   findFlattenOrSafeMove(snap) {
-    let best = null;
-    let bestScore = -9999;
+    const candidates = [];
 
     for (let r = 0; r < ROWS; r++) {
       for (let c = 0; c < COLS - 1; c++) {
@@ -2275,16 +2577,19 @@ class ComAI {
         const b2 = this.engine.grid[r][c + 1];
 
         if (b1 && b2 === null && snap.colHeights[c] > snap.colHeights[c + 1]) {
-          const sc = (snap.colHeights[c] - snap.colHeights[c + 1]) * 30 + (snap.isPinch ? (ROWS - r) * 25 : 0);
-          if (sc > bestScore) { bestScore = sc; best = { x: c, y: r }; }
+          const sc = (snap.colHeights[c] - snap.colHeights[c + 1]) * 30 + (snap.isPinch ? (ROWS - r) * 25 : 0) + Math.random() * 18;
+          candidates.push({ x: c, y: r, sc });
         } else if (b2 && b1 === null && snap.colHeights[c + 1] > snap.colHeights[c]) {
-          const sc = (snap.colHeights[c + 1] - snap.colHeights[c]) * 30 + (snap.isPinch ? (ROWS - r) * 25 : 0);
-          if (sc > bestScore) { bestScore = sc; best = { x: c, y: r }; }
+          const sc = (snap.colHeights[c + 1] - snap.colHeights[c]) * 30 + (snap.isPinch ? (ROWS - r) * 25 : 0) + Math.random() * 18;
+          candidates.push({ x: c, y: r, sc });
         }
       }
     }
 
-    return best;
+    if (candidates.length === 0) return null;
+    candidates.sort((a, b) => b.sc - a.sc);
+    const pickIdx = Math.floor(Math.random() * Math.min(2, candidates.length));
+    return { x: candidates[pickIdx].x, y: candidates[pickIdx].y };
   }
 
   findExploratorySwap(snap) {
@@ -2299,13 +2604,13 @@ class ComAI {
         if (!b1 || !b2) continue;
 
         const dist = Math.abs(this.engine.cursor.x - c) + Math.abs(this.engine.cursor.y - r);
-        const sc = -dist * 3 + (ROWS - r) * 2 + Math.random() * 14;
+        const sc = -dist * 2.5 + (ROWS - r) * 2 + Math.random() * 26;
         candidates.push({ x: c, y: r, sc });
       }
     }
     if (candidates.length === 0) return null;
     candidates.sort((a, b) => b.sc - a.sc);
-    const pickIdx = Math.floor(Math.random() * Math.min(3, candidates.length));
+    const pickIdx = Math.floor(Math.random() * Math.min(5, candidates.length));
     return { x: candidates[pickIdx].x, y: candidates[pickIdx].y };
   }
 }

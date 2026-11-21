@@ -60,9 +60,17 @@ body {
   border-radius: 14px;
   cursor: pointer;
   white-space: nowrap;
-  transition: transform 0.12s ease, background 0.15s ease, border-color 0.15s ease;
+  opacity: 0.74;
+  transition: transform 0.14s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.14s ease, background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.small-btn:hover,
+.small-btn:focus,
+.small-btn:focus-visible {
+  opacity: 1;
+  transform: scale(1.05);
 }
 .small-btn:active {
+  opacity: 1;
   transform: scale(0.95);
   background: #e94560;
   border-color: #ffd700;
@@ -141,16 +149,22 @@ body {
   cursor: pointer;
   width: 260px;
   max-width: 100%;
+  opacity: 0.72;
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.16);
-  transition: transform 0.12s ease, box-shadow 0.15s ease, background 0.15s ease;
+  transition: transform 0.14s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.14s ease, box-shadow 0.15s ease, background 0.15s ease;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.btn:hover:not(:disabled) {
-  box-shadow: 0 8px 20px rgba(233, 69, 96, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+.btn:hover:not(:disabled),
+.btn:focus:not(:disabled),
+.btn:focus-visible:not(:disabled) {
+  opacity: 1;
+  transform: scale(1.045);
+  box-shadow: 0 8px 22px rgba(233, 69, 96, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.32);
 }
 .btn:active:not(:disabled) {
+  opacity: 1;
   transform: scale(0.96);
   background: linear-gradient(160deg, #e94560, #c81d4e);
 }
@@ -158,6 +172,7 @@ body {
   background: #334155;
   border-color: #64748b;
   color: #94a3b8;
+  opacity: 0.45;
   box-shadow: none;
   cursor: not-allowed;
   transform: none;
@@ -353,8 +368,16 @@ input[type="checkbox"].ui-toggle-input:checked::after {
   font-weight: 700;
   width: 110px;
   text-align: center;
+  opacity: 0.74;
+  transition: transform 0.14s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.14s ease, background 0.15s ease;
 }
-.config-btn:active { background: #e94560; }
+.config-btn:hover,
+.config-btn:focus,
+.config-btn:focus-visible {
+  opacity: 1;
+  transform: scale(1.05);
+}
+.config-btn:active { opacity: 1; background: #e94560; transform: scale(0.95); }
 
 /* ゲーム画面全体（背景変数・100dvh対応） */
 #game-area {
@@ -519,9 +542,15 @@ input[type="checkbox"].ui-toggle-input:checked::after {
   width: 100%;
   cursor: pointer;
   box-shadow: 0 5px 14px rgba(225, 29, 72, 0.35);
-  transition: transform 0.1s ease;
+  transition: transform 0.14s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.14s ease;
 }
-.action-btn:active { transform: scale(0.93); }
+.action-btn:hover:not(:disabled),
+.action-btn:focus:not(:disabled),
+.action-btn:focus-visible:not(:disabled) {
+  opacity: 1;
+  transform: scale(1.04);
+}
+.action-btn:active:not(:disabled) { transform: scale(0.93); }
 .retire-btn { background: linear-gradient(155deg, #be123c, #881337); }
 
 .absolute-top {

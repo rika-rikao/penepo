@@ -31,6 +31,39 @@
     </div>
   </div>
 
+  <!-- OPリキッドトランジション用SVGマスク（Gooey効果） -->
+  <svg id="op-liquid-svg" width="0" height="0" style="position:fixed;width:0;height:0;pointer-events:none;overflow:hidden;" aria-hidden="true">
+    <defs>
+      <filter id="op-liquid-goo" x="-20%" y="-20%" width="140%" height="140%">
+        <feGaussianBlur in="SourceGraphic" stdDeviation="14" result="blur" />
+        <feColorMatrix in="blur" mode="matrix" values="
+          1 0 0 0 0
+          0 1 0 0 0
+          0 0 1 0 0
+          0 0 0 28 -11" result="goo" />
+      </filter>
+      <mask id="op-liquid-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="1920" height="1080">
+        <rect id="op-liquid-mask-bg" x="0" y="0" width="1920" height="1080" fill="#ffffff" />
+        <g id="op-liquid-cutouts" fill="#000000" filter="url(#op-liquid-goo)"></g>
+      </mask>
+    </defs>
+  </svg>
+
+  <!-- オープニングアニメーションオーバーレイ（JS Canvas描画主体：本編15秒 + 背景継続3秒 + リキッド遷移） -->
+  <div id="op-overlay" style="display:none;" aria-hidden="true">
+    <canvas id="op-canvas"></canvas>
+    <div id="op-chara-stage" class="op-chara-stage" aria-hidden="true"></div>
+    <div id="op-banner-stage" class="op-banner-stage" aria-hidden="true"></div>
+    <div id="op-title-stage" class="op-title-stage" aria-hidden="true">
+      <div class="op-title-badge">CHAIN &amp; SKILL PUZZLE</div>
+      <div class="op-title-logo">ぺねぽ</div>
+      <div class="op-title-sub">PANEPON STYLE BATTLE</div>
+    </div>
+    <div class="op-skip-hint">TAP / ANY KEY / BUTTON TO SKIP ▶▶</div>
+    <button type="button" id="op-skip-btn" class="small-btn op-skip-btn">SKIP ▶▶</button>
+  </div>
+  <canvas id="op-liquid-edge-canvas" aria-hidden="true"></canvas>
+
   <!-- 汎用処理中ローダー（ZIP展開 / 画像圧縮等） -->
   <div id="busy-loader-overlay" style="display:none;" aria-hidden="true">
     <div class="loader-card compact">
@@ -87,18 +120,87 @@
     </div>
   </div>
 
-  <!-- スキル選択モーダル（キャラ選択を覆うように中央表示） -->
+  <!-- キー設定初期化確認モーダル -->
+  <div id="key-reset-confirm-modal" style="display:none;" aria-hidden="true">
+    <div class="confirm-modal-box">
+      <div class="confirm-modal-title" style="color:#ffd700;">キー設定の初期化</div>
+      <div id="key-reset-confirm-message" class="exit-confirm-message">1Pのキー・パッド設定を初期状態に戻しますか？</div>
+      <div class="confirm-modal-actions">
+        <button type="button" id="key-reset-cancel-btn" class="small-btn" style="flex:1; padding:10px 14px;" onclick="closeKeyResetConfirmModal()">キャンセル</button>
+        <button type="button" id="key-reset-ok-btn" class="btn retire-btn" style="flex:1; min-width:130px; padding:10px 14px;" onclick="confirmKeyResetForSelectedPlayer()">初期化する</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- PWAインストール案内モーダル（自動プロンプト非対応ブラウザ向け） -->
+  <div id="pwa-guide-modal" style="display:none;" aria-hidden="true">
+    <div class="confirm-modal-box">
+      <div class="confirm-modal-title" style="color:#4ecca3;">📲 アプリ化 (PWA) の手順</div>
+      <div id="pwa-guide-text" class="exit-confirm-message" style="font-size:0.86rem; text-align:left;"></div>
+      <div class="confirm-modal-actions">
+        <button type="button" class="btn" style="width:100%;" onclick="closePwaGuideModal()">閉じる</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- スキル選択モーダル（装備スキル & 自作OFF時スキル切替対応） -->
   <div id="skill-select-modal" style="display:none;" aria-hidden="true">
     <div class="skill-modal-box">
       <div class="skill-modal-header">
         <span id="skill-modal-title" class="skill-modal-title">⚡ スキル選択</span>
-        <button type="button" class="small-btn" onclick="closeSkillSelectModal()">✕ 戻る</button>
+        <div style="display:flex; gap:6px; align-items:center;">
+          <button type="button" class="small-btn" style="border-color:#ffd700; color:#ffd700;" onclick="openCustomSkillModal()">🛠️ 自作</button>
+          <button type="button" class="small-btn" onclick="closeSkillSelectModal()">✕ 戻る</button>
+        </div>
+      </div>
+      <div id="skill-modal-mode-tabs" class="skill-modal-mode-tabs">
+        <button type="button" id="skill-tab-main" class="small-btn active" onclick="switchSkillModalTab('main')">⚡ 装備スキル</button>
+        <button type="button" id="skill-tab-fallback" class="small-btn" onclick="switchSkillModalTab('fallback')">🛡️ 自作OFF時スキル</button>
       </div>
       <div id="skill-modal-char-badge" class="skill-modal-char-badge"></div>
       <div id="skill-modal-picker" class="skill-modal-picker"></div>
       <div class="skill-modal-actions">
         <button type="button" class="small-btn" onclick="closeSkillSelectModal()">キャラを選び直す</button>
         <button type="button" class="btn" style="flex:1; min-width:150px; padding:10px 16px;" onclick="confirmSkillSelectModal()">このスキルで決定</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- スキル自作モーダル（メリット消費pt / デメリット還元pt で構成＆スロット保存） -->
+  <div id="custom-skill-modal" style="display:none;" aria-hidden="true">
+    <div class="custom-skill-modal-box">
+      <div class="skill-modal-header">
+        <span class="skill-modal-title">🛠️ スキル自作ラボ</span>
+        <button type="button" class="small-btn" onclick="closeCustomSkillModal()">✕ 戻る</button>
+      </div>
+
+      <div id="custom-skill-slot-tabs" class="local-player-tabs">
+        <button type="button" class="small-btn active" onclick="selectCustomSkillSlot(0)">スロット1</button>
+        <button type="button" class="small-btn" onclick="selectCustomSkillSlot(1)">スロット2</button>
+        <button type="button" class="small-btn" onclick="selectCustomSkillSlot(2)">スロット3</button>
+      </div>
+
+      <div class="custom-skill-top-bar">
+        <input type="text" id="custom-skill-name-input" class="input-box" maxlength="10" placeholder="スキル名 (例: マイ必殺)" style="flex:1; width:auto; padding:6px 10px; font-size:0.85rem;">
+        <div id="custom-skill-points-badge" class="custom-skill-points-badge">
+          残Pt: <span id="custom-skill-points-val">100</span>
+        </div>
+      </div>
+
+      <div id="custom-skill-summary" class="custom-skill-summary"></div>
+
+      <div class="custom-skill-scroll-area">
+        <div class="custom-skill-section-title merit">✨ メリット効果（選択・強化でPt大きく消費）</div>
+        <div id="custom-skill-merits-list" class="custom-skill-effects-list"></div>
+
+        <div class="custom-skill-section-title demerit">💀 デメリット効果（追加・強化でPt少し増加）</div>
+        <div id="custom-skill-demerits-list" class="custom-skill-effects-list"></div>
+      </div>
+
+      <div class="skill-modal-actions">
+        <button type="button" class="small-btn" onclick="resetCurrentCustomSkillSlot()">初期化</button>
+        <button type="button" class="small-btn" style="border-color:#f43f5e; color:#fda4af;" onclick="deleteCurrentCustomSkillSlot()">削除</button>
+        <button type="button" id="custom-skill-save-btn" class="btn" style="flex:1; min-width:130px; padding:9px 14px;" onclick="saveCurrentCustomSkillSlot()">保存して使う</button>
       </div>
     </div>
   </div>
@@ -191,7 +293,10 @@
 
   <div id="settings-overlay">
     <div class="settings-box">
-      <h2 style="text-align: center; color: #4ecca3; flex-shrink: 0;">せってい</h2>
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; flex-shrink:0;">
+        <h2 style="color: #4ecca3;">せってい</h2>
+        <button type="button" class="small-btn" style="border-color:#ffd700; color:#ffd700;" onclick="openCustomSkillModal()">🛠️ スキル自作</button>
+      </div>
 
       <div id="settings-category-tabs" class="settings-category-tabs">
         <button type="button" class="small-btn active" onclick="selectSettingsTab('audio')">おんせい</button>
@@ -255,8 +360,16 @@
 
       <!-- がぞう -->
       <div id="settings-panel-visual" class="settings-section settings-tab-panel" style="display:none;">
-        <h3>🖼️ がぞう・なまえ設定</h3>
+        <h3>🖼️ がぞう・なまえ・表示設定</h3>
         <p style="font-size:0.78rem; color:#aaa; margin-bottom: 6px;">立ち絵・フレームはオンライン対戦相手にも転送反映されます。</p>
+
+        <div class="custom-asset-row" style="margin-bottom:6px; border:1px solid rgba(148,163,184,0.45);">
+          <div style="flex:1; min-width:0;">
+            <div style="font-size:0.82rem; font-weight:bold; color:#e2e8f0;">👾 GB風モード (モノクロ・トーン&amp;ドット識別)</div>
+            <div style="font-size:0.7rem; color:#94a3b8;">色覚配慮：背景・立ち絵をスクリーントーン化し、ブロックを濃淡と明確な模様で識別します</div>
+          </div>
+          <input type="checkbox" id="settings-gb-mode" class="ui-toggle-input text" data-text-off="OFF" data-text-on="ON" onchange="onGbModeToggle(this.checked)">
+        </div>
 
         <div class="custom-asset-row" style="margin-bottom:6px;">
           <div style="font-size:0.82rem; font-weight:bold; white-space:nowrap;">なまえ</div>
@@ -325,7 +438,16 @@
 
       <!-- そうさ -->
       <div id="settings-panel-control" class="settings-section settings-tab-panel" style="display:none;">
-        <h3>🎮 そうさ (キー・パッド設定)</h3>
+        <h3>🎮 そうさ (バイブ・キー・パッド設定)</h3>
+
+        <div class="custom-asset-row" style="margin-top:6px; margin-bottom:6px; border:1px solid rgba(78,204,163,0.4);">
+          <div style="flex:1; min-width:0;">
+            <div style="font-size:0.82rem; font-weight:bold; color:#4ecca3;">📳 バイブレーション</div>
+            <div style="font-size:0.7rem; color:#94a3b8;">入れ替え・決定・お邪魔落下時に振動します (対応端末/パッド・シェア対戦時はOFF)</div>
+          </div>
+          <input type="checkbox" id="settings-swap-vibrate" class="ui-toggle-input text" data-text-off="OFF" data-text-on="ON" onchange="onSwapVibrateToggle(this.checked)">
+        </div>
+
         <div id="settings-pad-status" style="font-size:0.75rem; color:#4ecca3; margin: 4px 0;">パッドを接続してボタンを押すと認識されます</div>
         <div id="settings-player-tabs" class="local-player-tabs" style="margin: 6px 0;">
           <button type="button" class="small-btn active" onclick="selectSettingsPlayer(0)">1P</button>
@@ -333,7 +455,7 @@
           <button type="button" class="small-btn" onclick="selectSettingsPlayer(2)">3P</button>
           <button type="button" class="small-btn" onclick="selectSettingsPlayer(3)">4P</button>
         </div>
-        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; font-size:0.82rem;">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px; font-size:0.82rem;">
           <span>使用ゲームパッド番号:</span>
           <select id="settings-pad-slot" class="input-box" style="width:auto; padding:4px 8px; font-size:0.8rem;" onchange="onSettingsPadSlotChange(this.value)">
             <option value="0">Pad 0</option>
@@ -342,6 +464,9 @@
             <option value="3">Pad 3</option>
             <option value="-1">使用しない</option>
           </select>
+        </div>
+        <div style="display:flex; justify-content:flex-end; margin-bottom:8px;">
+          <button type="button" id="settings-key-reset-btn" class="small-btn" style="border-color:#f43f5e; color:#fda4af;" onclick="openKeyResetConfirmModal()">🔄 選択中プレイヤーのキーを初期化</button>
         </div>
         <p style="font-size:0.78rem; color:#aaa; margin-bottom: 5px;">変更したい枠を押してから、キーやボタンを入力してください（Key解除はDelete）。</p>
         <div id="key-config-list" style="display:flex; flex-direction:column; gap:8px;"></div>
@@ -392,11 +517,11 @@
     <!-- メインメニュー -->
     <div id="main-menu" style="display:flex; flex-direction:column; gap:12px; align-items:center; width:100%; max-width:420px;">
       <div id="main-menu-actions" style="display:flex; flex-direction:column; align-items:center; gap:12px; width:100%;">
-        <h1 class="title">ぺねぽ</h1>
+        <h1 class="title" onclick="if(typeof OpAnimation!=='undefined') OpAnimation.start()" title="タップでOP再生" style="cursor:pointer;">ぺねぽ</h1>
         <button class="btn menu-card-btn" data-desc="全7話の物語を進めながらライバルと勝負！" onclick="showSoloHubMenu()" style="border-color:#ffd700;">ひとりで</button>
         <button class="btn menu-card-btn" data-desc="1台で最大4人対戦・スマホ対面・オンラインP2P対戦！" onclick="showMultiHubMenu()" style="border-color:#00d4ff;">みんなで</button>
         <button class="btn menu-card-btn" data-desc="BGM・ボイス・カスタム立ち絵/ZIP登録・キー設定" onclick="openSettings()" style="background:#1a4d3e; border-color:#4ecca3;">せってい</button>
-        <button class="btn menu-card-btn" data-desc="各モードのハイスコア＆勝ち抜き連勝記録" onclick="showRankingMenu()">らんきんぐ</button>
+        <button class="btn menu-card-btn" data-desc="各モードのハイスコア＆勝ち抜き連勝記録" onclick="showRankingMenu()">せいせき</button>
       </div>
     </div>
 
@@ -457,6 +582,10 @@
               <input type="checkbox" id="story-skill-toggle" class="ui-toggle-input text" data-text-off="OFF" data-text-on="ON">
               <span>プレイヤースキル（試合で有効）</span>
             </label>
+            <label class="switch-wrapper skill-rule-box custom-skill-rule-box">
+              <input type="checkbox" id="story-custom-skill-toggle" class="ui-toggle-input text" data-text-off="OFF" data-text-on="ON" checked>
+              <span>自作スキルを使う（OFF時は通常スキル）</span>
+            </label>
             <button type="button" class="btn mode-start-btn" onclick="StoryManager.confirmPrepAndNext()" style="border-color:#ffd700;">キャラ確定して次へ ▶</button>
           </div>
         </div>
@@ -509,15 +638,19 @@
             <input type="checkbox" id="single-skill-toggle" class="ui-toggle-input text" data-text-off="OFF" data-text-on="ON">
             <span>スキルあり（試合で有効）</span>
           </label>
+          <label class="switch-wrapper skill-rule-box custom-skill-rule-box">
+            <input type="checkbox" id="single-custom-skill-toggle" class="ui-toggle-input text" data-text-off="OFF" data-text-on="ON" checked>
+            <span>自作スキルを使う（OFF時は通常スキル）</span>
+          </label>
           <button class="btn mode-start-btn" onclick="beginSingleStartFlow()">キャラ確定 / スタート</button>
         </div>
       </div>
       <button class="btn menu-back-top-btn" onclick="backToSoloHubMenu()">← 戻る</button>
     </div>
 
-    <!-- らんきんぐ -->
+    <!-- せいせき -->
     <div id="ranking-menu" style="display:none; flex-direction:column; gap:12px; align-items:center; width:100%; max-width:380px;">
-      <h2 style="color:#ffd700">らんきんぐ</h2>
+      <h2 style="color:#ffd700">せいせき</h2>
       <div id="ranking-mode-carousel" class="carousel-panel"></div>
       <div id="ranking-list" style="width:100%; max-width: 320px; background:rgba(0,0,0,0.5); border-radius:8px; padding:10px; font-size:0.9rem; line-height:1.8;"></div>
       <button class="btn menu-back-top-btn" onclick="backToMainMenu()">← 戻る</button>
@@ -563,13 +696,17 @@
             <input type="checkbox" id="com-cheat-toggle" class="ui-toggle-input text" data-text-off="OFF" data-text-on="ON">
             <span>スキルあり（プレイヤー＆COM）</span>
           </label>
+          <label class="switch-wrapper skill-rule-box custom-skill-rule-box">
+            <input type="checkbox" id="com-custom-skill-toggle" class="ui-toggle-input text" data-text-off="OFF" data-text-on="ON" checked>
+            <span>自作スキルを使う（OFF時は通常スキル）</span>
+          </label>
           <button class="btn mode-start-btn" onclick="beginComStartFlow()">キャラ確定 / スタート</button>
         </div>
       </div>
       <button class="btn menu-back-top-btn" onclick="backToSoloHubMenu()">← 戻る</button>
     </div>
 
-    <!-- いちだいでたいせん (ローカル：格闘ゲーム風 上半分タイル選択＆下半分4等分立ち絵ドック) -->
+    <!-- いちだいでたいせん (ローカル) -->
     <div id="local-menu" class="local-smash-panel" style="display:none;">
       <div class="local-top-bar">
         <div class="local-top-title-row">
@@ -590,12 +727,16 @@
             <input type="checkbox" id="local-skill-toggle" class="ui-toggle-input text" data-text-off="OFF" data-text-on="ON" onchange="onLocalSkillRuleToggle()">
             <span>スキル</span>
           </label>
+          <label id="local-custom-skill-label" class="switch-wrapper skill-rule-box custom-skill-rule-box" style="padding:3px 10px;">
+            <input type="checkbox" id="local-custom-skill-toggle" class="ui-toggle-input text" data-text-off="OFF" data-text-on="ON" checked onchange="onLocalCustomSkillRuleToggle()">
+            <span>自作スキル</span>
+          </label>
+          <button type="button" class="small-btn" style="border-color:#ffd700; color:#ffd700;" onclick="openCustomSkillModal()">🛠️ 自作</button>
           <div id="local-touch-actor-bar" class="local-touch-actor-bar"></div>
         </div>
-        <div class="local-gamepad-hint">🎮 パッド/キー: 上下左右でタイル・操作切替・設定・下の各プレイヤー枠へ移動 / STARTで一括開始</div>
+        <div class="local-gamepad-hint">🎮 パッド/キー: 枠移動→決定でスライダー左右調整→再決定で数字編集 / STARTで一括開始</div>
       </div>
 
-      <!-- 画面上半分：キャラタイル一覧 ＋ スキルタイル一覧（各パッド/キーのカーソルが独立移動） -->
       <div class="local-upper-stage">
         <div class="local-picker-section">
           <div class="local-section-title">① キャラクター選択</div>
@@ -607,7 +748,6 @@
         </div>
       </div>
 
-      <!-- 画面下半分：最初から水平方向に4等分された各プレイヤー枠 -->
       <div id="local-slots-dock" class="local-slots-dock"></div>
       <button type="button" id="local-back-btn" class="btn menu-back-top-btn" onclick="backToMultiHubMenu()">← 戻る</button>
     </div>
@@ -650,6 +790,10 @@
             <input type="checkbox" id="online-skill-toggle" class="ui-toggle-input text" data-text-off="OFF" data-text-on="ON">
             <span>スキルあり（ホストのルール）</span>
           </label>
+          <label class="switch-wrapper skill-rule-box custom-skill-rule-box">
+            <input type="checkbox" id="online-custom-skill-toggle" class="ui-toggle-input text" data-text-off="OFF" data-text-on="ON" checked>
+            <span>自作スキルあり（ホストのルール）</span>
+          </label>
           <div style="display:flex; gap:10px; width:100%; justify-content:center;">
             <button class="btn" style="flex:1; min-width:110px; padding:10px 12px; font-size:0.98rem;" onclick="beginOnlineCreateFlow()">部屋を作る</button>
             <button class="btn" style="flex:1; min-width:110px; padding:10px 12px; font-size:0.98rem;" onclick="beginOnlineJoinFlow()">部屋に入る</button>
@@ -658,6 +802,30 @@
       </div>
       <button class="btn menu-back-top-btn" onclick="backToMultiHubMenu()">← 戻る</button>
     </div>
+
+    <!-- Webブラウザ起動時のみ画面下部に配置するPWA化ボタン（PWA起動時はJSで要素を削除） -->
+    <div id="pwa-install-bar" class="pwa-install-bar">
+      <button type="button" id="pwa-install-btn" class="pwa-install-btn" onclick="triggerPwaInstall()">📲 アプリ化する (PWA)</button>
+    </div>
+
+    <!-- 縦UI モード選択中専用 ボトムメニュー -->
+    <nav id="vertical-bottom-nav" class="vertical-bottom-nav" style="display:none;" aria-label="メニュー切り替え">
+      <button type="button" class="v-bottom-btn" data-nav="home" onclick="navigateFromBottomNav('home')">
+        <span class="v-bottom-icon">🏠</span><span class="v-bottom-label">めにゅー</span>
+      </button>
+      <button type="button" class="v-bottom-btn" data-nav="solo" onclick="navigateFromBottomNav('solo')">
+        <span class="v-bottom-icon">👤</span><span class="v-bottom-label">ひとりで</span>
+      </button>
+      <button type="button" class="v-bottom-btn" data-nav="multi" onclick="navigateFromBottomNav('multi')">
+        <span class="v-bottom-icon">👥</span><span class="v-bottom-label">みんなで</span>
+      </button>
+      <button type="button" class="v-bottom-btn" data-nav="settings" onclick="navigateFromBottomNav('settings')">
+        <span class="v-bottom-icon">⚙️</span><span class="v-bottom-label">せってい</span>
+      </button>
+      <button type="button" class="v-bottom-btn" data-nav="ranking" onclick="navigateFromBottomNav('ranking')">
+        <span class="v-bottom-icon">🏆</span><span class="v-bottom-label">せいせき</span>
+      </button>
+    </nav>
   </div>
 
   <div id="game-area" class="right-handed">
@@ -673,6 +841,7 @@
         <div id="battle-side-p1-wins" class="portrait-wins-badge" style="display:none;"></div>
       </div>
       <div id="battle-side-p1-name" class="battle-side-name">1P</div>
+      <div id="battle-side-p1-skill-name" class="portrait-skill-name" style="display:none;"></div>
       <div id="battle-side-p1-skill" class="portrait-skill-meter" style="display:none;">
         <div id="battle-side-p1-skill-fill" class="portrait-skill-fill"></div>
         <span id="battle-side-p1-skill-text" class="portrait-skill-text"></span>
@@ -696,6 +865,9 @@
         </label>
         <label id="swipe-wrapper" class="switch-wrapper" style="background: rgba(0,0,0,0.65); padding: 5px 8px; border-radius: 10px; flex-direction: column; gap: 3px; border: 1px solid rgba(255,255,255,0.1);">
           <input type="checkbox" id="continuous-swipe" class="ui-toggle-input text" data-text-off="OFF" data-text-on="ON" tabindex="-1" checked><span>連続移動</span>
+        </label>
+        <label id="vibrate-wrapper" class="switch-wrapper" style="display:none; background: rgba(0,0,0,0.65); padding: 5px 8px; border-radius: 10px; flex-direction: column; gap: 3px; border: 1px solid rgba(255,255,255,0.1);">
+          <input type="checkbox" id="vibrate-toggle" class="ui-toggle-input text" data-text-off="OFF" data-text-on="ON" tabindex="-1" onchange="onBoardVibrateToggle(this.checked)"><span>バイブ</span>
         </label>
         <button class="action-btn skill-action-btn" id="skill-btn" tabindex="-1" onclick="activatePlayerSkill()" style="display:none;">
           <span id="skill-btn-progress" class="skill-btn-progress"></span>
@@ -757,6 +929,7 @@
   <script src="js/cheat.js"></script>
   <script src="js/network.js"></script>
   <script src="js/story.js"></script>
+  <script src="js/op.js"></script>
   <script src="js/main.js"></script>
 </body>
 </html>

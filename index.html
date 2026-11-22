@@ -112,10 +112,22 @@
   <div id="exit-confirm-modal" style="display:none;" aria-hidden="true">
     <div class="confirm-modal-box exit-confirm-box">
       <div class="confirm-modal-title" style="color:#ff4081;">退出確認</div>
-      <div id="exit-confirm-message" class="exit-confirm-message">退出してメニューに戻りますか？<br>（対戦時は負けになります）</div>
+      <div id="exit-confirm-message" class="exit-confirm-message">退出して前の画面に戻りますか？<br>（対戦時は負けになります）</div>
       <div class="confirm-modal-actions">
         <button type="button" id="exit-confirm-cancel-btn" class="small-btn" style="flex:1; padding:10px 14px;" onclick="closeExitConfirmModal()">続ける</button>
         <button type="button" id="exit-confirm-ok-btn" class="btn retire-btn" style="flex:1; min-width:130px; padding:10px 14px;" onclick="confirmExitFromModal()">退出する</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- せってい画面 確認モーダル（保存確認 / 保存せず戻る確認 兼用） -->
+  <div id="settings-confirm-modal" style="display:none;" aria-hidden="true">
+    <div id="settings-confirm-box" class="confirm-modal-box exit-confirm-box">
+      <div id="settings-confirm-title" class="confirm-modal-title" style="color:#ff4081;">確認</div>
+      <div id="settings-confirm-message" class="exit-confirm-message"></div>
+      <div class="confirm-modal-actions">
+        <button type="button" id="settings-confirm-cancel-btn" class="small-btn" style="flex:1; padding:10px 14px;" onclick="closeSettingsConfirmModal()">キャンセル</button>
+        <button type="button" id="settings-confirm-ok-btn" class="btn retire-btn" style="flex:1; min-width:130px; padding:10px 14px;" onclick="confirmSettingsModalAction()">OK</button>
       </div>
     </div>
   </div>
@@ -496,8 +508,8 @@
       </div>
 
       <div class="settings-footer-actions">
-        <button type="button" class="btn settings-cancel-btn" onclick="cancelSettings()">保存せずに戻る</button>
-        <button type="button" class="btn settings-save-btn" onclick="closeSettings()">保存して閉じる</button>
+        <button type="button" class="btn settings-cancel-btn" onclick="attemptCancelSettings()">保存せずに戻る</button>
+        <button type="button" class="btn settings-save-btn" onclick="attemptSaveSettings()">保存して閉じる</button>
       </div>
     </div>
   </div>
@@ -508,7 +520,7 @@
       <div id="result-status" style="margin-bottom:20px; color:#4ecca3; font-size:1rem; height:20px;"></div>
       <div style="display:flex; flex-direction:column; gap:12px;">
         <button class="btn" id="result-rematch-btn" onclick="requestRematch()">もう一度対戦する</button>
-        <button class="btn retire-btn" onclick="exitGame()">タイトルへ戻る</button>
+        <button class="btn retire-btn" id="result-exit-btn" onclick="exitGame()">もとの画面へ戻る</button>
       </div>
     </div>
   </div>
@@ -544,7 +556,7 @@
         <button class="btn menu-card-btn" data-desc="全7話の物語を進めながらライバルと勝負！" onclick="showSoloHubMenu()" style="border-color:#ffd700;">ひとりで</button>
         <button class="btn menu-card-btn" data-desc="1台で最大4人対戦・スマホ対面・オンラインP2P対戦！" onclick="showMultiHubMenu()" style="border-color:#00d4ff;">みんなで</button>
         <button class="btn menu-card-btn" data-desc="BGM・ボイス・カスタム立ち絵/ZIP登録・キー設定" onclick="openSettings()" style="background:#1a4d3e; border-color:#4ecca3;">せってい</button>
-        <button class="btn menu-card-btn" data-desc="各モードのハイスコア＆勝ち抜き連勝記録" onclick="showRankingMenu()">せいせき</button>
+        <button class="btn menu-card-btn" data-desc="各モードのハイスコア・連勝・累計勝利記録" onclick="showRankingMenu()">せいせき</button>
       </div>
     </div>
 
@@ -675,7 +687,7 @@
     <div id="ranking-menu" style="display:none; flex-direction:column; gap:12px; align-items:center; width:100%; max-width:380px;">
       <h2 style="color:#ffd700">せいせき</h2>
       <div id="ranking-mode-carousel" class="carousel-panel"></div>
-      <div id="ranking-list" style="width:100%; max-width: 320px; background:rgba(0,0,0,0.5); border-radius:8px; padding:10px; font-size:0.9rem; line-height:1.8;"></div>
+      <div id="ranking-list" style="width:100%; max-width: 340px; background:rgba(0,0,0,0.5); border-radius:8px; padding:10px; font-size:0.9rem; line-height:1.8;"></div>
       <button class="btn menu-back-top-btn" onclick="backToMainMenu()">← 戻る</button>
     </div>
 
@@ -691,6 +703,7 @@
       </div>
       <div class="mode-two-col-grid">
         <div class="mode-left-col">
+          <div id="com-mode-win-badges" class="mode-win-badges-bar" style="display:none;"></div>
           <div id="com-char-picker" class="char-picker-panel"></div>
         </div>
         <div class="mode-right-top">
@@ -782,6 +795,7 @@
       </div>
       <div class="mode-two-col-grid">
         <div class="mode-left-col">
+          <div id="online-mode-win-badges" class="mode-win-badges-bar" style="display:none;"></div>
           <div id="online-char-picker" class="char-picker-panel"></div>
         </div>
         <div class="mode-right-top">
@@ -831,7 +845,7 @@
       <button type="button" id="pwa-install-btn" class="pwa-install-btn" onclick="triggerPwaInstall()">📲 アプリ化する (PWA)</button>
     </div>
 
-    <!-- 縦UI モード選択中専用 ボトムメニュー -->
+    <!-- 縦UI モード選択中・せってい画面専用 ボトムメニュー -->
     <nav id="vertical-bottom-nav" class="vertical-bottom-nav" style="display:none;" aria-label="メニュー切り替え">
       <button type="button" class="v-bottom-btn" data-nav="home" onclick="navigateFromBottomNav('home')">
         <span class="v-bottom-icon">🏠</span><span class="v-bottom-label">めにゅー</span>
@@ -858,10 +872,11 @@
     <div id="rivals-top-area" style="display:none;"></div>
 
     <!-- 横画面：1人練習時のサイド演出パネル（複数人時はインライン立ち絵を使用） -->
-    <div id="battle-side-p1" class="battle-side-card p1-side" style="display:none;" aria-hidden="true">
+    <div id="battle-side-p1" class="battle-side-card p1-side side-left" style="display:none;" aria-hidden="true">
       <div class="battle-side-portrait-wrap">
         <img id="battle-side-p1-img" class="battle-side-img" alt="">
         <div id="battle-side-p1-wins" class="portrait-wins-badge" style="display:none;"></div>
+        <div id="battle-side-p1-streaks" class="portrait-streak-badges" style="display:none;"></div>
       </div>
       <div id="battle-side-p1-name" class="battle-side-name">1P</div>
       <div id="battle-side-p1-skill-name" class="portrait-skill-name" style="display:none;"></div>
@@ -872,42 +887,60 @@
       <div id="battle-side-p1-tag" class="battle-side-tag">PLAYER</div>
     </div>
 
-    <div id="battle-side-p2" class="battle-side-card p2-side" style="display:none;" aria-hidden="true">
-      <div class="battle-side-portrait-wrap">
-        <img id="battle-side-p2-img" class="battle-side-img" alt="">
+    <div id="battle-side-p2" class="battle-side-card p2-side side-right" style="display:none;" aria-hidden="true">
+      <div id="battle-side-p2-chara-view" class="battle-side-chara-view">
+        <div class="battle-side-portrait-wrap">
+          <img id="battle-side-p2-img" class="battle-side-img" alt="">
+        </div>
+        <div id="battle-side-p2-name" class="battle-side-name">RIVAL</div>
+        <div id="battle-side-p2-tag" class="battle-side-tag">TARGET</div>
       </div>
-      <div id="battle-side-p2-name" class="battle-side-name">RIVAL</div>
-      <div id="battle-side-p2-tag" class="battle-side-tag">TARGET</div>
+      <div id="battle-side-p2-practice-info" class="battle-side-practice-info" style="display:none;">
+        <div class="practice-info-badge">PRACTICE</div>
+        <div id="practice-info-mode" class="practice-info-mode">フリー練習</div>
+        <div class="practice-info-row">
+          <span class="practice-info-label">HIGH SCORE</span>
+          <span id="practice-info-highscore" class="practice-info-value gold">0</span>
+        </div>
+        <div class="practice-info-row">
+          <span class="practice-info-label">SCORE</span>
+          <span id="practice-info-score" class="practice-info-value cyan">0</span>
+        </div>
+        <div class="practice-info-row">
+          <span class="practice-info-label">ハンデ (難易度)</span>
+          <span id="practice-info-handicap" class="practice-info-value emerald">3: 普通</span>
+        </div>
+      </div>
     </div>
 
     <div id="game-container">
       <div id="controls-container" style="display: flex; flex-direction: column; justify-content: flex-end; gap: 6px; z-index: 20; width: 110px;">
         <button id="layout-toggle-btn" class="small-btn" tabindex="-1" onclick="toggleLandscapeLayout()" style="display:none; width:100%; font-size:0.75rem; padding:5px 2px; text-align:center;">UI: 横並び</button>
-        <label id="handedness-wrapper" class="switch-wrapper" style="background: rgba(0,0,0,0.85); padding: 5px 8px; border-radius: 10px; flex-direction: column; gap: 3px; border: 1px solid #4ecca3;">
-          <input type="checkbox" id="handedness-toggle" class="ui-toggle-input text" data-text-off="右" data-text-on="左" tabindex="-1" onchange="toggleHandedness()"> <span id="handedness-text" style="font-size: 0.75rem;">右利きモード</span>
+        <label id="handedness-wrapper" class="switch-wrapper" style="background: rgba(0,0,0,0.85); padding: 4px 6px; border-radius: 10px; flex-direction: column; gap: 2px; border: 1px solid #4ecca3;">
+          <input type="checkbox" id="handedness-toggle" class="ui-toggle-input text" data-text-off="右" data-text-on="左" tabindex="-1" onchange="toggleHandedness()"> <span id="handedness-text" style="font-size: 0.72rem;">右利きモード</span>
         </label>
-        <label id="swipe-wrapper" class="switch-wrapper" style="background: rgba(0,0,0,0.65); padding: 5px 8px; border-radius: 10px; flex-direction: column; gap: 3px; border: 1px solid rgba(255,255,255,0.1);">
-          <input type="checkbox" id="continuous-swipe" class="ui-toggle-input text" data-text-off="OFF" data-text-on="ON" tabindex="-1" checked><span>連続移動</span>
+        <label id="swipe-wrapper" class="switch-wrapper" style="background: rgba(0,0,0,0.65); padding: 4px 6px; border-radius: 10px; flex-direction: column; gap: 2px; border: 1px solid rgba(255,255,255,0.1);">
+          <input type="checkbox" id="continuous-swipe" class="ui-toggle-input text" data-text-off="OFF" data-text-on="ON" tabindex="-1" checked><span style="font-size: 0.72rem;">連続移動</span>
         </label>
-        <label id="vibrate-wrapper" class="switch-wrapper" style="display:none; background: rgba(0,0,0,0.65); padding: 5px 8px; border-radius: 10px; flex-direction: column; gap: 3px; border: 1px solid rgba(255,255,255,0.1);">
-          <input type="checkbox" id="vibrate-toggle" class="ui-toggle-input text" data-text-off="OFF" data-text-on="ON" tabindex="-1" onchange="onBoardVibrateToggle(this.checked)"><span>バイブ</span>
+        <label id="vibrate-wrapper" class="switch-wrapper" style="display:none; background: rgba(0,0,0,0.65); padding: 4px 6px; border-radius: 10px; flex-direction: column; gap: 2px; border: 1px solid rgba(255,255,255,0.1);">
+          <input type="checkbox" id="vibrate-toggle" class="ui-toggle-input text" data-text-off="OFF" data-text-on="ON" tabindex="-1" onchange="onBoardVibrateToggle(this.checked)"><span style="font-size: 0.72rem;">バイブ</span>
         </label>
         <button class="action-btn skill-action-btn" id="skill-btn" tabindex="-1" onclick="activatePlayerSkill()" style="display:none;">
           <span id="skill-btn-progress" class="skill-btn-progress"></span>
           <span id="skill-btn-label" class="skill-btn-label">スキル (3/3)</span>
         </button>
-        <button class="action-btn" id="rise-btn" tabindex="-1" style="height: 54px; font-size: 1.0rem; box-shadow: 0 4px #8a0c24;">せり上げ</button>
+        <button class="action-btn" id="rise-btn" tabindex="-1" style="height: 38px; padding: 6px 8px; font-size: 0.92rem; box-shadow: 0 3px #8a0c24;">せり上げ</button>
       </div>
 
       <div id="p2-controls-container" style="display:none; flex-direction: column; justify-content: flex-end; gap: 6px; z-index: 20; width: 110px;">
-        <label id="p2-swipe-wrapper" class="switch-wrapper" style="background: rgba(0,0,0,0.65); padding: 5px 8px; border-radius: 10px; flex-direction: column; gap: 3px; border: 1px solid rgba(255,255,255,0.1);">
-          <input type="checkbox" id="p2-continuous-swipe" class="ui-toggle-input text" data-text-off="OFF" data-text-on="ON" tabindex="-1" checked><span>連続移動</span>
+        <label id="p2-swipe-wrapper" class="switch-wrapper" style="background: rgba(0,0,0,0.65); padding: 4px 6px; border-radius: 10px; flex-direction: column; gap: 2px; border: 1px solid rgba(255,255,255,0.1);">
+          <input type="checkbox" id="p2-continuous-swipe" class="ui-toggle-input text" data-text-off="OFF" data-text-on="ON" tabindex="-1" checked><span style="font-size: 0.72rem;">連続移動</span>
         </label>
         <button class="action-btn skill-action-btn" id="p2-skill-btn" tabindex="-1" onclick="activateShareP2Skill()" style="display:none;">
           <span id="p2-skill-btn-progress" class="skill-btn-progress"></span>
           <span id="p2-skill-btn-label" class="skill-btn-label">スキル (3/3)</span>
         </button>
-        <button class="action-btn" id="p2-rise-btn" tabindex="-1" style="height: 54px; font-size: 1.0rem; box-shadow: 0 4px #8a0c24;">せり上げ</button>
+        <button class="action-btn" id="p2-rise-btn" tabindex="-1" style="height: 38px; padding: 6px 8px; font-size: 0.92rem; box-shadow: 0 3px #8a0c24;">せり上げ</button>
       </div>
 
       <div class="board-wrapper my-board" id="my-wrapper">

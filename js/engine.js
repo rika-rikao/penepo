@@ -1,5 +1,5 @@
 // ==========================================
-// ゲームエンジン（入れ替え・落下高速化 / 多段・割合お邪魔浄化 / GB風視認性改善 / COM個性・ランダム思考対応）
+// ゲームエンジン（入れ替え・落下高速化 / 60fps固定タイミング調整 / 多段・割合お邪魔浄化 / GB風視認性改善 / COM個性・ランダム思考対応）
 // ==========================================
 function createSeededRng(seed) {
   let s = seed >>> 0;
@@ -46,6 +46,11 @@ class PonEngine {
 
     this.stopTimer = 0;
     this.dangerTimer = 180; 
+    this.shakeTimer = 0;
+    this.cutinTimer = 0;
+    this.cutinMax = 50;
+    this.cutinText = '';
+    this.popups = [];
     this.score = 0; this.chain = 0;
     this.gameOver = false;
     this.endAnim = null;
@@ -240,6 +245,19 @@ class PonEngine {
     };
   }
 
+  updateVisualTimers60fps() {
+    if (this.shakeTimer > 0) this.shakeTimer--;
+    if (this.cutinTimer > 0) this.cutinTimer--;
+    if (this.popups && this.popups.length > 0) {
+      for (let i = this.popups.length - 1; i >= 0; i--) {
+        this.popups[i].timer--;
+        if (this.popups[i].timer <= 0) {
+          this.popups.splice(i, 1);
+        }
+      }
+    }
+  }
+
   updateEndAnim() {
     const anim = this.endAnim;
     if (!anim || anim.done) return;
@@ -287,6 +305,7 @@ class PonEngine {
         anim.row++;
         anim.timer = anim.interval;
       } else {
+        this.shakeTimer = 0;
         anim.done = true;
         const cb = anim.onComplete;
         anim.onComplete = null;
@@ -307,6 +326,7 @@ class PonEngine {
         anim.timer = anim.interval;
       } else {
         this.nextRow = [];
+        this.shakeTimer = 0;
         anim.done = true;
         const cb = anim.onComplete;
         anim.onComplete = null;
@@ -388,8 +408,9 @@ class PonEngine {
        this.grid[r][c+1].swapAnim = { dir: 1, timer: 3 };
     }
 
-    if (this.grid[r][c] && r+1 < this.rows && this.grid[r+1][c] === null) { this.grid[r][c].state = 'hover'; this.grid[r][c].timer = 6; }
-    if (this.grid[r][c+1] && r+1 < this.rows && this.grid[r+1][c+1] === null) { this.grid[r][c+1].state = 'hover'; this.grid[r][c+1].timer = 6; }
+    // 60fps換算でワンテンポ遅く落とすホバー猶予 (11フレーム = 約0.183秒)
+    if (this.grid[r][c] && r+1 < this.rows && this.grid[r+1][c] === null) { this.grid[r][c].state = 'hover'; this.grid[r][c].timer = 11; }
+    if (this.grid[r][c+1] && r+1 < this.rows && this.grid[r+1][c+1] === null) { this.grid[r][c+1].state = 'hover'; this.grid[r][c+1].timer = 11; }
 
     if (this.onSwap) this.onSwap();
     this.checkMatches();
@@ -699,6 +720,8 @@ class PonEngine {
   }
 
   update(deltaTime = 1000/60) {
+    this.updateVisualTimers60fps();
+
     if (this.endAnim) {
       for (let r = 0; r < this.rows; r++) {
         for (let c = 0; c < this.cols; c++) {
@@ -809,7 +832,7 @@ class PonEngine {
         blocks.forEach(b => {
           if (b.state === 'transformed_wait' || b.state === 'transforming_wait') {
             b.state = 'hover';
-            b.timer = 6;
+            b.timer = 11;
             b.fallY = 0;
             if (typeof b.type === 'number') {
               delete b.groupId;
@@ -930,7 +953,7 @@ class PonEngine {
                   && !ub.transformGroupId
                   && ub.state !== 'transforming' && ub.state !== 'transforming_wait' && ub.state !== 'transformed_wait') {
                 ub.state = 'hover';
-                ub.timer = 7;
+                ub.timer = 12;
                 ub.chainEligible = true;
               } else {
                 break;
@@ -1001,7 +1024,7 @@ class PonEngine {
             if (this.onGarbageLanded) this.onGarbageLanded();
           }
         } else {
-          leader.fallY += 0.72;
+          leader.fallY += 0.50;
           cells.forEach(item => item.block.fallY = leader.fallY);
           if (leader.fallY >= 1.0) {
             cells.sort((a, b) => b.r - a.r);
@@ -1051,7 +1074,7 @@ class PonEngine {
         if (!supported) {
           cells.forEach(item => {
             item.block.state = 'hover';
-            item.block.timer = 6;
+            item.block.timer = 11;
           });
         }
       }
@@ -1094,7 +1117,7 @@ class PonEngine {
 
           if (leader.state === 'normal') {
             leader.state = 'hover';
-            leader.timer = 6;
+            leader.timer = 11;
           }
 
           for (const item of stack) item.block.state = leader.state;
@@ -1119,7 +1142,7 @@ class PonEngine {
               for (const item of stack) { item.block.state = 'normal'; item.block.fallY = 0; }
               needsMatchCheck = true;
             } else {
-              leader.fallY += 0.72;
+              leader.fallY += 0.50;
               for (const item of stack) item.block.fallY = leader.fallY;
               
               if (leader.fallY >= 1.0) {
@@ -1155,7 +1178,6 @@ class PonEngine {
       }
     }
   }
-
   checkMatches() {
     let matchedPositions = new Set();
     for (let r = 0; r < this.rows; r++) {
@@ -1668,9 +1690,10 @@ class BoardRenderer {
     if (typeof drawBoardBgAddon === 'function') drawBoardBgAddon(ctx, this.canvas, engine, this);
     this.drawSacrificeAura(ctx, engine);
 
+    const isGameOverSettled = engine.gameOver && !engine.isPractice && (!engine.endAnim || engine.endAnim.done);
+
     ctx.save();
-    if (engine.shakeTimer > 0) {
-       engine.shakeTimer--;
+    if (engine.shakeTimer > 0 && !isGameOverSettled) {
        const shakeOffsetX = (Math.random() - 0.5) * 8;
        const shakeOffsetY = (Math.random() - 0.5) * 8;
        ctx.translate(shakeOffsetX, shakeOffsetY);
@@ -1802,13 +1825,9 @@ class BoardRenderer {
     }
 
     if (engine.popups) {
-      for (let i = engine.popups.length - 1; i >= 0; i--) {
+      for (let i = 0; i < engine.popups.length; i++) {
         const p = engine.popups[i];
-        p.timer--;
-        if (p.timer <= 0) {
-          engine.popups.splice(i, 1);
-          continue;
-        }
+        if (p.timer <= 0) continue;
         const progress = 1 - p.timer / p.initialTimer;
         const floatY = progress * 22;
         ctx.globalAlpha = Math.max(0, p.timer / 15); 

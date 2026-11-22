@@ -209,7 +209,6 @@ function triggerGameVibration(kind = 'swap', force = false, targetPadSlot = null
     }
   } catch (_) {}
 
-  // ゲームパッド側で振動を実行できた場合は本体側のバイブを鳴らさない
   if (!padRumbled && isBodyVibrationCapable()) {
     try {
       navigator.vibrate(bodyPattern);
@@ -661,6 +660,7 @@ const SE = {
   fallbackPaths: {},
   fallbackAudios: {},
   _fallbackUnlocked: false,
+  _lastUiPlayAt: {},
   customBuffers: {},
   customRawMap: {},
   remoteBuffers: {},
@@ -841,6 +841,11 @@ const SE = {
     this.play(key);
   },
   play(key, options = null) {
+    if (key === 'select' || key === 'cancel') {
+      const now = performance.now();
+      if (now - (this._lastUiPlayAt[key] || 0) < 55) return;
+      this._lastUiPlayAt[key] = now;
+    }
     if (key === 'select' && !(options && options.skipVibrate) && typeof triggerConfirmVibration === 'function') {
       triggerConfirmVibration();
     }
@@ -857,7 +862,7 @@ const SE = {
 SE.readyPromise = SE.load();
 
 // ==========================================
-// VOICE 制御（attack / win / lose 拡張子非依存 & カスタムボイス対応）
+// VOICE 制御（attack / win / lose 拡張子非依存・HTMLAudioフォールバック強化 & カスタムボイス対応）
 // ==========================================
 const VOICE = {
   exts: ['m4a', 'mp3', 'wav', 'ogg', 'aac', 'opus', 'webm'],
@@ -873,6 +878,7 @@ const VOICE = {
   customRawMap: {},
   remoteBuffers: {},
   lastPlayedMap: {},
+  _activeFallbackAudio: null,
 
   async setCustomVoice(category, arrayBuffer, meta = null) {
     if (!this.suffixMap[category]) return false;
@@ -925,12 +931,14 @@ const VOICE = {
           settled = true;
           audio.oncanplaythrough = null;
           audio.onloadeddata = null;
+          audio.onloadedmetadata = null;
           audio.onerror = null;
           resolve(ok ? url : null);
         };
-        audio.preload = 'auto';
+        audio.preload = 'metadata';
         audio.oncanplaythrough = () => done(true);
         audio.onloadeddata = () => done(true);
+        audio.onloadedmetadata = () => done(true);
         audio.onerror = () => done(false);
         audio.src = url;
         audio.load();
@@ -967,12 +975,22 @@ const VOICE = {
           const res = await fetch(urlPath);
           if (!res || !res.ok) continue;
           const buf = await res.arrayBuffer();
-          const decoded = await new Promise((resolve, reject) => {
-            audioCtx.decodeAudioData(buf, resolve, reject);
-          });
-          const entry = { type: 'buffer', data: decoded };
-          this.resolvedCache[cacheKey] = entry;
-          return entry;
+          try {
+            const decoded = await new Promise((resolve, reject) => {
+              audioCtx.decodeAudioData(buf, resolve, reject);
+            });
+            const entry = { type: 'buffer', data: decoded, fallbackUrl: urlPath };
+            this.resolvedCache[cacheKey] = entry;
+            return entry;
+          } catch (_) {
+            // decodeAudioData失敗時もHTML5 Audioで再生可能かフォールバック確認
+            const okUrl = await this.probeAudioUrl(urlPath);
+            if (okUrl) {
+              const entry = { type: 'url', data: okUrl };
+              this.resolvedCache[cacheKey] = entry;
+              return entry;
+            }
+          }
         } catch (_) {}
       }
       const noneEntry = { type: 'none' };
@@ -986,17 +1004,31 @@ const VOICE = {
     return task;
   },
 
+  async preloadForCharacters(charNames = []) {
+    const cats = ['win', 'lose', 'attack'];
+    const jobs = [];
+    for (const name of charNames) {
+      if (!name) continue;
+      for (const cat of cats) {
+        jobs.push(this.resolveCharacterVoice(cat, name).catch(() => null));
+      }
+    }
+    await Promise.all(jobs);
+  },
+
   playFallbackUrl(url) {
     if (!url || this.volume <= 0) return;
     try {
       const a = new Audio(url);
       a.volume = Math.max(0, Math.min(1, this.volume));
+      this._activeFallbackAudio = a;
       a.play().catch(() => {});
     } catch (_) {}
   },
 
   async play(category, themeOrName, senderId = null) {
     if (this.volume <= 0 || !this.suffixMap[category]) return;
+    ensureAudioCtxResumed();
 
     const charId = (themeOrName && typeof themeOrName === 'object') ? themeOrName.charId : null;
     const charName = (themeOrName && typeof themeOrName === 'object')
@@ -1018,6 +1050,8 @@ const VOICE = {
     if (charId === 'custom') {
       if (this.customBuffers[category]) {
         SE.playBuffer(this.customBuffers[category], 1.15, this.volume);
+      } else if (this.customRawMap[category] && this.customRawMap[category].dataUrl) {
+        this.playFallbackUrl(this.customRawMap[category].dataUrl);
       }
       return;
     }
@@ -1026,9 +1060,104 @@ const VOICE = {
     const resolved = await this.resolveCharacterVoice(category, charName);
     if (!resolved || resolved.type === 'none') return;
     if (resolved.type === 'buffer') {
-      SE.playBuffer(resolved.data, 1.15, this.volume);
+      const ok = SE.playBuffer(resolved.data, 1.15, this.volume);
+      if (!ok && resolved.fallbackUrl) this.playFallbackUrl(resolved.fallbackUrl);
     } else if (resolved.type === 'url') {
       this.playFallbackUrl(resolved.data);
+    }
+  },
+
+  async playAndWait(category, themeOrName, senderId = null, maxWaitMs = 3500) {
+    if (this.volume <= 0 || !this.suffixMap[category]) return;
+    ensureAudioCtxResumed();
+
+    const charId = (themeOrName && typeof themeOrName === 'object') ? themeOrName.charId : null;
+    const charName = (themeOrName && typeof themeOrName === 'object')
+      ? (themeOrName.voiceName || themeOrName.name)
+      : String(themeOrName || '');
+
+    const dedupKey = `${category}_${senderId || charId || charName}`;
+    this.lastPlayedMap[dedupKey] = performance.now();
+
+    const playBufferAndWait = (buffer) => new Promise((resolve) => {
+      if (!buffer || this.volume <= 0) { resolve(); return; }
+      let settled = false;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(safetyTimer);
+        resolve();
+      };
+      const durMs = (buffer.duration && isFinite(buffer.duration))
+        ? Math.min(maxWaitMs, Math.ceil(buffer.duration * 1000) + 80)
+        : maxWaitMs;
+      const safetyTimer = setTimeout(done, durMs);
+      try {
+        const source = audioCtx.createBufferSource();
+        source.buffer = buffer;
+        const gainNode = audioCtx.createGain();
+        gainNode.gain.value = Math.min(2.0, this.volume * 1.15);
+        source.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
+        source.onended = done;
+        source.start(0);
+      } catch (_) {
+        done();
+      }
+    });
+
+    const playUrlAndWait = (url) => new Promise((resolve) => {
+      if (!url || this.volume <= 0) { resolve(); return; }
+      let settled = false;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(safetyTimer);
+        resolve();
+      };
+      const safetyTimer = setTimeout(done, maxWaitMs);
+      try {
+        const a = new Audio(url);
+        a.volume = Math.max(0, Math.min(1, this.volume));
+        this._activeFallbackAudio = a;
+        a.addEventListener('ended', done, { once: true });
+        a.addEventListener('error', done, { once: true });
+        const p = a.play();
+        if (p && typeof p.catch === 'function') {
+          p.catch(done);
+        }
+      } catch (_) {
+        done();
+      }
+    });
+
+    if (senderId && this.remoteBuffers[senderId] && this.remoteBuffers[senderId][category]) {
+      await playBufferAndWait(this.remoteBuffers[senderId][category]);
+      return;
+    }
+
+    if (charId === 'custom') {
+      if (this.customBuffers[category]) {
+        await playBufferAndWait(this.customBuffers[category]);
+      } else if (this.customRawMap[category] && this.customRawMap[category].dataUrl) {
+        await playUrlAndWait(this.customRawMap[category].dataUrl);
+      }
+      return;
+    }
+
+    if (!charName) return;
+    const resolved = await this.resolveCharacterVoice(category, charName);
+    if (!resolved || resolved.type === 'none') return;
+    if (resolved.type === 'buffer') {
+      if (audioCtx.state === 'running') {
+        await playBufferAndWait(resolved.data);
+      } else if (resolved.fallbackUrl) {
+        await playUrlAndWait(resolved.fallbackUrl);
+      } else {
+        await playBufferAndWait(resolved.data);
+      }
+    } else if (resolved.type === 'url') {
+      await playUrlAndWait(resolved.data);
     }
   }
 };
@@ -1125,7 +1254,7 @@ class WebAudioBGMPlayer {
     }
     if (this.isPlaying) {
       let t = this.pauseTime + (this.ctx.currentTime - this.startTime);
-      if (this.buffer && this.loop) return t % this.buffer.duration;
+      if (this.buffer && this.loop && this.buffer.duration > 0) return t % this.buffer.duration;
       if (this.buffer && t >= this.buffer.duration) return this.buffer.duration;
       return t;
     }
@@ -1287,9 +1416,9 @@ class WebAudioBGMPlayer {
     this.startTime = this.ctx.currentTime;
     
     let offset = this.pauseTime;
-    if (this.buffer && offset >= this.buffer.duration) {
-      offset = 0;
-      this.pauseTime = 0;
+    if (this.buffer && this.buffer.duration > 0 && offset >= this.buffer.duration) {
+      offset = this.loop ? (offset % this.buffer.duration) : 0;
+      this.pauseTime = offset;
     }
     
     currentSource.start(0, offset);
@@ -1319,16 +1448,17 @@ class WebAudioBGMPlayer {
       try { oldSource.stop(); } catch (e) {}
       try { oldSource.disconnect(); } catch (e) {}
       this.pauseTime += (this.ctx.currentTime - this.startTime);
-      if (this.buffer && this.pauseTime >= this.buffer.duration) {
-         this.pauseTime = 0;
+      if (this.buffer && this.buffer.duration > 0 && this.pauseTime >= this.buffer.duration) {
+        this.pauseTime = this.loop ? (this.pauseTime % this.buffer.duration) : 0;
       }
       this.source = null;
       this.isPlaying = false;
     }
   }
 }
+
 // ==========================================
-// OP / メニュー〜モードセレクト用BGM制御（拡張子非依存・シームレスループ・1ループ目のみ0.5秒フェードイン）
+// OP / メニュー〜モードセレクト用BGM制御
 // ==========================================
 const SceneBgm = {
   exts: ['m4a', 'mp3', 'wav', 'ogg', 'aac', 'opus', 'webm'],
@@ -1891,6 +2021,7 @@ panicBgmAudio.loop = true;
 
 let bgmPlaylist = [], currentBgmIndex = 0, isBgmPlaying = false, bgmNeedsPlay = false;
 let isBgmIntendedToPlay = false; 
+let isBgmPausedByModal = false;
 let isPanic = false;
 
 const savedSeVol = localStorage.getItem('pdw_se_vol');
@@ -1988,6 +2119,7 @@ function toggleBgmPlay() {
       panicBgmAudio.unlock();
       isBgmPlaying = true; 
       isBgmIntendedToPlay = true;
+      isBgmPausedByModal = false;
       bgmNeedsPlay = false; 
     }).catch(() => showToast('再生エラー'));
   }
@@ -2003,7 +2135,7 @@ bgmAudio.addEventListener('ended', () => {
     }
     bgmAudio.loop = false;
 
-    if (isBgmIntendedToPlay) {
+    if (isBgmIntendedToPlay && !isBgmPausedByModal) {
       bgmAudio.currentTime = 0;
       bgmAudio.play().catch(()=>{});
     }
@@ -2013,15 +2145,41 @@ bgmAudio.addEventListener('ended', () => {
 function stopBgm() {
   isBgmIntendedToPlay = false;
   isBgmPlaying = false;
+  isBgmPausedByModal = false;
   isPanic = false;
   bgmAudio.pause();
   panicBgmAudio.pause();
+}
+
+function pauseBgmForModal() {
+  if (!isBgmIntendedToPlay && !bgmAudio.isPlaying && !panicBgmAudio.isPlaying) return;
+  isBgmPausedByModal = true;
+  if (bgmAudio.isPlaying) bgmAudio.pause();
+  if (panicBgmAudio.isPlaying) panicBgmAudio.pause();
+  isBgmPlaying = false;
+}
+
+function resumeBgmFromModal() {
+  if (!isBgmPausedByModal) return;
+  isBgmPausedByModal = false;
+  if (!isBgmIntendedToPlay || matchState !== 'playing' || document.getElementById('game-area').style.display === 'none') {
+    return;
+  }
+  const bgmVol = parseFloat(document.getElementById('bgm-volume').value);
+  bgmAudio.volume = bgmVol;
+  panicBgmAudio.volume = bgmVol;
+  bgmAudio.muted = isPanic;
+  panicBgmAudio.muted = !isPanic;
+  isBgmPlaying = true;
+  if (!bgmAudio.isPlaying) bgmAudio.play().catch(e => console.warn(e));
+  if (isPanic && !panicBgmAudio.isPlaying) panicBgmAudio.play().catch(e => console.warn(e));
 }
 
 function readyBgm() {
   SceneBgm.stop();
   isBgmIntendedToPlay = false;
   isBgmPlaying = false;
+  isBgmPausedByModal = false;
   
   if (bgmPlaylist.length > 0) {
     const expectedFile = bgmPlaylist[currentBgmIndex];
@@ -2057,8 +2215,14 @@ function readyBgm() {
 
 function resumeBgm() {
   if (matchState !== 'playing' || document.getElementById('game-area').style.display === 'none') return;
+  if (typeof isExitConfirmOpen !== 'undefined' && isExitConfirmOpen) {
+    isBgmIntendedToPlay = true;
+    isBgmPausedByModal = true;
+    return;
+  }
   SceneBgm.stop();
   isBgmIntendedToPlay = true;
+  isBgmPausedByModal = false;
   isBgmPlaying = true;
   let bgmVol = parseFloat(document.getElementById('bgm-volume').value);
 
@@ -2073,6 +2237,7 @@ function resumeBgm() {
     panicBgmAudio.play().catch(e => console.warn(e));
   }
 }
+
 // ==========================================
 // プルダウン選択モーダル（決定ボタンで一覧から選択）
 // ==========================================
@@ -2356,7 +2521,8 @@ function updateRangeDigitHUD() {
   hud.appendChild(hint);
   hud.style.display = 'flex';
 }
-// --- コンフィグ・ゲームパッド管理（1P〜4P対応：初期値は方向・決定・キャンセル・ポーズのみ） ---
+
+// --- コンフィグ・ゲームパッド管理（1P〜4P対応：PS系配置の全ボタン割り当て） ---
 const ACTION_LABELS = {
   Up: '上', Down: '下', Left: '左', Right: '右',
   Swap: '入れ替え / 決定',
@@ -2373,27 +2539,36 @@ const ACTION_LABELS = {
 
 function createDefault1PKeyConfig() {
   return {
-    Up: 'ArrowUp', Down: 'ArrowDown', Left: 'ArrowLeft', Right: 'ArrowRight',
+    Up: 'ArrowUp',
+    Down: 'ArrowDown',
+    Left: 'ArrowLeft',
+    Right: 'ArrowRight',
     Swap: 'Space',
     Skill: 'KeyF',
+    GrabLeft: 'KeyZ',
+    GrabRight: 'KeyX',
+    ToggleContinuous: 'KeyC',
     Pause: 'Escape',
-    GrabLeft: '', GrabRight: '',
-    ToggleContinuous: '',
-    Rise1: '', Rise2: '',
-    TargetRight: '', TargetLeft: ''
+    Rise1: 'ShiftLeft',
+    Rise2: 'ShiftRight',
+    TargetLeft: 'KeyQ',
+    TargetRight: 'KeyE'
   };
 }
 
 function createDefaultPadConfig() {
   return {
     Up: 12, Down: 13, Left: 14, Right: 15,
-    Swap: 0,
-    Skill: 6,
+    Swap: 1,
+    Skill: 0,
+    GrabLeft: 2,
+    GrabRight: 3,
+    ToggleContinuous: 8,
     Pause: 9,
-    GrabLeft: null, GrabRight: null,
-    ToggleContinuous: null,
-    Rise1: null, Rise2: null,
-    TargetRight: null, TargetLeft: null
+    Rise1: 4,
+    Rise2: 5,
+    TargetLeft: 6,
+    TargetRight: 7
   };
 }
 
@@ -2483,6 +2658,106 @@ let assignStartedAt = 0;
 let assignPadSnapshot = {};
 let pendingConfigFocus = null;
 let settingsSnapshot = null;
+let pendingSettingsModalAction = null;
+let pendingSettingsAfterDiscardCb = null;
+let settingsModalRestoreFocusEl = null;
+const REQUIRED_1P_CONTROL_ACTIONS = ['Up', 'Down', 'Left', 'Right', 'Swap'];
+
+function assignKeyToPlayerAction(playerIdx, action, newKeyCode) {
+  const cfg = playerConfigs[playerIdx];
+  if (!cfg || !cfg.key) return [];
+  const cleared = [];
+  if (newKeyCode) {
+    Object.keys(ACTION_LABELS).forEach(otherAct => {
+      if (otherAct !== action && cfg.key[otherAct] === newKeyCode) {
+        cfg.key[otherAct] = '';
+        cleared.push(otherAct);
+      }
+    });
+  }
+  cfg.key[action] = newKeyCode || '';
+  if (cleared.length > 0 && typeof showToast === 'function') {
+    const names = cleared.map(a => ACTION_LABELS[a] || a).join('・');
+    showToast(`重複のため「${names}」のキーを未設定にしました`);
+  }
+  return cleared;
+}
+
+function assignPadToPlayerAction(playerIdx, action, newPadBtn) {
+  const cfg = playerConfigs[playerIdx];
+  if (!cfg || !cfg.pad) return [];
+  const cleared = [];
+  if (newPadBtn !== null && newPadBtn !== undefined) {
+    Object.keys(ACTION_LABELS).forEach(otherAct => {
+      if (otherAct !== action && cfg.pad[otherAct] === newPadBtn) {
+        cfg.pad[otherAct] = null;
+        cleared.push(otherAct);
+      }
+    });
+  }
+  cfg.pad[action] = (newPadBtn !== undefined) ? newPadBtn : null;
+  if (cleared.length > 0 && typeof showToast === 'function') {
+    const names = cleared.map(a => ACTION_LABELS[a] || a).join('・');
+    showToast(`重複のため「${names}」のパッドを未設定にしました`);
+  }
+  return cleared;
+}
+
+function validateControlConfig(cfg0) {
+  if (!cfg0) return { ok: true };
+  if (cfg0.key) {
+    for (const act of REQUIRED_1P_CONTROL_ACTIONS) {
+      if (!cfg0.key[act]) {
+        return {
+          ok: false,
+          type: 'key',
+          action: act,
+          msg: `1Pの「${ACTION_LABELS[act]}」(Key)が未設定のため閉じられません`
+        };
+      }
+    }
+    if (cfg0.key.Skill && cfg0.key.Swap === cfg0.key.Skill) {
+      return {
+        ok: false,
+        type: 'key',
+        action: 'Skill',
+        msg: '1Pの決定キーとキャンセルキーが重複しています'
+      };
+    }
+  }
+  if (cfg0.padSlot >= 0 && cfg0.pad) {
+    for (const act of REQUIRED_1P_CONTROL_ACTIONS) {
+      if (cfg0.pad[act] === null || cfg0.pad[act] === undefined) {
+        return {
+          ok: false,
+          type: 'pad',
+          action: act,
+          msg: `1Pの「${ACTION_LABELS[act]}」(Pad)が未設定のため閉じられません`
+        };
+      }
+    }
+    if (cfg0.pad.Skill !== null && cfg0.pad.Skill !== undefined && cfg0.pad.Swap === cfg0.pad.Skill) {
+      return {
+        ok: false,
+        type: 'pad',
+        action: 'Skill',
+        msg: '1Pのパッド決定とキャンセルが重複しています'
+      };
+    }
+  }
+  return { ok: true };
+}
+
+function focusInvalidControlField(check) {
+  if (!check || check.ok) return;
+  if (typeof SE !== 'undefined') SE.play('cancel');
+  if (typeof showToast === 'function') showToast(check.msg);
+  selectSettingsTab('control');
+  selectSettingsPlayer(0);
+  pendingConfigFocus = { action: check.action, type: check.type };
+  renderConfigUI();
+  if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(180);
+}
 
 function openKeyResetConfirmModal() {
   const modal = document.getElementById('key-reset-confirm-modal');
@@ -2584,6 +2859,7 @@ function onSettingsPadSlotChange(val) {
   const parsed = parseInt(val, 10);
   if (!Number.isNaN(parsed)) {
     playerConfigs[settingsPlayerIdx].padSlot = parsed;
+    renderConfigUI();
   }
 }
 
@@ -2598,7 +2874,180 @@ function persistPlayerConfigsToStorage() {
   }));
 }
 
+function hasSettingsChanges() {
+  if (!settingsSnapshot) return false;
+  const snap = settingsSnapshot;
+  const curBgmVol = parseFloat(document.getElementById('bgm-volume')?.value ?? bgmAudio.volume);
+  if (Math.round(curBgmVol * 100) !== Math.round(snap.bgmVol * 100)) return true;
+  if (Math.round(SE.volume * 100) !== Math.round(snap.seVol * 100)) return true;
+  if (Math.round(VOICE.volume * 100) !== Math.round(snap.voiceVol * 100)) return true;
+  if (!!isGbMode !== !!snap.gbMode) return true;
+  if (!!isSwapVibrateEnabled !== !!snap.swapVibrate) return true;
+
+  const curPlayerName = (typeof playerCustomName !== 'undefined') ? playerCustomName : '';
+  if (curPlayerName !== (snap.playerCustomName || '')) return true;
+
+  const curHubChar = (typeof hubPortraitMode !== 'undefined') ? hubPortraitMode : 'random';
+  if (curHubChar !== (snap.hubPortraitMode || 'random')) return true;
+
+  if (JSON.stringify(playerConfigs) !== JSON.stringify(snap.playerConfigs)) return true;
+
+  if (snap.customAssets && typeof CustomAssets !== 'undefined') {
+    for (const k of ['chara', 'bg', 'frame']) {
+      const a = CustomAssets[k];
+      const b = snap.customAssets[k];
+      if (!!a !== !!b) return true;
+      if (a && b && (a.dataUrl !== b.dataUrl || a.name !== b.name)) return true;
+    }
+  }
+
+  if (snap.customVoices) {
+    for (const cat of ['attack', 'win', 'lose']) {
+      const curRaw = VOICE.customRawMap[cat];
+      const oldRaw = snap.customVoices.raw[cat];
+      if (!!curRaw !== !!oldRaw) return true;
+      if (curRaw && oldRaw && (curRaw.dataUrl !== oldRaw.dataUrl || curRaw.name !== oldRaw.name)) return true;
+    }
+  }
+
+  if (snap.customSE) {
+    const curKeys = Object.keys(SE.customRawMap).sort();
+    const oldKeys = Object.keys(snap.customSE.raw).sort();
+    if (curKeys.length !== oldKeys.length) return true;
+    for (let i = 0; i < curKeys.length; i++) {
+      const k = curKeys[i];
+      if (k !== oldKeys[i]) return true;
+      const a = SE.customRawMap[k];
+      const b = snap.customSE.raw[k];
+      if (!!a !== !!b) return true;
+      if (a && b && (a.dataUrl !== b.dataUrl || a.name !== b.name)) return true;
+    }
+  }
+
+  if (bgmPlaylist.length !== snap.bgmPlaylist.length) return true;
+  for (let i = 0; i < bgmPlaylist.length; i++) {
+    if (bgmPlaylist[i] !== snap.bgmPlaylist[i]) return true;
+  }
+  if (currentBgmIndex !== snap.currentBgmIndex) return true;
+
+  return false;
+}
+
+function openSettingsConfirmModal(kind, afterDiscardCb = null) {
+  const modal = document.getElementById('settings-confirm-modal');
+  const box = document.getElementById('settings-confirm-box');
+  const titleEl = document.getElementById('settings-confirm-title');
+  const msgEl = document.getElementById('settings-confirm-message');
+  const cancelBtn = document.getElementById('settings-confirm-cancel-btn');
+  const okBtn = document.getElementById('settings-confirm-ok-btn');
+  if (!modal || !box || !titleEl || !msgEl || !cancelBtn || !okBtn) {
+    if (kind === 'save') closeSettings();
+    else cancelSettings(afterDiscardCb);
+    return;
+  }
+
+  settingsModalRestoreFocusEl = (document.activeElement && document.activeElement.closest && document.activeElement.closest('#settings-overlay'))
+    ? document.activeElement
+    : null;
+  pendingSettingsModalAction = kind;
+  pendingSettingsAfterDiscardCb = (typeof afterDiscardCb === 'function') ? afterDiscardCb : null;
+
+  if (kind === 'save') {
+    box.className = 'confirm-modal-box settings-save-confirm-box';
+    titleEl.style.color = '#4ecca3';
+    titleEl.innerText = '設定の保存確認';
+    msgEl.innerText = '変更を保存します。よろしいですか？';
+    cancelBtn.innerText = 'キャンセル';
+    okBtn.className = 'btn settings-save-btn';
+    okBtn.innerText = '保存する';
+  } else {
+    box.className = 'confirm-modal-box exit-confirm-box';
+    titleEl.style.color = '#ff4081';
+    titleEl.innerText = '保存確認';
+    msgEl.innerText = '変更が保存されていません。\n保存せずに戻りますか？';
+    cancelBtn.innerText = 'せっていに戻る';
+    okBtn.className = 'btn retire-btn';
+    okBtn.innerText = '保存せずに戻る';
+  }
+
+  modal.style.display = 'flex';
+  SE.play('select');
+  if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(180);
+  requestAnimationFrame(() => cancelBtn.focus());
+}
+
+function closeSettingsConfirmModal(silent = false) {
+  const modal = document.getElementById('settings-confirm-modal');
+  const wasOpen = modal && modal.style.display === 'flex';
+  if (modal) modal.style.display = 'none';
+  pendingSettingsModalAction = null;
+  pendingSettingsAfterDiscardCb = null;
+  if (!silent && wasOpen) SE.play('cancel');
+  if (wasOpen && document.getElementById('settings-overlay')?.style.display === 'block') {
+    const fallbackBtn = document.querySelector('#settings-overlay .settings-footer-actions button');
+    const restoreEl = (settingsModalRestoreFocusEl && document.body.contains(settingsModalRestoreFocusEl))
+      ? settingsModalRestoreFocusEl
+      : fallbackBtn;
+    if (restoreEl) requestAnimationFrame(() => restoreEl.focus());
+  }
+  settingsModalRestoreFocusEl = null;
+  if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(180);
+}
+
+function confirmSettingsModalAction() {
+  const action = pendingSettingsModalAction;
+  const afterDiscardCb = pendingSettingsAfterDiscardCb;
+  const modal = document.getElementById('settings-confirm-modal');
+  if (modal) modal.style.display = 'none';
+  pendingSettingsModalAction = null;
+  pendingSettingsAfterDiscardCb = null;
+  settingsModalRestoreFocusEl = null;
+  if (action === 'save') {
+    closeSettings();
+  } else if (action === 'discard') {
+    cancelSettings(afterDiscardCb);
+  }
+}
+
+function attemptCancelSettings(afterDiscardCb = null) {
+  closeRangeDigitEdit();
+  clearSliderAdjusting();
+  assigningAction = null;
+  pendingConfigFocus = null;
+  const targetCfg = (settingsSnapshot && settingsSnapshot.playerConfigs)
+    ? settingsSnapshot.playerConfigs[0]
+    : playerConfigs[0];
+  const snapCheck = validateControlConfig(targetCfg);
+  if (!snapCheck.ok) {
+    focusInvalidControlField(snapCheck);
+    return;
+  }
+  if (hasSettingsChanges()) {
+    openSettingsConfirmModal('discard', afterDiscardCb);
+    return;
+  }
+  cancelSettings(afterDiscardCb);
+}
+
+function attemptSaveSettings() {
+  closeRangeDigitEdit();
+  clearSliderAdjusting();
+  assigningAction = null;
+  pendingConfigFocus = null;
+  const check = validateControlConfig(playerConfigs[0]);
+  if (!check.ok) {
+    focusInvalidControlField(check);
+    return;
+  }
+  if (hasSettingsChanges()) {
+    openSettingsConfirmModal('save');
+    return;
+  }
+  closeSettings();
+}
+
 function openSettings() {
+  if (document.getElementById('settings-overlay')?.style.display === 'block') return;
   SE.play('select');
   clearSliderAdjusting();
   settingsSnapshot = {
@@ -2643,15 +3092,37 @@ function openSettings() {
   if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(180);
 }
 
-async function cancelSettings() {
+async function cancelSettings(afterDiscardCb = null) {
   closeRangeDigitEdit();
   clearSliderAdjusting();
   closeSelectPickerModal(true);
   closeKeyResetConfirmModal(true);
+  closeSettingsConfirmModal(true);
   assigningAction = null;
   pendingConfigFocus = null;
-  if (settingsSnapshot) {
-    const snap = settingsSnapshot;
+  const hadChanges = hasSettingsChanges();
+  const snap = settingsSnapshot;
+
+  if (!snap) {
+    const curCheck = validateControlConfig(playerConfigs[0]);
+    if (!curCheck.ok) {
+      focusInvalidControlField(curCheck);
+      return;
+    }
+  } else if (snap.playerConfigs) {
+    const snapCheck = validateControlConfig(snap.playerConfigs[0]);
+    if (!snapCheck.ok) {
+      focusInvalidControlField(snapCheck);
+      return;
+    }
+  }
+
+  settingsSnapshot = null;
+
+  document.getElementById('settings-overlay').style.display = 'none';
+  if (typeof updateVerticalBottomNav === 'function') updateVerticalBottomNav();
+
+  if (snap) {
     SE.volume = snap.seVol;
     VOICE.volume = snap.voiceVol;
     bgmAudio.volume = snap.bgmVol;
@@ -2744,19 +3215,31 @@ async function cancelSettings() {
     bgmNeedsPlay = snap.bgmNeedsPlay;
   }
 
-  settingsSnapshot = null;
-  document.getElementById('settings-overlay').style.display = 'none';
   SE.play('cancel');
-  showToast('変更を保存せずに戻りました');
+  if (hadChanges && typeof showToast === 'function') {
+    showToast('変更を保存せずに戻りました');
+  }
+
+  if (typeof afterDiscardCb === 'function') {
+    afterDiscardCb();
+  } else if (typeof backToMainMenu === 'function') {
+    backToMainMenu(false);
+  }
   if (typeof updateVerticalBottomNav === 'function') updateVerticalBottomNav();
   if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(200);
 }
 
 function closeSettings() {
+  const check = validateControlConfig(playerConfigs[0]);
+  if (!check.ok) {
+    focusInvalidControlField(check);
+    return;
+  }
   closeRangeDigitEdit();
   clearSliderAdjusting();
   closeSelectPickerModal(true);
   closeKeyResetConfirmModal(true);
+  closeSettingsConfirmModal(true);
   document.getElementById('settings-overlay').style.display = 'none';
   assigningAction = null;
   pendingConfigFocus = null;
@@ -2814,8 +3297,12 @@ function closeSettings() {
       panicBgmAudio.unlock();
       isBgmPlaying = true; 
       isBgmIntendedToPlay = true;
+      isBgmPausedByModal = false;
       bgmNeedsPlay = false; 
     }).catch(e => console.warn(e));
+  }
+  if (typeof backToMainMenu === 'function') {
+    backToMainMenu(false);
   }
   if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(200);
 }
@@ -2833,6 +3320,7 @@ function renderConfigUI() {
   }
 
   const cfg = playerConfigs[settingsPlayerIdx];
+  const isP1 = (settingsPlayerIdx === 0);
   list.innerHTML = '';
   Object.keys(ACTION_LABELS).forEach(action => {
     const row = document.createElement('div');
@@ -2849,7 +3337,12 @@ function renderConfigUI() {
     kBtn.dataset.cfgType = 'key';
     kBtn.style.width = '95px'; kBtn.style.flexShrink = '0';
     const rawKey = cfg.key[action] || '';
+    const isMissingReqKey = isP1 && REQUIRED_1P_CONTROL_ACTIONS.includes(action) && !rawKey;
     kBtn.innerText = `Key: ${rawKey ? rawKey.replace('Arrow','').replace('Key','') : 'なし'}`;
+    if (isMissingReqKey) {
+      kBtn.style.borderColor = '#f43f5e';
+      kBtn.style.color = '#fda4af';
+    }
     kBtn.onclick = () => {
       assigningAction = action;
       assignType = 'key';
@@ -2864,7 +3357,14 @@ function renderConfigUI() {
     pBtn.dataset.cfgAction = action;
     pBtn.dataset.cfgType = 'pad';
     pBtn.style.width = '95px'; pBtn.style.flexShrink = '0';
-    pBtn.innerText = `Pad: ${cfg.pad[action] !== null && cfg.pad[action] !== undefined ? cfg.pad[action] : 'なし'}`;
+    const rawPad = cfg.pad[action];
+    const hasPad = (rawPad !== null && rawPad !== undefined);
+    const isMissingReqPad = isP1 && cfg.padSlot >= 0 && REQUIRED_1P_CONTROL_ACTIONS.includes(action) && !hasPad;
+    pBtn.innerText = `Pad: ${hasPad ? rawPad : 'なし'}`;
+    if (isMissingReqPad) {
+      pBtn.style.borderColor = '#f43f5e';
+      pBtn.style.color = '#fda4af';
+    }
     pBtn.onclick = () => {
       assigningAction = action;
       assignType = 'pad';
@@ -2909,6 +3409,7 @@ function getActiveMenuFocusScope() {
     'app-terminated-overlay',
     'app-exit-confirm-modal',
     'key-reset-confirm-modal',
+    'settings-confirm-modal',
     'exit-confirm-modal',
     'pwa-guide-modal',
     'select-picker-modal',
@@ -3222,7 +3723,6 @@ function processMenuNavigationInput(input) {
       if (input.down) { moveMenuFocus2D(0, 1); return true; }
       if (input.confirm) {
         if (typeof activeEl._cfConfirm === 'function') {
-          SE.play('select');
           activeEl._cfConfirm();
         } else {
           advanceFromCoverFlow(activeEl);
@@ -3250,7 +3750,6 @@ function processMenuNavigationInput(input) {
           activeEl._cfSetEngaged(false);
         }
         if (typeof activeEl._cfConfirm === 'function') {
-          SE.play('select');
           activeEl._cfConfirm();
         } else {
           advanceFromCoverFlow(activeEl);
@@ -3268,7 +3767,6 @@ function processMenuNavigationInput(input) {
           activeEl._cfSetEngaged(true);
           SE.play('select');
         } else if (typeof activeEl._cfConfirm === 'function') {
-          SE.play('select');
           activeEl._cfConfirm();
         } else {
           advanceFromCoverFlow(activeEl);
@@ -3484,6 +3982,7 @@ function handleMenuKeyDown(e) {
   if (handled) e.preventDefault();
   return handled;
 }
+
 // ==========================================
 // ゲームパッド統一ポーリング・二重操作完全防止・時間ベースDAS/ARR＋リリースデバウンス
 // ==========================================
@@ -3538,6 +4037,7 @@ function getCurrentPadContextKey() {
   if (document.getElementById('app-terminated-overlay')?.style.display === 'flex') return 'app-terminated';
   if (document.getElementById('app-exit-confirm-modal')?.style.display === 'flex') return 'app-exit-confirm';
   if (document.getElementById('key-reset-confirm-modal')?.style.display === 'flex') return 'key-reset-confirm';
+  if (document.getElementById('settings-confirm-modal')?.style.display === 'flex') return 'settings-confirm';
   if (document.getElementById('exit-confirm-modal')?.style.display === 'flex') return 'exit-confirm';
   if (document.getElementById('pwa-guide-modal')?.style.display === 'flex') return 'pwa-guide';
   if (document.getElementById('select-picker-modal')?.style.display === 'flex') return 'select-picker';
@@ -3664,7 +4164,7 @@ setInterval(() => {
         if (pressedIdx !== -1) {
           const doneAction = assigningAction;
           pendingConfigFocus = { action: doneAction, type: 'pad' };
-          playerConfigs[settingsPlayerIdx].pad[doneAction] = pressedIdx;
+          assignPadToPlayerAction(settingsPlayerIdx, doneAction, pressedIdx);
           assigningAction = null;
           renderConfigUI();
           SE.play('select');
@@ -3776,7 +4276,7 @@ setInterval(() => {
     return false;
   };
 
-  const canMenuPadControl = (ctxKey !== 'game') && (typeof matchState === 'undefined' || matchState !== 'playing' || ctxKey === 'result' || ctxKey === 'exit-confirm' || ctxKey === 'app-exit-confirm' || ctxKey === 'app-terminated' || ctxKey === 'key-reset-confirm' || ctxKey === 'settings' || ctxKey === 'select-picker' || ctxKey === 'custom-skill-modal' || ctxKey === 'pwa-guide' || (ctxKey === 'local-menu' && !!rangeEditState.el));
+  const canMenuPadControl = (ctxKey !== 'game') && (typeof matchState === 'undefined' || matchState !== 'playing' || ctxKey === 'result' || ctxKey === 'exit-confirm' || ctxKey === 'app-exit-confirm' || ctxKey === 'app-terminated' || ctxKey === 'key-reset-confirm' || ctxKey === 'settings-confirm' || ctxKey === 'settings' || ctxKey === 'select-picker' || ctxKey === 'custom-skill-modal' || ctxKey === 'pwa-guide' || (ctxKey === 'local-menu' && !!rangeEditState.el));
 
   if (canMenuPadControl) {
     let cancelTrig = justPressed(padConfig.Skill, 'cancel');

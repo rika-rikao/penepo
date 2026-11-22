@@ -157,9 +157,9 @@ function cancelRoom(silent = false) {
   const mainMenu = document.getElementById('main-menu');
   if (mainMenu) mainMenu.style.display = 'flex';
   if (typeof showOnlineMenu === 'function') {
-    showOnlineMenu();
+    showOnlineMenu(true);
   } else if (typeof backToMainMenu === 'function') {
-    backToMainMenu();
+    backToMainMenu(false);
   }
 }
 
@@ -327,6 +327,7 @@ function startPrepareMatchFromHost() {
       myId: cId,
       matchId: matchId,
       seed: sharedSeed,
+      comLevel: currentComLevel,
       skillEnabled: onlineSkillEnabled,
       customSkillEnabled: onlineCustomSkillEnabled
     };
@@ -338,6 +339,7 @@ function startPrepareMatchFromHost() {
     myId: 'host',
     matchId: matchId,
     seed: sharedSeed,
+    comLevel: currentComLevel,
     skillEnabled: onlineSkillEnabled,
     customSkillEnabled: onlineCustomSkillEnabled
   };
@@ -427,9 +429,12 @@ function prepareMatchLocal(config) {
   currentMatchId = config.matchId;
   myOnlineId = config.myId;
   matchPlayersConfig = config.players;
-  currentSkillEnabled = !!config.skillEnabled;
+  if (config.comLevel) currentComLevel = config.comLevel;
+  onlineSkillEnabled = !!config.skillEnabled;
+  onlineCustomSkillEnabled = (config.customSkillEnabled !== false);
+  currentSkillEnabled = onlineSkillEnabled;
   if (typeof currentCustomSkillEnabled !== 'undefined') {
-    currentCustomSkillEnabled = (config.customSkillEnabled !== false);
+    currentCustomSkillEnabled = onlineCustomSkillEnabled;
   }
   matchState = 'preparing';
   isPracticeMode = false;
@@ -516,10 +521,14 @@ function resetGameLogicOnline(config) {
   isMatchOver = false;
   isDeadInMatch = false;
   isPracticeMode = false;
+  hostDisconnected = false;
   if (typeof endSequenceTriggered !== 'undefined') endSequenceTriggered = false;
+  if (typeof isExitConfirmOpen !== 'undefined') isExitConfirmOpen = false;
+  if (typeof closeExitConfirmModal === 'function') closeExitConfirmModal(true);
   myTargetIndex = -1;
   hidePlayerHeaderCutin();
   resetAllLocalInputStates();
+  if (typeof removeInlinePlayerPortraits === 'function') removeInlinePlayerPortraits();
   
   rematchReady = {};
   config.players.forEach(p => {
@@ -562,8 +571,19 @@ function resetGameLogicOnline(config) {
     sharedSeed
   );
   myEngine.onRowPushed = handleMyRowPushed;
+  myEngine.onSwap = () => {
+    if (typeof triggerSwapVibration === 'function' && typeof getMainPlayerPadSlot === 'function') {
+      triggerSwapVibration(false, getMainPlayerPadSlot());
+    }
+  };
+  myEngine.onGarbageLanded = () => {
+    if (typeof triggerGarbageLandVibration === 'function' && typeof getMainPlayerPadSlot === 'function') {
+      triggerGarbageLandVibration(getMainPlayerPadSlot());
+    }
+  };
   myEngine.garbageQueue = [];
   myEngine.onChainEnd = (chain) => {
+    if (typeof maxChainInMatch !== 'undefined' && chain > maxChainInMatch) maxChainInMatch = chain;
     showPlayerHeaderCutin(myRenderer.theme, `${chain} CHAIN!!`, '#ffd700');
   };
   myEngine.onSimultaneousMatch = (size) => {
@@ -678,6 +698,8 @@ function resetGameLogicOnline(config) {
       id: p.id,
       name: p.name,
       type: p.type,
+      level: p.level || currentComLevel,
+      useCheat: !!p.useCheat,
       engine: rEngine,
       renderer: rRenderer,
       ai: rAI,
@@ -745,22 +767,37 @@ function replaceClientWithCom(leftId) {
    if (opp && opp.type !== 'com') {
       opp.type = 'com';
       opp.name = opp.name + ' (COM)';
+      opp.level = opp.level || currentComLevel;
+      opp.useCheat = !!currentSkillEnabled;
+
+      const CheatClass = (typeof cheat === 'function' && cheat)
+                      || (typeof Cheat === 'function' && Cheat)
+                      || (typeof CheatAI === 'function' && CheatAI);
       
       if (!opp.engine.gameOver) {
          opp.engine.onStateChange = (state) => { if (state === 'gameover') checkMatchEnd(); };
          opp.engine.onSendGarbage = (totalBlocks, isHard) => { distributeGarbageOnline(opp.id, totalBlocks, isHard); };
-         opp.ai = (currentSkillEnabled && typeof cheat === 'function')
-           ? new cheat(opp.engine, currentComLevel, opp.id, { maxSkillUses: 3, allowCustom: onlineCustomSkillEnabled })
-           : new ComAI(opp.engine, currentComLevel, opp.id);
+         opp.engine.onChainStep = (chain) => {
+           opp.engine.cutinMax = 50; opp.engine.cutinTimer = 50; opp.engine.cutinText = `${chain} CHAIN!!`;
+         };
+         opp.engine.onSimultaneousMatch = (size) => {
+           opp.engine.cutinMax = 50; opp.engine.cutinTimer = 50; opp.engine.cutinText = `${size}個消し！`;
+         };
+         opp.ai = (currentSkillEnabled && CheatClass)
+           ? new CheatClass(opp.engine, opp.level, opp.id, { maxSkillUses: 3, allowCustom: onlineCustomSkillEnabled })
+           : new ComAI(opp.engine, opp.level, opp.id);
+         if (opp.syncedSkillRemaining !== undefined && opp.ai && typeof opp.ai.skillUsesLeft === 'number') {
+           opp.ai.skillUsesLeft = Math.min(opp.ai.skillUsesLeft, opp.syncedSkillRemaining);
+         }
          showToast(`${opp.name} が退出したためCOMが代役に入りました。`);
       } else {
-         opp.ai = new ComAI(opp.engine, currentComLevel, opp.id);
+         opp.ai = new ComAI(opp.engine, opp.level, opp.id);
       }
       
       const configP = matchPlayersConfig.find(p => p.id === leftId);
       if (configP) {
          configP.type = 'com';
-         configP.level = currentComLevel;
+         configP.level = opp.level;
          configP.useCheat = currentSkillEnabled;
          configP.name = opp.name;
       }
@@ -786,22 +823,54 @@ function handleHostDisconnected() {
   if (!isMatchOver) {
      hostDisconnected = true;
      showToast("ホストとの接続が切れました。試合終了後に退出します。");
+
+     const CheatClass = (typeof cheat === 'function' && cheat)
+                     || (typeof Cheat === 'function' && Cheat)
+                     || (typeof CheatAI === 'function' && CheatAI);
+
      opponents.forEach(opp => {
-       if (opp.type !== 'com' && !opp.engine.gameOver) {
+       const lv = opp.level || currentComLevel || 3;
+       const useCheat = (opp.useCheat !== undefined) ? !!opp.useCheat : !!currentSkillEnabled;
+
+       if (opp.type !== 'com') {
          opp.type = 'com';
          opp.name = opp.name + ' (COM)';
+         opp.level = lv;
+         opp.useCheat = useCheat;
+         const wrapper = document.getElementById(`rival-wrapper-${opp.index}`);
+         if (wrapper) wrapper.classList.add('com-board');
+       }
+
+       if (opp.engine && !opp.engine.gameOver) {
          opp.engine.onStateChange = (state) => { if (state === 'gameover') checkMatchEnd(); };
-         opp.engine.onSendGarbage = () => {}; 
-         opp.ai = new ComAI(opp.engine, currentComLevel, opp.id);
-       } else if (opp.type === 'com' && !opp.engine.gameOver) {
-         opp.ai = new ComAI(opp.engine, opp.level || currentComLevel, opp.id);
-         opp.engine.onSendGarbage = () => {}; 
+         opp.engine.onSendGarbage = (totalBlocks, isHard) => { distributeGarbageOnline(opp.id, totalBlocks, isHard); };
+         opp.engine.onChainStep = (chain) => {
+           opp.engine.cutinMax = 50; opp.engine.cutinTimer = 50; opp.engine.cutinText = `${chain} CHAIN!!`;
+         };
+         opp.engine.onSimultaneousMatch = (size) => {
+           opp.engine.cutinMax = 50; opp.engine.cutinTimer = 50; opp.engine.cutinText = `${size}個消し！`;
+         };
+         if (!opp.ai) {
+           opp.ai = (useCheat && CheatClass)
+             ? new CheatClass(opp.engine, lv, opp.id, { maxSkillUses: 3, allowCustom: onlineCustomSkillEnabled })
+             : new ComAI(opp.engine, lv, opp.id);
+           if (opp.syncedSkillRemaining !== undefined && opp.ai && typeof opp.ai.skillUsesLeft === 'number') {
+             opp.ai.skillUsesLeft = Math.min(opp.ai.skillUsesLeft, opp.syncedSkillRemaining);
+           }
+         }
        }
      });
+
+     if (matchState === 'preparing') {
+       executeStartMatch();
+     }
   } else {
      if (currentMode === 'online') {
         showToast("ホストが退出したため解散します。");
-        setTimeout(() => exitGame(), 2000);
+        setTimeout(() => {
+          if (typeof performExitGame === 'function') performExitGame(true);
+          else exitGame(true);
+        }, 2000);
      }
   }
 }

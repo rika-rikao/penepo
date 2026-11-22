@@ -406,6 +406,13 @@ function executeCustomPlayerSkill(engine, senderId, preferredTarget, customConfi
   const m = customConfig.merits || {};
   let anySuccess = false;
 
+  const reflectLv = parseInt(m.reflect_garbage || 0, 10);
+  if (reflectLv > 0) {
+    const ratioMap = { 1: 0.50, 2: 0.75, 3: 1.00 };
+    const res = execSkillReflection(engine, senderId, preferredTarget, ratioMap[reflectLv] || 0.75);
+    if (res && res.success) anySuccess = true;
+  }
+
   const eraseColorsLv = parseInt(m.erase_colors || 0, 10);
   if (eraseColorsLv > 0) {
     const res = execSkillEraseColor(engine, senderId, eraseColorsLv);
@@ -522,7 +529,7 @@ function executePlayerCheatSkill(engine, senderId, preferredTarget = -1, chosenS
     return execSkillPurifyGarbage(engine, 2, 1.0);
   }
   if (skill === 'reflection') {
-    return execSkillReflection(engine, senderId, preferredTarget);
+    return execSkillReflection(engine, senderId, preferredTarget, 0.75);
   }
   if (skill === 'corrupt_enemy_row') {
     return execSkillCorruptEnemyRow(senderId, preferredTarget);
@@ -634,7 +641,7 @@ function execSkillPurifyGarbage(engine, riseSteps = 2, purifyFraction = 1.0) {
   return { success: true, text: 'SKILL: お邪魔浄化!' };
 }
 
-function execSkillReflection(engine, senderId, preferredTarget = -1) {
+function execSkillReflection(engine, senderId, preferredTarget = -1, reflectRatio = 0.75) {
   if (!engine) return { success: false };
 
   // 現在盤面に落下済みのお邪魔ブロックのみをカウント＆消去（予告キューは対象外）
@@ -655,7 +662,7 @@ function execSkillReflection(engine, senderId, preferredTarget = -1) {
   }
   if (garbageCount === 0) return { success: false };
 
-  const reflectTotal = Math.max(1, Math.floor(garbageCount * 0.75));
+  const reflectTotal = Math.max(1, Math.floor(garbageCount * (reflectRatio || 0.75)));
   SE.play('garbageErase');
   engine.stopTimer = Math.max(engine.stopTimer, 45);
   engine.score += garbageCount * 10;

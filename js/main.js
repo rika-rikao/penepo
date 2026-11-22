@@ -1,5 +1,5 @@
 // ==========================================
-// 対戦・ターゲット・スマブラ風ローカル選択・自作スキルON/OFF・横複数人立ち絵HUD・シェア対戦・縦UIボトムナビ統合管理
+// 対戦・ターゲット・スマブラ風ローカル選択・連勝/累計勝利記録・縦UIバッジ・PC150%相当スケール・重なり防止統合管理
 // ==========================================
 let myEngine, myRenderer;
 let opponents = [];
@@ -18,6 +18,7 @@ let hostDisconnected = false;
 let isPracticeMode = false;
 let currentSurvivalWins = 0;
 let endSequenceTriggered = false;
+let matchWinRecorded = false;
 let maxChainInMatch = 0;
 let isExitConfirmOpen = false;
 
@@ -48,9 +49,162 @@ const RANKING_MODES = [
   { id: 'single_ta', label: 'タイムアタック' },
   { id: 'single_sa', label: 'スコアアタック' },
   { id: 'single_survival', label: '勝ち抜きモード' },
-  { id: 'com', label: 'COMと対戦' }
+  { id: 'com', label: 'COMと対戦' },
+  { id: 'battle_records', label: '対戦戦績 (👑/🏅/★)' }
 ];
 let rankingModeIdx = 0;
+
+// ==========================================
+// PCどの倍率でも150%相当のレイアウトになる動的スケール計算
+// ==========================================
+function updateResponsiveUiZoom() {
+  const W = window.innerWidth || 1024;
+  const H = window.innerHeight || 768;
+  const isPortrait = H >= W;
+  let zoom = 1.0;
+
+  // PC等の大画面（100% / 125% 等）では実効解像度が ~1260x710 (FHD 150%相当) になるよう拡大
+  // 既に150%ズーム済みや狭い画面・スマホでは 1.0 を維持して崩れを防止
+  if (!isPortrait && W >= 1020 && H >= 640) {
+    zoom = Math.min(1.65, Math.max(1.0, Math.min(W / 1260, H / 710)));
+  } else if (isPortrait && W >= 720 && H >= 960) {
+    zoom = Math.min(1.35, Math.max(1.0, Math.min(W / 680, H / 960)));
+  }
+  zoom = Math.round(zoom * 100) / 100;
+  document.documentElement.style.setProperty('--ui-pc-zoom', String(zoom));
+  return zoom;
+}
+
+// ==========================================
+// 対戦モード 連勝(🏅/★) & 累計勝利(👑) & せいせき記録管理
+// ・ゲーム中のバッジはアプリ起動中のみ保持（モード別独立、アプリ終了でリセット）
+// ・せいせき画面には永続レコード（歴代記録）も表示
+// ==========================================
+const BATTLE_STATS_STORAGE_KEY = 'pdw_battle_stats_v1';
+const BATTLE_MODE_LABELS = {
+  com: 'COMとたいせん',
+  local: 'いちだいでたいせん',
+  share: 'シェア対戦',
+  online: 'それぞれでたいせん'
+};
+
+const BattleStatsManager = {
+  sessionStreaks: {},
+  sessionTotals: {},
+  persisted: {},
+
+  init() {
+    try {
+      const raw = localStorage.getItem(BATTLE_STATS_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') this.persisted = parsed;
+      }
+    } catch (_) {
+      this.persisted = {};
+    }
+  },
+
+  savePersisted() {
+    try {
+      localStorage.setItem(BATTLE_STATS_STORAGE_KEY, JSON.stringify(this.persisted));
+    } catch (_) {}
+  },
+
+  normalizeModeKey(mode) {
+    if (!mode) return null;
+    if (mode === 'com' || mode === 'local' || mode === 'share') return mode;
+    if (mode === 'online' || mode === 'online_host' || mode === 'online_client') return 'online';
+    return null;
+  },
+
+  ensureBucket(modeKey, slotKey) {
+    if (!this.sessionStreaks[modeKey]) this.sessionStreaks[modeKey] = {};
+    if (!this.sessionStreaks[modeKey][slotKey]) this.sessionStreaks[modeKey][slotKey] = { cur: 0, best: 0 };
+    if (!this.sessionTotals[modeKey]) this.sessionTotals[modeKey] = {};
+    if (this.sessionTotals[modeKey][slotKey] === undefined) this.sessionTotals[modeKey][slotKey] = 0;
+    if (!this.persisted[modeKey]) this.persisted[modeKey] = {};
+    if (!this.persisted[modeKey][slotKey]) this.persisted[modeKey][slotKey] = { totalWins: 0, maxStreak: 0 };
+  },
+
+  recordResult(rawMode, slotKey, isWin) {
+    const modeKey = this.normalizeModeKey(rawMode);
+    if (!modeKey || !slotKey) return;
+    this.ensureBucket(modeKey, slotKey);
+    const st = this.sessionStreaks[modeKey][slotKey];
+    const pRec = this.persisted[modeKey][slotKey];
+    if (isWin) {
+      st.cur++;
+      if (st.cur > st.best) st.best = st.cur;
+      this.sessionTotals[modeKey][slotKey]++;
+      pRec.totalWins++;
+      if (st.best > pRec.maxStreak) pRec.maxStreak = st.best;
+    } else {
+      st.cur = 0;
+    }
+    this.savePersisted();
+  },
+
+  resetSessionStreaks(rawMode) {
+    const modeKey = this.normalizeModeKey(rawMode);
+    if (!modeKey) return;
+    this.sessionStreaks[modeKey] = {};
+  },
+
+  getStats(rawMode, slotKey) {
+    const modeKey = this.normalizeModeKey(rawMode);
+    if (!modeKey || !slotKey) return { crown: 0, best: 0, cur: 0, persistedTotal: 0, persistedMax: 0 };
+    const st = (this.sessionStreaks[modeKey] && this.sessionStreaks[modeKey][slotKey]) || { cur: 0, best: 0 };
+    const crown = (this.sessionTotals[modeKey] && this.sessionTotals[modeKey][slotKey]) || 0;
+    const pRec = (this.persisted[modeKey] && this.persisted[modeKey][slotKey]) || { totalWins: 0, maxStreak: 0 };
+    return {
+      crown,
+      best: st.best || 0,
+      cur: st.cur || 0,
+      persistedTotal: pRec.totalWins || 0,
+      persistedMax: pRec.maxStreak || 0
+    };
+  },
+
+  buildBadgeChipsHtml(stats, includeStreaks = true) {
+    if (!stats) return '';
+    let html = `<span class="win-badge-chip crown">👑×${stats.crown}</span>`;
+    if (includeStreaks) {
+      html += `<span class="win-badge-chip best">🏅×${stats.best}</span>`;
+      html += `<span class="win-badge-chip cur">★×${stats.cur}</span>`;
+    }
+    return html;
+  },
+
+  buildMenuBadgeChipsHtml(stats, compact = false) {
+    if (!stats) return '';
+    const crown = stats.crown || 0;
+    const best = stats.best || 0;
+    const cur = stats.cur || 0;
+    let html = `<span class="win-badge-chip crown" title="今回の累計勝利数">👑×${crown}</span>`
+             + `<span class="win-badge-chip best" title="今回の最大連続勝利数">🏅×${best}</span>`;
+    if (!compact || cur > 0) {
+      html += `<span class="win-badge-chip cur" title="現在の連続勝利数">★×${cur}</span>`;
+    }
+    return html;
+  }
+};
+BattleStatsManager.init();
+
+function updateModeWinBadgesUI() {
+  const comBox = document.getElementById('com-mode-win-badges');
+  if (comBox) {
+    const st = BattleStatsManager.getStats('com', 'p0');
+    comBox.style.display = 'flex';
+    comBox.innerHTML = BattleStatsManager.buildMenuBadgeChipsHtml(st, false);
+  }
+  const onlineBox = document.getElementById('online-mode-win-badges');
+  if (onlineBox) {
+    const st = BattleStatsManager.getStats('online', 'p0');
+    onlineBox.style.display = 'flex';
+    onlineBox.innerHTML = BattleStatsManager.buildMenuBadgeChipsHtml(st, false);
+  }
+}
 
 function getMainPlayerPadSlot() {
   try {
@@ -143,7 +297,7 @@ function focusPrimaryMenuElement(containerId) {
 }
 
 // ==========================================
-// 退出確認モーダル & ゲーム終了確認モーダル
+// 退出確認モーダル（ポーズ中BGM一時停止/復帰） & ゲーム終了確認モーダル
 // ==========================================
 function openExitConfirmModal() {
   const modal = document.getElementById('exit-confirm-modal');
@@ -151,7 +305,16 @@ function openExitConfirmModal() {
     performExitGame(true);
     return;
   }
+  const msgEl = document.getElementById('exit-confirm-message');
+  if (msgEl) {
+    if (currentMode.startsWith('single_') && currentMode !== 'single_survival') {
+      msgEl.innerHTML = '退出して練習設定画面に戻りますか？';
+    } else {
+      msgEl.innerHTML = '退出して前の画面に戻りますか？<br>（対戦時は負けになります）';
+    }
+  }
   isExitConfirmOpen = true;
+  if (typeof pauseBgmForModal === 'function') pauseBgmForModal();
   if (typeof stopAllVibration === 'function') stopAllVibration();
   clearKeyboardHoldStates();
   if (myEngine) myEngine.isRisingManualBtn = myEngine.isRisingManualKey = myEngine.isRisingManualPad = false;
@@ -167,9 +330,13 @@ function openExitConfirmModal() {
 
 function closeExitConfirmModal(silent = false) {
   const modal = document.getElementById('exit-confirm-modal');
+  const wasOpen = modal && modal.style.display === 'flex';
   if (modal) modal.style.display = 'none';
   isExitConfirmOpen = false;
   if (!silent) SE.play('cancel');
+  if (wasOpen && !silent && typeof resumeBgmFromModal === 'function') {
+    resumeBgmFromModal();
+  }
   if (document.activeElement) document.activeElement.blur();
   if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(180);
 }
@@ -511,6 +678,10 @@ function handleMenuStartAction() {
     if (typeof closeKeyResetConfirmModal === 'function') closeKeyResetConfirmModal();
     return true;
   }
+  if (isElementActuallyVisible('settings-confirm-modal')) {
+    if (typeof confirmSettingsModalAction === 'function') confirmSettingsModalAction();
+    return true;
+  }
   if (isElementActuallyVisible('exit-confirm-modal')) {
     closeExitConfirmModal();
     return true;
@@ -532,7 +703,8 @@ function handleMenuStartAction() {
     return true;
   }
   if (isElementActuallyVisible('settings-overlay')) {
-    closeSettings();
+    if (typeof attemptSaveSettings === 'function') attemptSaveSettings();
+    else closeSettings();
     return true;
   }
   if (isElementActuallyVisible('result-overlay')) {
@@ -593,7 +765,7 @@ function handleMenuStartAction() {
 }
 
 // ==========================================
-// 縦UIハブ大型立ち絵（ランダム/固定） & Switch風メニュー2ペイン & 縦ボトムメニュー制御
+// 縦UIハブ大型立ち絵 & Switch風メニュー2ペイン & 縦ボトムメニュー制御
 // ==========================================
 function refreshMenuHeaderAndPreview(rerollHubChar = false) {
   const charId = resolvePlayableCharId(selectedCharId);
@@ -649,10 +821,11 @@ function updateVerticalBottomNav() {
   else if (isVis('ranking-menu')) activeModeKey = 'ranking';
   else if (isMainHub) activeModeKey = 'home';
 
-  const shouldShow = isPortrait && isMenuOpen && !isMainHub && !isWaiting && !isSharePrep && !isSettingsOpen && (activeModeKey !== null);
+  const shouldShow = isPortrait && isMenuOpen && (!isMainHub || isSettingsOpen) && !isWaiting && !isSharePrep && (activeModeKey !== null);
 
   nav.style.display = shouldShow ? 'grid' : 'none';
   menuOverlay.classList.toggle('has-vertical-bottom-nav', shouldShow);
+  document.body.classList.toggle('settings-has-vnav', shouldShow && isSettingsOpen);
 
   if (shouldShow) {
     nav.querySelectorAll('.v-bottom-btn').forEach(btn => {
@@ -663,6 +836,17 @@ function updateVerticalBottomNav() {
 }
 
 function navigateFromBottomNav(target) {
+  const isSettingsOpen = isElementActuallyVisible('settings-overlay');
+  if (isSettingsOpen) {
+    if (target === 'settings') return;
+    if (typeof attemptCancelSettings === 'function') {
+      attemptCancelSettings(() => navigateFromBottomNav(target));
+    } else {
+      cancelSettings(() => navigateFromBottomNav(target));
+    }
+    return;
+  }
+
   cancelLocalAutoStart();
   clearLocalSliderAdjusting();
   if (typeof closeRangeDigitEdit === 'function') closeRangeDigitEdit();
@@ -670,6 +854,7 @@ function navigateFromBottomNav(target) {
   if (typeof closeCustomSkillModal === 'function') closeCustomSkillModal(true);
   if (typeof closePwaGuideModal === 'function') closePwaGuideModal(true);
   if (typeof closeKeyResetConfirmModal === 'function') closeKeyResetConfirmModal(true);
+  if (typeof closeSettingsConfirmModal === 'function') closeSettingsConfirmModal(true);
   closeAppExitConfirmModal(true);
   closeSharePrepMenu(true);
   closeSkillSelectModal(true);
@@ -696,6 +881,7 @@ function navigateFromBottomNav(target) {
 }
 
 function refreshMenuLayoutState(rerollHubChar = false) {
+  updateResponsiveUiZoom();
   const menuOverlay = document.getElementById('menu-overlay');
   if (!menuOverlay) return;
   const isPortrait = window.innerHeight >= window.innerWidth;
@@ -711,7 +897,18 @@ function refreshMenuLayoutState(rerollHubChar = false) {
     isVis('solo-hub-menu') ||
     isVis('multi-hub-menu')
   );
+  const hasBackBtn = !isWaiting && (
+    isVis('solo-hub-menu') ||
+    isVis('multi-hub-menu') ||
+    isVis('story-menu') ||
+    isVis('single-menu') ||
+    isVis('ranking-menu') ||
+    isVis('com-menu') ||
+    isVis('local-menu') ||
+    isVis('online-menu')
+  );
 
+  menuOverlay.classList.toggle('has-back-btn', hasBackBtn);
   menuOverlay.classList.toggle('switch-hub-active', isSwitchLandscape && isHub);
   menuOverlay.classList.toggle('vertical-hub-active', isPortrait && isHub);
 
@@ -746,6 +943,7 @@ function bindMenuHoverCursorSE() {
     const isGameVisible = document.getElementById('game-area')?.style.display === 'flex';
     const isResultVisible = document.getElementById('result-overlay')?.style.display === 'flex';
     const isSettingsVisible = document.getElementById('settings-overlay')?.style.display === 'block';
+    const isSettingsConfirmVisible = document.getElementById('settings-confirm-modal')?.style.display === 'flex';
     const isSkillModalVisible = document.getElementById('skill-select-modal')?.style.display === 'flex';
     const isCustomSkillModalVisible = document.getElementById('custom-skill-modal')?.style.display === 'flex';
     const isConfirmModalVisible = document.getElementById('confirm-match-modal')?.style.display === 'flex';
@@ -755,7 +953,7 @@ function bindMenuHoverCursorSE() {
     const isAppTerminatedVisible = document.getElementById('app-terminated-overlay')?.style.display === 'flex';
     const isKeyResetVisible = document.getElementById('key-reset-confirm-modal')?.style.display === 'flex';
     const isSharePrepVisible = document.getElementById('share-prep-overlay')?.style.display === 'flex';
-    const isMenuHoverContext = !isGameVisible || isResultVisible || isSettingsVisible || isSkillModalVisible || isCustomSkillModalVisible || isConfirmModalVisible || isSelectPickerVisible || isExitConfirmVisible || isAppExitConfirmVisible || isAppTerminatedVisible || isKeyResetVisible || isSharePrepVisible;
+    const isMenuHoverContext = !isGameVisible || isResultVisible || isSettingsVisible || isSettingsConfirmVisible || isSkillModalVisible || isCustomSkillModalVisible || isConfirmModalVisible || isSelectPickerVisible || isExitConfirmVisible || isAppExitConfirmVisible || isAppTerminatedVisible || isKeyResetVisible || isSharePrepVisible;
     if (!isMenuHoverContext) {
       lastHoveredEl = null;
       return;
@@ -1854,6 +2052,12 @@ function renderLocalMenuUI() {
     }
     slotEl.appendChild(topRow);
 
+    const winBadgesRow = document.createElement('div');
+    winBadgesRow.className = 'local-slot-win-badges';
+    const slotStats = BattleStatsManager.getStats('local', `p${i}`);
+    winBadgesRow.innerHTML = BattleStatsManager.buildMenuBadgeChipsHtml(slotStats, true);
+    slotEl.appendChild(winBadgesRow);
+
     const editBtn = document.createElement('button');
     editBtn.type = 'button';
     editBtn.dataset.localFocusId = `slot-edit-${i}`;
@@ -1982,8 +2186,9 @@ function startLocalGame() {
   const customSkillEnabled = isLocalCustomSkillRuleOn();
   startGame('local', 3, count, skillEnabled, customSkillEnabled);
 }
+
 // ==========================================
-// シェア対戦（複数回タップ誤爆完全防止） & メニューナビゲーション
+// シェア対戦（複数回タップ誤爆防止） & メニューナビゲーション & 勝利統計記録
 // ==========================================
 let sharePrepConfig = {
   p1: { charId: 'main00', handicap: 3, skillEnabled: false, customSkillEnabled: true, skillId: 'erase_color', fallbackSkillId: 'erase_color', ready: false },
@@ -2083,11 +2288,11 @@ function bindMultiTouchTap(el, handler) {
   });
 }
 
-function openSharePrepMenu() {
+function openSharePrepMenu(silent = false) {
   cancelLocalAutoStart();
   clearLocalSliderAdjusting();
   ensureShareGhostClickGuard();
-  SE.play('select');
+  if (!silent) SE.play('select');
   if (typeof closeRangeDigitEdit === 'function') closeRangeDigitEdit();
   sharePrepConfig.p1.ready = false;
   sharePrepConfig.p2.ready = false;
@@ -2145,7 +2350,9 @@ function renderSharePrepSide(playerNum) {
   const hdr = document.createElement('div');
   hdr.className = 'share-prep-header';
   const curCh = getCharacterById(cfg.charId);
-  hdr.innerHTML = `<span style="color:${isP1 ? '#00e676' : '#ff4081'};">${isP1 ? '1P (下側)' : '2P (上側)'}</span><span>キャラ: ${curCh.name}</span>`;
+  const shareStats = BattleStatsManager.getStats('share', isP1 ? 'p0' : 'p1');
+  const badgesHtml = BattleStatsManager.buildMenuBadgeChipsHtml(shareStats, true);
+  hdr.innerHTML = `<span style="color:${isP1 ? '#00e676' : '#ff4081'};">${isP1 ? '1P (下側)' : '2P (上側)'}</span><span class="share-prep-win-badges">${badgesHtml}</span><span>キャラ: ${curCh.name}</span>`;
 
   const grid = document.createElement('div');
   grid.className = 'share-prep-char-grid';
@@ -2334,6 +2541,7 @@ function backToMainMenu(playSe = true) {
   if (typeof closeCustomSkillModal === 'function') closeCustomSkillModal(true);
   if (typeof closePwaGuideModal === 'function') closePwaGuideModal(true);
   if (typeof closeKeyResetConfirmModal === 'function') closeKeyResetConfirmModal(true);
+  if (typeof closeSettingsConfirmModal === 'function') closeSettingsConfirmModal(true);
   closeAppExitConfirmModal(true);
   closeSharePrepMenu(true);
   closeSkillSelectModal(true);
@@ -2385,6 +2593,10 @@ function handleMenuCancelAction() {
     if (typeof closeKeyResetConfirmModal === 'function') closeKeyResetConfirmModal();
     return true;
   }
+  if (isElementActuallyVisible('settings-confirm-modal')) {
+    if (typeof closeSettingsConfirmModal === 'function') closeSettingsConfirmModal();
+    return true;
+  }
   if (isElementActuallyVisible('exit-confirm-modal')) {
     closeExitConfirmModal();
     return true;
@@ -2410,7 +2622,8 @@ function handleMenuCancelAction() {
     return true;
   }
   if (isElementActuallyVisible('settings-overlay')) {
-    cancelSettings();
+    if (typeof attemptCancelSettings === 'function') attemptCancelSettings();
+    else cancelSettings();
     return true;
   }
   if (isElementActuallyVisible('result-overlay')) {
@@ -2471,8 +2684,8 @@ function selectComCountBtn(cnt) {
   });
 }
 
-function showSingleMenu() {
-  SE.play('select');
+function showSingleMenu(silent = false) {
+  if (!silent) SE.play('select');
   clearLocalSliderAdjusting();
   hideAllMenuSubViews();
   document.getElementById('single-menu').style.display = 'flex';
@@ -2484,21 +2697,22 @@ function showSingleMenu() {
   focusPrimaryMenuElement('single-menu');
 }
 
-function showComMenu() {
-  SE.play('select');
+function showComMenu(silent = false) {
+  if (!silent) SE.play('select');
   clearLocalSliderAdjusting();
   hideAllMenuSubViews();
   document.getElementById('com-menu').style.display = 'flex';
   selectComCountBtn(selectedComCount);
   syncHandicapFromSlider(document.getElementById('handicap-val')?.value || 3);
   renderCharPicker('com-char-picker', { storyOnly: false });
+  updateModeWinBadgesUI();
   if (typeof enhanceAllRangeSliders === 'function') enhanceAllRangeSliders();
   refreshMenuLayoutState();
   focusPrimaryMenuElement('com-menu');
 }
 
-function showLocalMenu() {
-  SE.play('select');
+function showLocalMenu(silent = false) {
+  if (!silent) SE.play('select');
   clearLocalSliderAdjusting();
   hideAllMenuSubViews();
   document.getElementById('local-menu').style.display = 'flex';
@@ -2516,6 +2730,7 @@ function showOnlineMenu(silent = false) {
   document.getElementById('online-menu').style.display = 'flex';
   syncHandicapFromSlider(document.getElementById('handicap-val')?.value || 3);
   renderCharPicker('online-char-picker', { storyOnly: false });
+  updateModeWinBadgesUI();
   if (typeof enhanceAllRangeSliders === 'function') enhanceAllRangeSliders();
   refreshMenuLayoutState();
   focusPrimaryMenuElement('online-menu');
@@ -2573,14 +2788,39 @@ function showRankingMenu(silent = false) {
   refreshMenuLayoutState();
   const mode = (RANKING_MODES[rankingModeIdx] || RANKING_MODES[0]).id;
   const listEl = document.getElementById('ranking-list');
-  const data = getRankingData(mode);
-  if (data.length === 0) {
-    listEl.innerHTML = '<div style="text-align:center; color:#aaa;">記録なし</div>';
+  if (mode === 'battle_records') {
+    const buildRows = (mKey, slotCount) => {
+      let rowsHtml = '';
+      for (let i = 0; i < slotCount; i++) {
+        const st = BattleStatsManager.getStats(mKey, `p${i}`);
+        const who = slotCount === 1 ? BATTLE_MODE_LABELS[mKey] : `${BATTLE_MODE_LABELS[mKey]} (${i + 1}P)`;
+        rowsHtml += `
+          <div class="ranking-stat-row">
+            <span class="ranking-stat-label">${who}</span>
+            <span class="ranking-stat-badges">
+              <span class="win-badge-chip crown">👑×${st.crown} (歴代:${st.persistedTotal})</span>
+              <span class="win-badge-chip best">🏅×${st.persistedMax}</span>
+            </span>
+          </div>`;
+      }
+      return rowsHtml;
+    };
+    listEl.innerHTML = `<div class="ranking-battle-stats-box">
+      ${buildRows('com', 1)}
+      ${buildRows('online', 1)}
+      ${buildRows('share', 2)}
+      ${buildRows('local', 4)}
+    </div>`;
   } else {
-    listEl.innerHTML = data.map((d, i) => {
-      let scoreText = mode === 'single_survival' ? `${d.score}連勝 (Lv.${d.level || 0})` : `Score: ${d.score}`;
-      return `<div><span style="display:inline-block; width:25px; color:#ff007f;">${i+1}.</span> ${scoreText} <span style="font-size:0.75rem; color:#aaa;">(HD:${d.handicap})</span></div>`;
-    }).join('');
+    const data = getRankingData(mode);
+    if (data.length === 0) {
+      listEl.innerHTML = '<div style="text-align:center; color:#aaa;">記録なし</div>';
+    } else {
+      listEl.innerHTML = data.map((d, i) => {
+        let scoreText = mode === 'single_survival' ? `${d.score}連勝 (Lv.${d.level || 0})` : `Score: ${d.score}`;
+        return `<div><span style="display:inline-block; width:25px; color:#ff007f;">${i+1}.</span> ${scoreText} <span style="font-size:0.75rem; color:#aaa;">(HD:${d.handicap})</span></div>`;
+      }).join('');
+    }
   }
   if (!silent) focusPrimaryMenuElement('ranking-menu');
 }
@@ -2779,16 +3019,18 @@ function distributeGarbageOnline(senderId, totalBlocks, isHard) {
   if (Object.keys(targetsDict).length === 0) return;
 
   playAttackVoiceForSender(senderId);
-  if (myOnlineId === 'host') {
+  if (myOnlineId === 'host' || hostDisconnected) {
     for (const [tId, count] of Object.entries(targetsDict)) {
       playGarbageSendAnimation(senderId, tId, isHard);
-      if (tId === 'host') { if (!isPracticeMode) sendBlocksToOpponent({ engine: myEngine }, count, isHard); }
+      if (tId === myOnlineId) { if (!isPracticeMode) sendBlocksToOpponent({ engine: myEngine }, count, isHard); }
       else {
         const opp = opponents.find(o => o.id === tId);
         if (opp && opp.type === 'com') sendBlocksToOpponent(opp, count, isHard);
       }
     }
-    onlineConnections.forEach(c => { if (c && c.open) c.send({ type: 'add_garbage_multi', senderId, targets: targetsDict, isHard }); });
+    if (myOnlineId === 'host' && !hostDisconnected) {
+      onlineConnections.forEach(c => { if (c && c.open) c.send({ type: 'add_garbage_multi', senderId, targets: targetsDict, isHard }); });
+    }
   } else {
     for (const tId of Object.keys(targetsDict)) playGarbageSendAnimation(myOnlineId, tId, isHard);
     if (onlineConnections[0] && onlineConnections[0].open) {
@@ -2811,13 +3053,34 @@ function sendBlocksToOpponent(opp, count, isHard) {
 
 let battleEndState = { active: false, canDismissAt: 0, onContinue: null, prevAnyPadPressed: false };
 
-function buildBattleEndPortraitDom(wrapEl, theme, isWin) {
+function buildBattleEndPortraitDom(wrapEl, theme, isWin, scoreInfo = null) {
   if (!wrapEl) return;
   wrapEl.innerHTML = '';
   wrapEl.classList.toggle('lose', !isWin);
 
+  const appendScoreOverlay = () => {
+    if (!scoreInfo || scoreInfo.score === undefined || scoreInfo.score === null) return;
+    const scoreOverlay = document.createElement('div');
+    scoreOverlay.className = 'battle-end-score-overlay';
+    const lbl = document.createElement('span');
+    lbl.className = 'battle-end-score-label';
+    lbl.innerText = 'SCORE';
+    const val = document.createElement('span');
+    val.className = 'battle-end-score-val';
+    val.innerText = String(scoreInfo.score);
+    scoreOverlay.append(lbl, val);
+    if (scoreInfo.subText) {
+      const sub = document.createElement('span');
+      sub.className = 'battle-end-score-sub';
+      sub.innerText = scoreInfo.subText;
+      scoreOverlay.appendChild(sub);
+    }
+    wrapEl.appendChild(scoreOverlay);
+  };
+
   const showFallbackCard = () => {
     wrapEl.innerHTML = `<div class="story-fallback-card" style="background:${theme?.color || '#334155'};">${theme?.name || ''}</div>`;
+    appendScoreOverlay();
   };
 
   if (!theme) { showFallbackCard(); return; }
@@ -2835,6 +3098,7 @@ function buildBattleEndPortraitDom(wrapEl, theme, isWin) {
       img.onerror = showFallbackCard;
       img.src = theme.charSrc;
       wrapEl.appendChild(img);
+      appendScoreOverlay();
     } else showFallbackCard();
     return;
   }
@@ -2844,6 +3108,7 @@ function buildBattleEndPortraitDom(wrapEl, theme, isWin) {
       fallbackToNormal: true, onLoad: handleLoad, onError: showFallbackCard
     });
     wrapEl.appendChild(img);
+    appendScoreOverlay();
     return;
   }
 
@@ -2852,6 +3117,7 @@ function buildBattleEndPortraitDom(wrapEl, theme, isWin) {
     img.onerror = showFallbackCard;
     img.src = theme.charSrc;
     wrapEl.appendChild(img);
+    appendScoreOverlay();
   } else showFallbackCard();
 }
 
@@ -2880,8 +3146,10 @@ function showBattleEndOverlay(options) {
     p1Badge.className = 'battle-end-badge ' + (p1Win ? 'win' : 'lose');
     p2Badge.innerText = p2Win ? 'WIN!!' : 'LOSE...';
     p2Badge.className = 'battle-end-badge ' + (p2Win ? 'win' : 'lose');
-    buildBattleEndPortraitDom(document.getElementById('battle-end-share-p1-wrap'), options.p1Theme, p1Win);
-    buildBattleEndPortraitDom(document.getElementById('battle-end-share-p2-wrap'), options.p2Theme, p2Win);
+    const p1ScoreInfo = options.p1Score !== undefined ? { score: options.p1Score } : null;
+    const p2ScoreInfo = options.p2Score !== undefined ? { score: options.p2Score } : null;
+    buildBattleEndPortraitDom(document.getElementById('battle-end-share-p1-wrap'), options.p1Theme, p1Win, p1ScoreInfo);
+    buildBattleEndPortraitDom(document.getElementById('battle-end-share-p2-wrap'), options.p2Theme, p2Win, p2ScoreInfo);
     document.getElementById('battle-end-share-p1-name').innerText = options.p1Theme ? options.p1Theme.name : '1P';
     document.getElementById('battle-end-share-p2-name').innerText = options.p2Theme ? options.p2Theme.name : '2P';
     if (typeof VOICE !== 'undefined') VOICE.play('win', p1Win ? options.p1Theme : options.p2Theme);
@@ -2891,9 +3159,12 @@ function showBattleEndOverlay(options) {
     const badge = document.getElementById('battle-end-badge');
     badge.innerText = options.titleOverride || (options.isWin ? 'WIN!!' : 'LOSE...');
     badge.className = 'battle-end-badge ' + (options.isWin ? 'win' : 'lose');
-    buildBattleEndPortraitDom(document.getElementById('battle-end-portrait-wrap'), options.theme, !!options.isWin);
+    const scoreInfo = options.score !== undefined ? { score: options.score, subText: options.subScoreText || '' } : null;
+    buildBattleEndPortraitDom(document.getElementById('battle-end-portrait-wrap'), options.theme, !!options.isWin, scoreInfo);
     document.getElementById('battle-end-name').innerText = options.theme ? options.theme.name : '';
-    if (typeof VOICE !== 'undefined') VOICE.play(options.isWin ? 'win' : 'lose', options.theme, options.senderId || null);
+    if (typeof VOICE !== 'undefined') {
+      VOICE.play(options.isWin ? 'win' : 'lose', options.theme, options.senderId || null);
+    }
   }
   overlay.style.display = 'flex';
   if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(250);
@@ -2917,10 +3188,13 @@ function tryDismissBattleEndOverlay() {
   return true;
 }
 
-function showResultModal(titleMsg) {
+function showResultModal(titleMsg, winVoiceTheme = null) {
   stopBgm();
   hideBattleEndOverlay();
   closeExitConfirmModal(true);
+  if (winVoiceTheme && typeof VOICE !== 'undefined') {
+    VOICE.play('win', winVoiceTheme);
+  }
   document.getElementById('result-title').innerText = titleMsg;
   document.getElementById('result-status').innerText = '';
   const btn = document.getElementById('result-rematch-btn');
@@ -2984,6 +3258,26 @@ function startPracticeMode() {
   };
 }
 
+function recordBattleMatchOutcome(winnerSlotKey) {
+  if (matchWinRecorded) return;
+  const modeKey = BattleStatsManager.normalizeModeKey(currentMode);
+  if (!modeKey) return;
+  matchWinRecorded = true;
+
+  if (modeKey === 'local' || modeKey === 'share') {
+    const total = 1 + opponents.length;
+    for (let i = 0; i < total; i++) {
+      const sk = `p${i}`;
+      BattleStatsManager.recordResult(modeKey, sk, sk === winnerSlotKey);
+    }
+  } else {
+    BattleStatsManager.recordResult(modeKey, 'p0', winnerSlotKey === 'p0');
+  }
+  updateAllPortraitHUDs();
+  updateBottomStatusBar();
+  updateModeWinBadgesUI();
+}
+
 function checkMatchEnd() {
   if (matchState === 'gameover' || matchState === 'preparing' || matchState === 'ready') return;
   let aliveCount = 0;
@@ -2997,17 +3291,19 @@ function checkMatchEnd() {
       matchState = 'gameover';
       stopAllEngines();
       stopBgm();
-      let winnerText = 'DRAW!', winnerEngine = null, winnerTheme = null, winnerId = null;
+      let winnerText = 'DRAW!', winnerEngine = null, winnerTheme = null, winnerId = null, winnerSlotKey = null;
       if (myEngine && !myEngine.gameOver && !isDeadInMatch) {
-        winnerId = 'player'; winnerEngine = myEngine; winnerTheme = myRenderer.theme;
+        winnerId = 'player'; winnerSlotKey = 'p0'; winnerEngine = myEngine; winnerTheme = myRenderer.theme;
         winnerText = `🏆 1P (${winnerTheme.name}) WIN!!`;
       } else {
         const survivor = opponents.find(o => o.engine && !o.engine.gameOver);
         if (survivor) {
-          winnerId = survivor.id; winnerEngine = survivor.engine; winnerTheme = survivor.renderer.theme;
+          winnerId = survivor.id; winnerSlotKey = `p${survivor.index + 1}`; winnerEngine = survivor.engine; winnerTheme = survivor.renderer.theme;
           winnerText = `🏆 ${survivor.index + 2}P (${winnerTheme.name}) WIN!!`;
         }
       }
+      recordBattleMatchOutcome(winnerSlotKey);
+
       if (myEngine && myEngine !== winnerEngine) myEngine.startGameOverFillAnim();
       opponents.forEach(o => { if (o.engine && o.engine !== winnerEngine) o.engine.startGameOverFillAnim(); });
 
@@ -3016,11 +3312,14 @@ function checkMatchEnd() {
           showBattleEndOverlay({
             mode: 'share', winnerId: winnerId || 'player',
             p1Theme: myRenderer.theme, p2Theme: opponents[0] ? opponents[0].renderer.theme : null,
+            p1Score: myEngine ? myEngine.score : 0,
+            p2Score: (opponents[0] && opponents[0].engine) ? opponents[0].engine.score : 0,
             onContinue: () => showResultModal(winnerText)
           });
         } else if (winnerTheme) {
           showBattleEndOverlay({
             mode: 'single', isWin: true, theme: winnerTheme, titleOverride: winnerText,
+            score: winnerEngine ? winnerEngine.score : 0,
             onContinue: () => showResultModal(winnerText)
           });
         } else showResultModal(winnerText);
@@ -3036,6 +3335,7 @@ function checkMatchEnd() {
     isMatchOver = true;
     isDeadInMatch = true;
     endSequenceTriggered = true;
+    recordBattleMatchOutcome(null);
     if (currentMode === 'online') {
       onlineConnections.forEach(c => { if (c && c.open) c.send({ type: 'sync', senderId: myOnlineId, gameOver: true }); });
     }
@@ -3044,20 +3344,22 @@ function checkMatchEnd() {
       matchState = 'gameover';
       stopAllEngines();
     }
-    let scoreVal = currentMode === 'single_survival' ? currentSurvivalWins : myEngine.score;
+    const myFinalScore = myEngine ? myEngine.score : 0;
+    const survivalSub = currentMode === 'single_survival' ? `${currentSurvivalWins}連勝` : '';
+    let scoreVal = currentMode === 'single_survival' ? currentSurvivalWins : myFinalScore;
     let isRankIn = false;
     if (currentMode !== 'story' && currentMode !== 'online') {
       isRankIn = saveRankingData(currentMode, { score: scoreVal, handicap: myEngine.handicap, level: currentComLevel, date: Date.now() });
     }
     myEngine.startGameOverFillAnim(() => {
       if (currentMode === 'story') {
-        showBattleEndOverlay({ mode: 'single', isWin: false, theme: myRenderer.theme, onContinue: () => StoryManager.onBattleEnd(false) });
+        showBattleEndOverlay({ mode: 'single', isWin: false, theme: myRenderer.theme, score: myFinalScore, onContinue: () => StoryManager.onBattleEnd(false) });
       } else if (currentMode.startsWith('single')) {
         const ttl = isRankIn ? 'NEW RECORD!' : 'GAME OVER';
-        showBattleEndOverlay({ mode: 'single', isWin: false, theme: myRenderer.theme, titleOverride: ttl, onContinue: () => showResultModal(ttl) });
+        showBattleEndOverlay({ mode: 'single', isWin: false, theme: myRenderer.theme, titleOverride: ttl, score: myFinalScore, subScoreText: survivalSub, onContinue: () => showResultModal(ttl) });
       } else {
         const ttl = isRankIn ? 'LOSE...\n(NEW RECORD)' : 'LOSE...';
-        showBattleEndOverlay({ mode: 'single', isWin: false, theme: myRenderer.theme, titleOverride: ttl, onContinue: () => showResultModal(ttl) });
+        showBattleEndOverlay({ mode: 'single', isWin: false, theme: myRenderer.theme, titleOverride: ttl, score: myFinalScore, onContinue: () => showResultModal(ttl) });
       }
     });
   }
@@ -3067,6 +3369,7 @@ function checkMatchEnd() {
       const comOpp = opponents[0];
       if (comOpp.engine && comOpp.engine.gameOver && !comOpp.coolTimeStarted) {
         comOpp.coolTimeStarted = true;
+        comOpp.waitingEnterVoice = false;
         comOpp.engine.startGameOverFillAnim();
         currentSurvivalWins++;
         comOpp.coolTime = 180;
@@ -3079,19 +3382,21 @@ function checkMatchEnd() {
       endSequenceTriggered = true;
       isMatchOver = true;
       matchState = 'gameover';
+      recordBattleMatchOutcome('p0');
       stopAllEngines();
       stopBgm();
       opponents.forEach(o => { if (o.engine) o.engine.startGameOverFillAnim(); });
+      const myFinalScore = myEngine ? myEngine.score : 0;
       let isRankIn = false;
       if (currentMode === 'com') {
-        isRankIn = saveRankingData('com', { score: myEngine.score, handicap: myEngine.handicap, level: currentComLevel, date: Date.now() });
+        isRankIn = saveRankingData('com', { score: myFinalScore, handicap: myEngine.handicap, level: currentComLevel, date: Date.now() });
       }
       myEngine.startVictoryClearAnim(() => {
         if (currentMode === 'story') {
-          showBattleEndOverlay({ mode: 'single', isWin: true, theme: myRenderer.theme, onContinue: () => StoryManager.onBattleEnd(true) });
+          showBattleEndOverlay({ mode: 'single', isWin: true, theme: myRenderer.theme, score: myFinalScore, onContinue: () => StoryManager.onBattleEnd(true) });
         } else {
           const winTitle = isRankIn ? 'WIN!!\n(NEW RECORD)' : 'WIN!!';
-          showBattleEndOverlay({ mode: 'single', isWin: true, theme: myRenderer.theme, titleOverride: winTitle, onContinue: () => showResultModal(winTitle) });
+          showBattleEndOverlay({ mode: 'single', isWin: true, theme: myRenderer.theme, titleOverride: winTitle, score: myFinalScore, onContinue: () => showResultModal(winTitle) });
         }
       });
     }
@@ -3103,7 +3408,6 @@ function checkMatchEnd() {
     else if (myOnlineId === 'host') checkRematchCondition();
   }
 }
-
 function stopAllEngines() {
   clearKeyboardHoldStates();
   if (myEngine) {
@@ -3206,7 +3510,7 @@ function checkPanic() {
 }
 
 function switchBgmToPanic(toPanic) {
-  if (!isBgmIntendedToPlay) return;
+  if (!isBgmIntendedToPlay || (typeof isBgmPausedByModal !== 'undefined' && isBgmPausedByModal)) return;
   let bgmVol = parseFloat(document.getElementById('bgm-volume').value);
   bgmAudio.volume = bgmVol; panicBgmAudio.volume = bgmVol;
   if (toPanic) {
@@ -3218,6 +3522,7 @@ function switchBgmToPanic(toPanic) {
     bgmAudio.muted = false;
   }
 }
+
 const PLAYER_SKILL_MAX = 3;
 const PLAYER_SKILL_SCORE_STEP = 300;
 let playerSkillState = {
@@ -3322,7 +3627,7 @@ function configureSkillStateForEngine(skillState, engine, enabled, rawSkillId, w
     }
   }
 
-  skillState.enabled = !!enabled;
+    skillState.enabled = !!enabled;
   skillState.skillId = skId;
   skillState.isNoSkill = isNoSkill;
   skillState.isSacrifice = isSacrifice;
@@ -3608,8 +3913,9 @@ function refreshOnlineSplitFrames() {
     container.appendChild(slot);
   });
 }
+
 // ==========================================
-// バトル中サイド演出枠（1人時）& インライン立ち絵（横複数人対戦時）
+// バトル中サイド演出枠（1人練習時左右パネル）& インライン立ち絵（横複数人対戦時）
 // ==========================================
 function setSidePortraitElement(imgEl, theme) {
   if (!imgEl || !theme) return;
@@ -3654,6 +3960,12 @@ function buildInlinePortraitCard(playerIdx, totalCount, theme, rivalIndex = -1) 
   winsBadge.className = 'portrait-wins-badge';
   winsBadge.style.display = 'none';
   card.appendChild(winsBadge);
+
+  const streakBadges = document.createElement('div');
+  streakBadges.id = `inline-portrait-streaks-p${playerIdx}`;
+  streakBadges.className = 'portrait-streak-badges';
+  streakBadges.style.display = 'none';
+  card.appendChild(streakBadges);
 
   const footer = document.createElement('div');
   footer.className = 'inline-portrait-footer';
@@ -3733,9 +4045,30 @@ function applyWinsBadgeState(badgeEl, text) {
   badgeEl.innerText = text;
 }
 
+function applyStreakBadgesState(containerEl, modeKey, slotKey) {
+  if (!containerEl) return;
+  const norm = BattleStatsManager.normalizeModeKey(modeKey);
+  if (!norm || !slotKey) {
+    if (containerEl.style.display !== 'none') containerEl.style.display = 'none';
+    containerEl.dataset.lastKey = '';
+    return;
+  }
+  const st = BattleStatsManager.getStats(norm, slotKey);
+  const cacheKey = `${norm}|${slotKey}|${st.crown}|${st.best}|${st.cur}`;
+  if (containerEl.dataset.lastKey === cacheKey) return;
+  containerEl.dataset.lastKey = cacheKey;
+
+  containerEl.style.display = 'flex';
+  containerEl.innerHTML = `
+    <span class="streak-chip crown">👑×${st.crown}</span>
+    <span class="streak-chip best">🏅×${st.best}</span>
+    <span class="streak-chip cur">★×${st.cur}</span>
+  `;
+}
+
 function buildHumanSkillMeterSpec(skillState, engine, skillId, isCompact = false) {
   if (!skillState || !skillState.enabled || !engine || isPracticeMode) return null;
-  const label = (typeof getSkillLabel === 'function') ? getSkillLabel(skillId) : skillId;
+  const label = (typeof getSkillLabel === 'function') ? getSkillLabel(skillId) : 'スキル';
   const maxU = skillState.maxUses || PLAYER_SKILL_MAX;
   const stepScore = skillState.scoreStep || PLAYER_SKILL_SCORE_STEP;
 
@@ -3829,6 +4162,61 @@ function buildOpponentSkillMeterSpec(opp, isCompact = false) {
   return null;
 }
 
+function updatePracticeRightInfoPanel() {
+  const infoBox = document.getElementById('battle-side-p2-practice-info');
+  if (!infoBox || infoBox.style.display === 'none' || !myEngine) return;
+
+  const modeMap = {
+    single_free: 'フリー練習',
+    single_ta: 'タイムアタック',
+    single_sa: 'スコアアタック'
+  };
+  const modeEl = document.getElementById('practice-info-mode');
+  const hsEl = document.getElementById('practice-info-highscore');
+  const scEl = document.getElementById('practice-info-score');
+  const hdEl = document.getElementById('practice-info-handicap');
+
+  const modeName = modeMap[currentMode] || 'れんしゅう';
+  if (modeEl && modeEl.innerText !== modeName) modeEl.innerText = modeName;
+
+  const rankData = getRankingData(currentMode);
+  const savedBest = (rankData && rankData.length > 0) ? (rankData[0].score || 0) : 0;
+  const liveHigh = Math.max(savedBest, myEngine.score || 0);
+  if (hsEl && hsEl.innerText !== String(liveHigh)) hsEl.innerText = String(liveHigh);
+
+  const curSc = String(myEngine.score || 0);
+  if (scEl && scEl.innerText !== curSc) scEl.innerText = curSc;
+
+  const hdText = HANDICAP_LABELS[myEngine.handicap] || String(myEngine.handicap || 3);
+  if (hdEl && hdEl.innerText !== hdText) hdEl.innerText = hdText;
+}
+
+function updatePreviewWinBadges(previewListId, modeKey, slotKey) {
+  const listEl = document.getElementById(previewListId);
+  const boxEl = listEl ? listEl.closest('.garbage-preview-box') : null;
+  if (!boxEl) return;
+
+  let badgeBox = boxEl.querySelector('.preview-win-badges');
+  const norm = BattleStatsManager.normalizeModeKey(modeKey);
+  if (!norm || currentMode !== 'share') {
+    if (badgeBox) badgeBox.style.display = 'none';
+    return;
+  }
+
+  if (!badgeBox) {
+    badgeBox = document.createElement('div');
+    badgeBox.className = 'preview-win-badges';
+    boxEl.appendChild(badgeBox);
+  }
+  const st = BattleStatsManager.getStats(norm, slotKey);
+  const cacheKey = `${norm}|${slotKey}|${st.crown}|${st.best}|${st.cur}`;
+  if (badgeBox.dataset.lastKey !== cacheKey) {
+    badgeBox.dataset.lastKey = cacheKey;
+    badgeBox.innerHTML = BattleStatsManager.buildBadgeChipsHtml(st, true);
+  }
+  badgeBox.style.display = 'flex';
+}
+
 function updateAllPortraitHUDs() {
   const isSurvival = (currentMode === 'single_survival');
   const p1WinsText = isSurvival ? `🏆 ${currentSurvivalWins}連勝` : '';
@@ -3838,6 +4226,7 @@ function updateAllPortraitHUDs() {
   const sideCardP1 = document.getElementById('battle-side-p1');
   if (sideCardP1 && sideCardP1.style.display !== 'none') {
     applyWinsBadgeState(document.getElementById('battle-side-p1-wins'), p1WinsText);
+    applyStreakBadgesState(document.getElementById('battle-side-p1-streaks'), currentMode, 'p0');
     applySkillMeterState(
       document.getElementById('battle-side-p1-skill'),
       p1Spec,
@@ -3845,12 +4234,23 @@ function updateAllPortraitHUDs() {
     );
   }
 
+  updatePracticeRightInfoPanel();
+
+  if (currentMode === 'share') {
+    updatePreviewWinBadges('my-garbage-preview', 'share', 'p0');
+    updatePreviewWinBadges('rival-garbage-preview-0', 'share', 'p1');
+  } else {
+    updatePreviewWinBadges('my-garbage-preview', null, 'p0');
+  }
+
   const totalCount = 1 + opponents.length;
   const isCompact = totalCount >= 4;
+  const showOppStreaks = (currentMode === 'local' || currentMode === 'share');
 
   const p0Card = document.getElementById('inline-portrait-p0');
   if (p0Card) {
     applyWinsBadgeState(document.getElementById('inline-portrait-wins-p0'), isSurvival ? `🏆 ${currentSurvivalWins}連勝` : '');
+    applyStreakBadgesState(document.getElementById('inline-portrait-streaks-p0'), currentMode, 'p0');
     applySkillMeterState(
       document.getElementById('inline-portrait-skill-p0'),
       buildHumanSkillMeterSpec(playerSkillState, myEngine, p1SkillId, isCompact),
@@ -3863,6 +4263,11 @@ function updateAllPortraitHUDs() {
     if (!oppCard) return;
     const oppWinsText = isSurvival ? `Lv.${opp.level || currentComLevel}` : '';
     applyWinsBadgeState(document.getElementById(`inline-portrait-wins-p${i + 1}`), oppWinsText);
+    applyStreakBadgesState(
+      document.getElementById(`inline-portrait-streaks-p${i + 1}`),
+      showOppStreaks ? currentMode : null,
+      showOppStreaks ? `p${i + 1}` : null
+    );
     applySkillMeterState(
       document.getElementById(`inline-portrait-skill-p${i + 1}`),
       buildOpponentSkillMeterSpec(opp, isCompact),
@@ -3874,6 +4279,8 @@ function updateAllPortraitHUDs() {
 function refreshBattleSidePanels() {
   const p1Card = document.getElementById('battle-side-p1');
   const p2Card = document.getElementById('battle-side-p2');
+  const p2CharaView = document.getElementById('battle-side-p2-chara-view');
+  const p2PracticeView = document.getElementById('battle-side-p2-practice-info');
   if (!p1Card || !p2Card) return;
 
   const isPortrait = window.innerHeight >= window.innerWidth;
@@ -3881,9 +4288,9 @@ function refreshBattleSidePanels() {
   const isGameShown = document.getElementById('game-area')?.style.display !== 'none';
   const oppCount = opponents.length;
 
-  const showSoloSideCard = isGameShown && isLandscapeLarge && oppCount === 0 && currentMode !== 'local' && currentMode !== 'share' && window.innerWidth >= 760;
+  const isSoloPractice = isGameShown && isLandscapeLarge && oppCount === 0 && currentMode !== 'local' && currentMode !== 'share' && window.innerWidth >= 620;
 
-  if (!showSoloSideCard || !myRenderer || !myRenderer.theme) {
+  if (!isSoloPractice || !myRenderer || !myRenderer.theme) {
     p1Card.style.display = 'none';
     p2Card.style.display = 'none';
     return;
@@ -3894,7 +4301,16 @@ function refreshBattleSidePanels() {
   document.getElementById('battle-side-p1-name').innerText = myRenderer.theme.name || 'YOU';
   document.getElementById('battle-side-p1-tag').innerText = 'PLAYER';
   setSidePortraitElement(document.getElementById('battle-side-p1-img'), myRenderer.theme);
-  p2Card.style.display = 'none';
+
+  if (currentMode.startsWith('single_') && currentMode !== 'single_survival') {
+    p2Card.style.display = 'flex';
+    if (p2CharaView) p2CharaView.style.display = 'none';
+    if (p2PracticeView) p2PracticeView.style.display = 'flex';
+  } else {
+    p2Card.style.display = 'none';
+    if (p2CharaView) p2CharaView.style.display = 'flex';
+    if (p2PracticeView) p2PracticeView.style.display = 'none';
+  }
   updateAllPortraitHUDs();
 }
 
@@ -3908,6 +4324,27 @@ function getModeLabelForBottomBar() {
   return 'PRACTICE';
 }
 
+function ensureBottomStatusBadgesContainer(bar, statsEl) {
+  if (!bar || !statsEl) return null;
+  let rightWrap = bar.querySelector('.battle-bottom-right');
+  if (!rightWrap) {
+    rightWrap = document.createElement('div');
+    rightWrap.className = 'battle-bottom-right';
+    const badgesEl = document.createElement('div');
+    badgesEl.id = 'battle-bottom-win-badges';
+    badgesEl.className = 'bottom-win-badges';
+    rightWrap.appendChild(badgesEl);
+    if (statsEl.parentNode === bar) {
+      bar.insertBefore(rightWrap, statsEl);
+      rightWrap.appendChild(statsEl);
+    } else {
+      rightWrap.appendChild(statsEl);
+      bar.appendChild(rightWrap);
+    }
+  }
+  return rightWrap.querySelector('#battle-bottom-win-badges');
+}
+
 function updateBottomStatusBar() {
   const bar = document.getElementById('battle-bottom-status-bar');
   if (!bar) return;
@@ -3915,14 +4352,30 @@ function updateBottomStatusBar() {
 
   const nameEl = document.getElementById('bottom-status-name');
   const modeEl = document.getElementById('bottom-status-mode');
-  const statsEl = document.getElementById('bottom-status-stats');
+  const statsEl = document.getElementById('battle-bottom-stats');
   const avatarEl = document.getElementById('bottom-status-avatar');
+  const badgesEl = ensureBottomStatusBadgesContainer(bar, statsEl);
 
   if (nameEl) nameEl.innerText = myRenderer.theme.name || 'YOU';
   if (modeEl) modeEl.innerText = getModeLabelForBottomBar();
   if (avatarEl && avatarEl.dataset.charLoaded !== (myRenderer.theme.charSrc || myRenderer.theme.charId)) {
     avatarEl.dataset.charLoaded = myRenderer.theme.charSrc || myRenderer.theme.charId || '';
     setSidePortraitElement(avatarEl, myRenderer.theme);
+  }
+  if (badgesEl) {
+    const norm = BattleStatsManager.normalizeModeKey(currentMode);
+    if (norm) {
+      const st = BattleStatsManager.getStats(norm, 'p0');
+      const cacheKey = `${norm}|${st.crown}|${st.best}|${st.cur}`;
+      if (badgesEl.dataset.lastKey !== cacheKey) {
+        badgesEl.dataset.lastKey = cacheKey;
+        badgesEl.innerHTML = BattleStatsManager.buildBadgeChipsHtml(st, true);
+      }
+      badgesEl.style.display = 'flex';
+    } else {
+      badgesEl.style.display = 'none';
+      badgesEl.dataset.lastKey = '';
+    }
   }
   if (statsEl) {
     if (myEngine.chain > maxChainInMatch) maxChainInMatch = myEngine.chain;
@@ -3986,6 +4439,7 @@ function startGame(mode, level = 1, totalPlayers = 2, skillEnabled = false, cust
 
 function resetGameLogic() {
   isMatchOver = false; isDeadInMatch = false; isPracticeMode = false; endSequenceTriggered = false;
+  matchWinRecorded = false;
   isExitConfirmOpen = false;
   myTargetIndex = -1; currentMatchId = Date.now(); currentSurvivalWins = 0; maxChainInMatch = 0;
   hidePlayerHeaderCutin();
@@ -4262,7 +4716,7 @@ function resetGameLogic() {
       id: oppId, name: oppName, type: isLocalHuman ? 'local_human' : 'com',
       playerSlotIndex: i + 1, skillId: finalOppSkillId, engine: rEngine, renderer: rRenderer, ai: rAI,
       index: i, level: currentComLevel, targetId: null, inputState: oppInputState,
-      skillState: oppSkillState
+      skillState: oppSkillState, coolTimeStarted: false, waitingEnterVoice: false
     };
     opponents.push(oppObj);
     updateRivalSkillBadge(oppObj, i);
@@ -4329,21 +4783,41 @@ function cleanupShareDomZones() {
 }
 
 function exitGame(silent = false) {
-  if (!silent && myEngine && !currentMode.startsWith('single')) {
-    if (!isMatchOver && !isPracticeMode && !myEngine.gameOver) {
-      openExitConfirmModal();
-      return;
-    }
+  if (!silent && myEngine && !isMatchOver && !isPracticeMode && !myEngine.gameOver) {
+    openExitConfirmModal();
+    return;
   }
   performExitGame(silent);
 }
 
+function returnToModeMenuAfterExit(exitedMode) {
+  const m = exitedMode || '';
+  if (m === 'single' || m.startsWith('single_')) {
+    showSingleMenu(true);
+  } else if (m === 'com') {
+    showComMenu(true);
+  } else if (m === 'story') {
+    if (typeof StoryManager !== 'undefined') StoryManager.openMenu(true, true);
+    else backToMainMenu(false);
+  } else if (m === 'local') {
+    showLocalMenu(true);
+  } else if (m === 'share') {
+    showLocalMenu(true);
+    openSharePrepMenu(true);
+  } else if (m === 'online' || m === 'online_host' || m === 'online_client') {
+    showOnlineMenu(true);
+  } else {
+    backToMainMenu(false);
+  }
+}
+
 function performExitGame(silent = false) {
+  const exitedMode = currentMode;
   if (typeof stopAllVibration === 'function') stopAllVibration();
   closeExitConfirmModal(true);
   closeAppExitConfirmModal(true);
   clearKeyboardHoldStates();
-  if (myEngine && !currentMode.startsWith('single')) {
+  if (myEngine && !exitedMode.startsWith('single')) {
     onlineConnections.forEach(c => { if(c && c.open) c.send({ type: 'leave', senderId: myOnlineId }); });
   }
   if (!silent) SE.play('cancel');
@@ -4388,12 +4862,13 @@ function performExitGame(silent = false) {
   document.getElementById('room-waiting').style.display = 'none';
   document.getElementById('story-overlay').style.display = 'none';
   document.getElementById('share-prep-overlay').style.display = 'none';
-  backToMainMenu(false);
+  returnToModeMenuAfterExit(exitedMode);
   if (typeof SceneBgm !== 'undefined' && (typeof OpAnimation === 'undefined' || !OpAnimation.isActive())) {
     SceneBgm.play('mode_select');
   }
   if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(220);
 }
+
 function toggleContinuousSwipe() {
   const cb = document.getElementById('continuous-swipe');
   if (!cb) return;
@@ -4785,6 +5260,94 @@ function updateGarbagePreview(engine, containerId) {
   });
 }
 
+function beginSurvivalNextEnemyEnter(opp) {
+  if (!opp || !opp.engine || opp.waitingEnterVoice) return;
+  opp.waitingEnterVoice = true;
+  const matchToken = currentMatchId;
+
+  const myCid = (myRenderer && myRenderer.theme) ? myRenderer.theme.charId : 'main00';
+  const prevOppCid = (opp.renderer && opp.renderer.theme) ? opp.renderer.theme.charId : '';
+  let pool = CHARACTERS.filter(c => c.id !== myCid && c.id !== prevOppCid);
+  if (pool.length === 0) pool = CHARACTERS.filter(c => c.id !== myCid);
+  const nextChar = pool[Math.floor(Math.random() * pool.length)] || CHARACTERS[0];
+  const nextLv = getSurvivalLevel(survivalBaseLevel, currentSurvivalWins + 1);
+
+  const nextTheme = buildThemeForCharacter(nextChar.id, null, false);
+  opp.renderer.theme = nextTheme;
+  opp.level = nextLv;
+
+  if (typeof applyBoardFrame === 'function') {
+    applyBoardFrame(`rival-wrapper-${opp.index}`, nextTheme.frameSrc);
+  }
+  if (!nextTheme.frameSrc && nextTheme.charId !== 'custom' && nextTheme.voiceName && typeof resolveCharacterImage === 'function') {
+    const rivalWrapId = `rival-wrapper-${opp.index}`;
+    resolveCharacterImage('frame', nextTheme.voiceName).then((url) => {
+      if (url && opp.renderer && opp.renderer.theme === nextTheme && document.getElementById(rivalWrapId)) {
+        nextTheme.frameSrc = url;
+        applyBoardFrame(rivalWrapId, url);
+      }
+    });
+  }
+
+  const nameLbl = document.getElementById(`rival-name-label-${opp.index}`);
+  if (nameLbl) {
+    nameLbl.innerHTML = `${nextTheme.name} Lv.${nextLv} <span class="target-badge">🎯 TARGET</span>`;
+  }
+
+  const inlineCard = document.getElementById(`inline-portrait-p${opp.index + 1}`);
+  if (inlineCard) {
+    inlineCard.style.borderColor = nextTheme.color || '';
+    const imgEl = inlineCard.querySelector('.inline-portrait-img');
+    if (imgEl) setSidePortraitElement(imgEl, nextTheme);
+    const nameEl = inlineCard.querySelector('.inline-portrait-name');
+    if (nameEl) nameEl.innerText = nextTheme.name || '';
+  }
+
+  opp.engine.endAnim = null;
+  opp.engine.gameOver = false;
+  opp.engine.shakeTimer = 0;
+  opp.engine.riseOffset = 0;
+  opp.engine.stopTimer = 0;
+  opp.engine.grid = Array.from({ length: opp.engine.rows }, () => Array(opp.engine.cols).fill(null));
+  opp.engine.nextRow = [];
+  opp.ai = null;
+  if (document.getElementById('survival-cancel-sent')?.checked) {
+    opp.engine.garbageQueue = [];
+  }
+  updateAllPortraitHUDs();
+
+  const finishEnter = () => {
+    if (currentMatchId !== matchToken || currentMode !== 'single_survival' || !opponents.includes(opp)) return;
+    opp.waitingEnterVoice = false;
+    opp.coolTimeStarted = false;
+    opp.engine.endAnim = null;
+    opp.engine.gameOver = false;
+    opp.engine.shakeTimer = 0;
+    opp.engine.riseOffset = 0;
+    opp.engine.stopTimer = 0;
+    opp.engine.grid = Array.from({ length: opp.engine.rows }, () => Array(opp.engine.cols).fill(null));
+    opp.engine.initGrid(5);
+    if (document.getElementById('survival-cancel-sent')?.checked) {
+      opp.engine.garbageQueue = [];
+    }
+    opp.ai = (currentSkillEnabled && typeof cheat === 'function')
+      ? new cheat(opp.engine, nextLv, opp.id, { maxSkillUses: 3, allowCustom: currentCustomSkillEnabled })
+      : new ComAI(opp.engine, nextLv, opp.id);
+    const wrap = document.getElementById(`rival-wrapper-${opp.index}`);
+    if (wrap) {
+      wrap.classList.toggle('sacrifice-aura', !!(opp.engine.isSacrifice || (opp.engine.skillModifiers && opp.engine.skillModifiers.autoLoseMs > 0)));
+    }
+    updateRivalSkillBadge(opp, opp.index);
+    updateAllPortraitHUDs();
+  };
+
+  if (typeof VOICE !== 'undefined' && typeof VOICE.playAndWait === 'function') {
+    VOICE.playAndWait('attack', nextTheme, null, 3500).then(finishEnter).catch(finishEnter);
+  } else {
+    finishEnter();
+  }
+}
+
 let lastTime = 0, accumulator = 0;
 const FIXED_TIME_STEP = 1000 / 60;
 
@@ -4815,26 +5378,20 @@ function gameLoop(time) {
     if (myEngine && (!isMatchOver || isPracticeMode || (myEngine.endAnim && !myEngine.endAnim.done))) myEngine.update(FIXED_TIME_STEP);
     opponents.forEach(opp => {
       const oppHasEndAnim = opp.engine && opp.engine.endAnim && !opp.engine.endAnim.done;
-      if (isMatchOver && !isPracticeMode && !oppHasEndAnim) return;
+      const keepOnlineComsRunning = (currentMode === 'online' && matchState !== 'gameover' && (myOnlineId === 'host' || hostDisconnected));
+      if (isMatchOver && !isPracticeMode && !oppHasEndAnim && !keepOnlineComsRunning) return;
       if (currentMode === 'single_survival' && opp.coolTimeStarted) {
         if (oppHasEndAnim) opp.engine.update(FIXED_TIME_STEP);
-        opp.coolTime--;
-        if (opp.coolTime <= 0) {
-          opp.coolTimeStarted = false; opp.engine.endAnim = null; opp.engine.gameOver = false;
-          opp.engine.grid = Array.from({ length: opp.engine.rows }, () => Array(opp.engine.cols).fill(null));
-          opp.engine.initGrid(5);
-          if (document.getElementById('survival-cancel-sent').checked) opp.engine.garbageQueue = [];
-          let nextLv = getSurvivalLevel(survivalBaseLevel, currentSurvivalWins + 1);
-          opp.level = nextLv;
-          opp.ai = (currentSkillEnabled && typeof cheat === 'function')
-            ? new cheat(opp.engine, nextLv, opp.id, { maxSkillUses: 3, allowCustom: currentCustomSkillEnabled })
-            : new ComAI(opp.engine, nextLv, opp.id);
-          document.getElementById(`rival-name-label-0`).innerHTML = `${opp.renderer.theme.name} Lv.${nextLv} <span class="target-badge">🎯 TARGET</span>`;
+        if (!opp.waitingEnterVoice) {
+          opp.coolTime--;
+          if (opp.coolTime <= 0) {
+            beginSurvivalNextEnemyEnter(opp);
+          }
         }
       } else if (opp.type === 'local_human') {
         if (opp.engine && (!opp.engine.gameOver || oppHasEndAnim)) opp.engine.update(FIXED_TIME_STEP);
       } else {
-        const isLocalControlledCom = (opp.type === 'com') && (currentMode === 'com' || currentMode === 'single_survival' || currentMode === 'story' || currentMode === 'local' || myOnlineId === 'host');
+        const isLocalControlledCom = (opp.type === 'com') && (currentMode === 'com' || currentMode === 'single_survival' || currentMode === 'story' || currentMode === 'local' || myOnlineId === 'host' || hostDisconnected);
         if (isLocalControlledCom || oppHasEndAnim) {
           if (isLocalControlledCom && opp.ai && !opp.engine.gameOver) opp.ai.update();
           if (opp.engine && (!opp.engine.gameOver || oppHasEndAnim)) opp.engine.update(FIXED_TIME_STEP);
@@ -5192,7 +5749,12 @@ function setupInput() {
       if (assignType === 'key') {
         const doneAction = assigningAction;
         pendingConfigFocus = { action: doneAction, type: 'key' };
-        playerConfigs[settingsPlayerIdx].key[doneAction] = (e.code === 'Delete' || e.code === 'Backspace') ? '' : e.code;
+        const newCode = (e.code === 'Delete' || e.code === 'Backspace') ? '' : e.code;
+        if (typeof assignKeyToPlayerAction === 'function') {
+          assignKeyToPlayerAction(settingsPlayerIdx, doneAction, newCode);
+        } else {
+          playerConfigs[settingsPlayerIdx].key[doneAction] = newCode;
+        }
         assigningAction = null;
         renderConfigUI();
         SE.play('select');
@@ -5200,7 +5762,11 @@ function setupInput() {
         if (e.code === 'Delete' || e.code === 'Backspace') {
           const doneAction = assigningAction;
           pendingConfigFocus = { action: doneAction, type: 'pad' };
-          playerConfigs[settingsPlayerIdx].pad[doneAction] = null;
+          if (typeof assignPadToPlayerAction === 'function') {
+            assignPadToPlayerAction(settingsPlayerIdx, doneAction, null);
+          } else {
+            playerConfigs[settingsPlayerIdx].pad[doneAction] = null;
+          }
           assigningAction = null;
           renderConfigUI();
           SE.play('select');
@@ -5216,6 +5782,7 @@ function setupInput() {
     const isGameVisible = document.getElementById('game-area').style.display === 'flex';
     const isResultVisible = isElementActuallyVisible('result-overlay');
     const isSettingsVisible = isElementActuallyVisible('settings-overlay');
+    const isSettingsConfirmVisible = isElementActuallyVisible('settings-confirm-modal');
     const isSkillModalVisible = isElementActuallyVisible('skill-select-modal');
     const isCustomSkillModalVisible = isElementActuallyVisible('custom-skill-modal');
     const isConfirmModalVisible = isElementActuallyVisible('confirm-match-modal');
@@ -5235,7 +5802,7 @@ function setupInput() {
       return;
     }
 
-    if (!isGameVisible || isResultVisible || isSettingsVisible || isSkillModalVisible || isCustomSkillModalVisible || isConfirmModalVisible || isSelectPickerVisible || isExitConfirmVisible || isAppExitConfirmVisible || isAppTerminatedVisible || isKeyResetConfirmVisible || isPwaGuideVisible) {
+    if (!isGameVisible || isResultVisible || isSettingsVisible || isSettingsConfirmVisible || isSkillModalVisible || isCustomSkillModalVisible || isConfirmModalVisible || isSelectPickerVisible || isExitConfirmVisible || isAppExitConfirmVisible || isAppTerminatedVisible || isKeyResetConfirmVisible || isPwaGuideVisible) {
       const tag = document.activeElement?.tagName;
       const isTextInput = tag === 'INPUT' && document.activeElement?.type === 'text';
       const isLocalMenuOpen = isElementActuallyVisible('local-menu');
@@ -5248,6 +5815,7 @@ function setupInput() {
                        || isAppExitConfirmVisible
                        || isAppTerminatedVisible
                        || isKeyResetConfirmVisible
+                       || isSettingsConfirmVisible
                        || isPwaGuideVisible
                        || isSettingsVisible
                        || isResultVisible
@@ -5346,6 +5914,7 @@ function resetBattleLayoutStyles() {
   }
   if (controls) {
     if (gameContainer && controls.parentNode !== gameContainer) gameContainer.appendChild(controls);
+    controls.classList.remove('compact-1on1');
     controls.style.cssText = 'display: flex; flex-direction: column; justify-content: flex-end; gap: 6px; z-index: 20; width: 110px;';
   }
   if (p2Controls) {
@@ -5392,6 +5961,10 @@ function ensureShareSizerBox(parentZone, sizerId, childEl, orderNum) {
 
 function adjustLayout() {
   updateShareForcePortraitClass();
+  const uiZoom = updateResponsiveUiZoom();
+  const exitZoom = Math.min(uiZoom, 1.35);
+  const topSafeExitPx = Math.round(48 * exitZoom);
+
   const isPortrait = window.innerHeight >= window.innerWidth;
   const W = window.innerWidth, H = window.innerHeight;
   const isLeft = document.getElementById('handedness-toggle')?.checked;
@@ -5458,7 +6031,7 @@ function adjustLayout() {
     const p1CtrlH = Math.max(160, controls.offsetHeight || 180);
     const p2CtrlH = p2Controls ? Math.max(160, p2Controls.offsetHeight || 180) : 180;
     const baseTotalW = 224 + 110 + 10;
-    const scale = Math.max(0.32, Math.min(1.0, (halfH - 22) / baseBoardH, (effW - 18) / baseTotalW));
+    const scale = Math.max(0.32, Math.min(2.0, (halfH - 16) / baseBoardH, (effW - 14) / baseTotalW));
 
     myWrapper.style.transform = `scale(${scale})`;
     p1BoardSizer.style.width = `${Math.round(224 * scale)}px`;
@@ -5481,6 +6054,7 @@ function adjustLayout() {
 
     refreshBattleSidePanels();
     refreshOnlineSplitFrames();
+    updateAllPortraitHUDs();
     return;
   }
 
@@ -5493,11 +6067,12 @@ function adjustLayout() {
   }
 
   const isLandscapeLarge = !isPortrait && !useMobileLayoutInLandscape;
-  const largeScreenMaxScale = (isLandscapeLarge && W >= 860 && H >= 580) ? 1.65 : 1.0;
+  const maxDynamicScale = 2.2;
   const isGameShown = gameArea.style.display !== 'none';
+  const showBottomBar = isGameShown && (isPortrait || useMobileLayoutInLandscape) && currentMode !== 'local';
 
   if (bottomBar) {
-    bottomBar.style.display = (isGameShown && isPortrait && currentMode !== 'local') ? 'flex' : 'none';
+    bottomBar.style.display = showBottomBar ? 'flex' : 'none';
   }
   refreshBattleSidePanels();
   refreshOnlineSplitFrames();
@@ -5523,10 +6098,10 @@ function adjustLayout() {
     const itemCount = totalPlayers + totalPortraits;
     const gapPx = totalPlayers >= 4 ? 6 : 8;
     const baseTotalW = totalPlayers * baseW + totalPortraits * portraitW + Math.max(0, itemCount - 1) * gapPx;
+    const localTopPad = Math.max(48, topSafeExitPx + 6);
 
-    const localMaxScale = (!isPortrait && effW >= 860 && effH >= 580) ? 1.65 : 1.0;
-    const scale = Math.max(0.28, Math.min(localMaxScale, (effW - 24) / baseTotalW, (effH - 54) / baseH));
-    gameContainer.style.cssText = `position:relative;width:100%;height:100%;display:flex;flex-direction:row;flex-wrap:nowrap;align-items:center;align-content:center;justify-content:center;gap:${gapPx}px;padding:36px 8px 8px 8px;`;
+    const scale = Math.max(0.28, Math.min(maxDynamicScale, (effW - 22) / baseTotalW, (effH - localTopPad - 12) / baseH));
+    gameContainer.style.cssText = `position:relative;width:100%;height:100%;display:flex;flex-direction:row;flex-wrap:nowrap;align-items:center;align-content:center;justify-content:center;gap:${gapPx}px;padding:${localTopPad}px 8px 10px 8px;`;
 
     const mx = (baseW - baseW * scale) / -2, my = (baseH - baseH * scale) / -2;
     const pmx = (portraitW - portraitW * scale) / -2, pmy = (portraitH - portraitH * scale) / -2;
@@ -5585,11 +6160,11 @@ function adjustLayout() {
       const totalBaseW = totalPlayers * baseBoardW + totalPlayers * portraitW + ctrlW + (itemCount - 1) * gapPx;
 
       const availW = Math.max(300, W - 24);
-      const availH = Math.max(240, H - 56);
-      const scale = Math.max(0.28, Math.min(largeScreenMaxScale, availW / totalBaseW, availH / baseBoardH));
+      const availH = Math.max(220, H - topSafeExitPx - 16);
+      const scale = Math.max(0.28, Math.min(maxDynamicScale, availW / totalBaseW, availH / baseBoardH));
 
       rivalsArea.style.display = 'contents';
-      gameContainer.style.cssText = `position:relative;width:100%;height:100%;display:flex;flex-direction:row;flex-wrap:nowrap;align-items:center;justify-content:center;gap:${gapPx}px;padding:24px 10px 24px 10px;`;
+      gameContainer.style.cssText = `position:relative;width:100%;height:100%;display:flex;flex-direction:row;flex-wrap:nowrap;align-items:center;justify-content:center;gap:${gapPx}px;padding:${topSafeExitPx + 2}px 10px 14px 10px;`;
 
       const mx = (baseBoardW - baseBoardW * scale) / -2, my = (baseBoardH - baseBoardH * scale) / -2;
       const pmx = (portraitW - portraitW * scale) / -2, pmy = (portraitH - portraitH * scale) / -2;
@@ -5639,15 +6214,17 @@ function adjustLayout() {
     }
 
     rivalsArea.style.display = 'none';
-    const sideMargin = (W >= 760) ? 168 : 10;
-    gameContainer.style.cssText = `position:relative;width:100%;height:100%;display:flex;flex-direction:row;align-items:center;justify-content:center;padding:10px ${sideMargin}px 34px ${sideMargin}px;gap:10px;`;
+    const hasSideCards = (W >= 620);
+    const sideCardW = hasSideCards ? Math.min(236, Math.max(148, W * 0.175)) : 0;
+    const sideMargin = hasSideCards ? Math.round(sideCardW + Math.min(28, Math.max(10, W * 0.02)) + 16) : 14;
+    gameContainer.style.cssText = `position:relative;width:100%;height:100%;display:flex;flex-direction:row;align-items:center;justify-content:center;padding:${topSafeExitPx}px ${sideMargin}px 24px ${sideMargin}px;gap:12px;`;
     if (isLeft) { controls.style.order = '1'; myWrapper.style.order = '2'; }
     else { myWrapper.style.order = '2'; controls.style.order = '3'; }
 
     const baseBoardW = 224, baseBoardH = 525, ctrlW = 110;
-    const availableW = Math.max(260, W - sideMargin * 2 - 20);
-    const availableH = Math.max(240, H - 84);
-    const myScale = Math.max(0.4, Math.min(largeScreenMaxScale, availableH / baseBoardH, availableW / (baseBoardW + ctrlW + 16)));
+    const availableW = Math.max(240, W - sideMargin * 2 - 14);
+    const availableH = Math.max(240, H - topSafeExitPx - 24);
+    const myScale = Math.max(0.4, Math.min(maxDynamicScale, availableH / baseBoardH, availableW / (baseBoardW + ctrlW + 14)));
 
     myWrapper.style.transformOrigin = 'center';
     myWrapper.style.transform = `scale(${myScale})`;
@@ -5658,15 +6235,17 @@ function adjustLayout() {
     updateAllPortraitHUDs();
     updateMyZoneFrameLayout(null);
   } else if (oppCount <= 1) {
-    const bottomReserve = isPortrait ? 56 : 0;
+    const bottomReserve = showBottomBar ? 66 : 10;
+    const topReserve = Math.max(isPortrait ? 58 : 48, topSafeExitPx + 6);
     rivalsTopArea.style.display = 'none'; rivalsArea.style.display = 'none';
     if (exitBtn.parentNode !== gameArea) gameArea.appendChild(exitBtn);
     exitBtn.className = 'action-btn retire-btn absolute-top';
     if (isLeft) { exitBtn.style.right = '12px'; exitBtn.style.left = 'auto'; } else { exitBtn.style.left = '12px'; exitBtn.style.right = 'auto'; }
-    gameContainer.style.cssText = `position:relative;width:100%;height:100%;display:flex;flex-direction:${isLeft ? 'row' : 'row-reverse'};align-items:center;justify-content:center;padding:0 0 ${bottomReserve}px 0;gap:10px;`;
+    gameContainer.style.cssText = `position:relative;width:100%;height:100%;display:flex;flex-direction:${isLeft ? 'row' : 'row-reverse'};align-items:center;justify-content:center;padding:${topReserve}px 0 ${bottomReserve}px 0;gap:10px;`;
 
     controls.style.alignItems = 'center';
     if (oppCount === 1) {
+      controls.classList.add('compact-1on1');
       const rivalWrapper = document.getElementById('rival-wrapper-0');
       if (rivalWrapper) {
         if (rivalWrapper.parentNode !== controls) controls.insertBefore(rivalWrapper, controls.firstChild);
@@ -5689,31 +6268,29 @@ function adjustLayout() {
         rivalWrapper.style.marginBottom = `${originalRivalH * rivalScale - originalRivalH}px`;
       }
       controls.style.height = '525px'; controls.style.justifyContent = 'flex-start';
-      const vibVisible = document.getElementById('vibrate-wrapper')?.style.display !== 'none';
-      if (vibVisible) controls.style.gap = '4px';
       if (handednessWrapper) handednessWrapper.style.marginTop = 'auto';
     } else {
+      controls.classList.remove('compact-1on1');
       controls.style.height = ''; controls.style.justifyContent = 'flex-end';
       if (handednessWrapper) handednessWrapper.style.marginTop = '0';
     }
 
-    const baseBoardH = 525, availH = H - 72 - bottomReserve, contentW = 344;
-    let myScale = Math.min(1.0, availH / baseBoardH);
-    if (contentW * myScale > W - 10) myScale = (W - 10) / contentW;
-    myScale = Math.max(0.4, myScale);
+    const baseBoardH = 525, availH = Math.max(220, H - topReserve - bottomReserve - 10), contentW = 344;
+    const myScale = Math.max(0.4, Math.min(maxDynamicScale, availH / baseBoardH, (W - 14) / contentW));
     myWrapper.style.transform = `scale(${myScale})`; controls.style.transform = `scale(${myScale})`;
     myWrapper.style.transformOrigin = 'center'; controls.style.transformOrigin = 'center';
     const boardMx = (224 - 224 * myScale) / -2, ctrlMx = (110 - 110 * myScale) / -2, scaleMy = (baseBoardH - baseBoardH * myScale) / -2;
     myWrapper.style.margin = `${scaleMy}px ${boardMx}px`; controls.style.margin = `${scaleMy}px ${ctrlMx}px`;
     controls.style.position = 'relative'; controls.style.bottom = 'auto'; controls.style.left = 'auto'; controls.style.right = 'auto'; controls.style.width = '110px';
+    updateBottomStatusBar();
     updateMyZoneFrameLayout(null);
   } else {
-    const bottomReserve = isPortrait ? 54 : 0;
+    const bottomReserve = showBottomBar ? 66 : 10;
     rivalsArea.style.display = 'none';
-    const maxTopH = H * 0.22;
+    const maxTopH = Math.max(92, Math.min(H * 0.22, 168));
     rivalsTopArea.style.cssText = `display:flex;position:absolute;top:4px;left:0;width:100vw;height:${maxTopH}px;flex-direction:row;align-items:center;justify-content:center;gap:6px;z-index:30;overflow:hidden;`;
     const availW = W - 12, scaleH = (maxTopH - 6) / 520, scaleW = availW / (oppCount * 224 + (oppCount - 1) * 6);
-    const miniScale = Math.min(scaleH, scaleW, 0.42);
+    const miniScale = Math.min(scaleH, scaleW, 0.85);
 
     opponents.forEach((_, i) => {
       const el = document.getElementById(`rival-wrapper-${i}`);
@@ -5730,15 +6307,15 @@ function adjustLayout() {
     controls.style.height = 'auto'; controls.style.justifyContent = 'center'; controls.style.width = '110px';
     if (handednessWrapper) handednessWrapper.style.marginTop = '0';
 
-    gameContainer.style.cssText = `display:flex;flex-direction:${isLeft ? 'row' : 'row-reverse'};align-items:center;justify-content:center;position:absolute;top:${maxTopH + 6}px;left:0;width:100vw;height:${H - maxTopH - 6 - bottomReserve}px;padding:0;gap:10px;`;
-    const maxCenterH = H - maxTopH - 18 - bottomReserve, contentW = 344;
-    let myScale = Math.min(1.0, maxCenterH / 525);
-    if (contentW * myScale > W - 10) myScale = (W - 10) / contentW;
-    myScale = Math.max(0.32, myScale);
+    gameContainer.style.cssText = `display:flex;flex-direction:${isLeft ? 'row' : 'row-reverse'};align-items:center;justify-content:center;position:absolute;top:${maxTopH + 8}px;left:0;width:100vw;height:${H - maxTopH - 8 - bottomReserve}px;padding:0;gap:10px;`;
+    const maxCenterH = Math.max(200, H - maxTopH - 18 - bottomReserve), contentW = 344;
+    const ctrlBaseH = controls.scrollHeight ? Math.max(340, controls.scrollHeight) : 360;
+    const myScale = Math.max(0.32, Math.min(maxDynamicScale, maxCenterH / Math.max(525, ctrlBaseH), (W - 14) / contentW));
     myWrapper.style.transform = `scale(${myScale})`; controls.style.transform = `scale(${myScale})`;
     myWrapper.style.transformOrigin = 'center'; controls.style.transformOrigin = 'center';
     myWrapper.style.margin = `0 ${(224 - 224 * myScale) / -2}px`; controls.style.margin = `0 ${(110 - 110 * myScale) / -2}px`;
     const topStart = maxTopH + 4;
+    updateBottomStatusBar();
     updateMyZoneFrameLayout({ top: topStart, left: 0, width: W, height: H - topStart - bottomReserve, radius: '16px 16px 0 0' });
   }
 }
@@ -5757,6 +6334,7 @@ function toggleHandedness() {
 }
 
 function handleWindowLayoutChange() {
+  updateResponsiveUiZoom();
   adjustLayout();
   refreshMenuLayoutState(false);
 }
@@ -5765,6 +6343,7 @@ window.addEventListener('resize', handleWindowLayoutChange);
 window.addEventListener('orientationchange', () => setTimeout(handleWindowLayoutChange, 100));
 
 window.addEventListener('DOMContentLoaded', () => {
+  updateResponsiveUiZoom();
   if (localStorage.getItem('pdw_handedness') === 'left') document.getElementById('handedness-toggle').checked = true;
   toggleHandedness();
 
@@ -5784,6 +6363,7 @@ window.addEventListener('DOMContentLoaded', () => {
   bindSwitchMenuHoverEvents();
   bindMenuHoverCursorSE();
   refreshMenuLayoutState(true);
+  updateModeWinBadgesUI();
   if (typeof syncPlayerSkillSelects === 'function') syncPlayerSkillSelects();
   if (typeof syncHandicapFromSlider === 'function') syncHandicapFromSlider(3);
   if (typeof enhanceAllRangeSliders === 'function') enhanceAllRangeSliders();

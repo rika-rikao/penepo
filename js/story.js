@@ -229,8 +229,8 @@ const StoryManager = {
     }
   },
 
-  openMenu() {
-    if (typeof SE !== 'undefined') SE.play('select');
+  openMenu(toStageStep = false, silent = false) {
+    if (!silent && typeof SE !== 'undefined') SE.play('select');
     if (typeof hideAllMenuSubViews === 'function') {
       hideAllMenuSubViews();
     } else {
@@ -240,24 +240,34 @@ const StoryManager = {
     }
     const menu = document.getElementById('story-menu');
     menu.style.display = 'flex';
-    this.currentStep = 'prep';
-    const prepStep = document.getElementById('story-prep-step');
-    const stageStep = document.getElementById('story-stage-step');
-    if (prepStep) prepStep.style.display = 'flex';
-    if (stageStep) stageStep.style.display = 'none';
-
     this.syncDifficultyButtons();
-    const latestIdx = Math.min(STORY_STAGES.length - 1, this.clearedStage);
-    this.selectedStageIdx = Math.max(0, latestIdx);
 
     if (typeof renderCharPicker === 'function') {
       renderCharPicker('story-char-picker', { storyOnly: true });
     }
+
+    if (toStageStep) {
+      if (this.selectedStageIdx < 0 || this.selectedStageIdx >= STORY_STAGES.length) {
+        this.selectedStageIdx = Math.max(0, Math.min(STORY_STAGES.length - 1, this.clearedStage));
+      }
+      this.goToStageStep();
+    } else {
+      this.currentStep = 'prep';
+      const prepStep = document.getElementById('story-prep-step');
+      const stageStep = document.getElementById('story-stage-step');
+      if (prepStep) prepStep.style.display = 'flex';
+      if (stageStep) stageStep.style.display = 'none';
+
+      const latestIdx = Math.min(STORY_STAGES.length - 1, this.clearedStage);
+      this.selectedStageIdx = Math.max(0, latestIdx);
+
+      if (typeof focusPrimaryMenuElement === 'function') {
+        focusPrimaryMenuElement('story-prep-step');
+      }
+    }
+
     if (typeof refreshMenuLayoutState === 'function') {
       refreshMenuLayoutState();
-    }
-    if (typeof focusPrimaryMenuElement === 'function') {
-      focusPrimaryMenuElement('story-prep-step');
     }
   },
 
@@ -631,14 +641,14 @@ const StoryManager = {
       this.saveProgress(this.activeStage.id);
       if (this.activeStage.id >= STORY_STAGES.length) {
         showToast('🎉 全ステージ制覇！おめでとう！');
-        exitGame();
-        this.openMenu();
+        if (typeof performExitGame === 'function') performExitGame(true);
+        else exitGame(true);
       } else {
         const nextStage = STORY_STAGES.find(s => s.id === this.activeStage.id + 1);
         if (nextStage) {
           this.startStage(nextStage.id);
-        } else {
-          exitGame();
+        } else if (typeof performExitGame === 'function') {
+          performExitGame(true);
         }
       }
     } else if (this.phase === 'lose') {

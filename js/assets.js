@@ -1,4 +1,3 @@
-
 // ==========================================
 // キャラクター定義 & ループ型3Dカバーフロー & スキル定義/自作ラボ & カスタムアセット管理
 // ==========================================
@@ -94,6 +93,13 @@ const CUSTOM_SKILL_MERITS = [
     isActive: true,
     costs: [0, 55, 95, 140],
     levelTexts: ['OFF', 'Lv1: 4段上昇+下1/3浄化', 'Lv2: 3段上昇+下2/3浄化', 'Lv3: 2段上昇+全お邪魔浄化']
+  },
+  {
+    id: 'reflect_garbage',
+    name: 'お邪魔反射',
+    isActive: true,
+    costs: [0, 55, 95, 140],
+    levelTexts: ['OFF', 'Lv1: 盤面お邪魔0.5倍反射', 'Lv2: 盤面お邪魔0.75倍反射', 'Lv3: 盤面お邪魔1.0倍反射']
   },
   {
     id: 'corrupt_enemy',
@@ -376,6 +382,7 @@ function resolvePlayableSkillId(skillId, allowCustom = true, fallbackId = 'erase
 // ==========================================
 let editingCustomSkillSlotIdx = 0;
 let editingCustomSkillDraft = { name: '', merits: {}, demerits: {} };
+let pendingCustomSkillFocus = null;
 
 function makeBlankCustomSkillDraft(slotIdx) {
   return {
@@ -389,6 +396,7 @@ function openCustomSkillModal(slotIdx = null) {
   const modal = document.getElementById('custom-skill-modal');
   if (!modal) return;
   if (typeof SE !== 'undefined') SE.play('select');
+  pendingCustomSkillFocus = null;
   const initialIdx = (slotIdx !== null && slotIdx >= 0 && slotIdx < 3) ? slotIdx : editingCustomSkillSlotIdx;
   selectCustomSkillSlot(initialIdx, true);
   modal.style.display = 'flex';
@@ -398,6 +406,7 @@ function openCustomSkillModal(slotIdx = null) {
 }
 
 function closeCustomSkillModal(silent = false) {
+  pendingCustomSkillFocus = null;
   const modal = document.getElementById('custom-skill-modal');
   if (modal) modal.style.display = 'none';
   if (!silent && typeof SE !== 'undefined') SE.play('cancel');
@@ -406,6 +415,7 @@ function closeCustomSkillModal(silent = false) {
 
 function selectCustomSkillSlot(idx, silent = false) {
   editingCustomSkillSlotIdx = Math.max(0, Math.min(2, idx));
+  pendingCustomSkillFocus = null;
   if (!silent && typeof SE !== 'undefined') SE.play('cursorMove');
   document.querySelectorAll('#custom-skill-slot-tabs button').forEach((btn, i) => {
     btn.classList.toggle('active', i === editingCustomSkillSlotIdx);
@@ -426,6 +436,7 @@ function setCustomSkillEffectLevel(kind, effectId, lv) {
   const target = kind === 'merit' ? editingCustomSkillDraft.merits : editingCustomSkillDraft.demerits;
   if (lv <= 0) delete target[effectId];
   else target[effectId] = lv;
+  pendingCustomSkillFocus = { kind, id: effectId, lv: String(lv) };
   if (typeof SE !== 'undefined') SE.play('cursorMove');
   renderCustomSkillBuilder();
 }
@@ -434,6 +445,7 @@ function resetCurrentCustomSkillSlot() {
   editingCustomSkillDraft = makeBlankCustomSkillDraft(editingCustomSkillSlotIdx);
   const nameInput = document.getElementById('custom-skill-name-input');
   if (nameInput) nameInput.value = editingCustomSkillDraft.name;
+  pendingCustomSkillFocus = null;
   if (typeof SE !== 'undefined') SE.play('cancel');
   renderCustomSkillBuilder();
 }
@@ -451,6 +463,7 @@ function deleteCurrentCustomSkillSlot() {
   editingCustomSkillDraft = makeBlankCustomSkillDraft(editingCustomSkillSlotIdx);
   const nameInput = document.getElementById('custom-skill-name-input');
   if (nameInput) nameInput.value = editingCustomSkillDraft.name;
+  pendingCustomSkillFocus = null;
   if (typeof SE !== 'undefined') SE.play('cancel');
   selectCustomSkillSlot(editingCustomSkillSlotIdx, true);
   syncSkillPickersAfterCustomChange();
@@ -516,6 +529,17 @@ function syncSkillPickersAfterCustomChange(focusSkillId = null) {
 }
 
 function renderCustomSkillBuilder() {
+  let restoreMeta = pendingCustomSkillFocus ? { ...pendingCustomSkillFocus } : null;
+  pendingCustomSkillFocus = null;
+  const activeEl = document.activeElement;
+  if (!restoreMeta && activeEl && activeEl.dataset && activeEl.dataset.csKind && activeEl.dataset.csId) {
+    restoreMeta = {
+      kind: activeEl.dataset.csKind,
+      id: activeEl.dataset.csId,
+      lv: activeEl.dataset.csLv || '0'
+    };
+  }
+
   const info = computeCustomSkillBuildInfo(editingCustomSkillDraft);
   const ptValEl = document.getElementById('custom-skill-points-val');
   const ptBadgeEl = document.getElementById('custom-skill-points-badge');
@@ -568,6 +592,9 @@ function renderCustomSkillBuilder() {
         const b = document.createElement('button');
         b.type = 'button';
         b.className = 'cs-lv-btn' + (curLv === lv ? ' active' : '');
+        b.dataset.csKind = kind;
+        b.dataset.csId = def.id;
+        b.dataset.csLv = String(lv);
         if (lv === 0) {
           b.innerText = 'OFF';
         } else if (kind === 'merit') {
@@ -586,6 +613,17 @@ function renderCustomSkillBuilder() {
 
   renderEffects('custom-skill-merits-list', CUSTOM_SKILL_MERITS, 'merit');
   renderEffects('custom-skill-demerits-list', CUSTOM_SKILL_DEMERITS, 'demerit');
+
+  if (restoreMeta) {
+    const selector = `.cs-lv-btn[data-cs-kind="${restoreMeta.kind}"][data-cs-id="${restoreMeta.id}"][data-cs-lv="${restoreMeta.lv}"]`;
+    const targetBtn = document.querySelector(`#custom-skill-modal ${selector}`);
+    if (targetBtn && !targetBtn.disabled) {
+      targetBtn.focus({ preventScroll: true });
+      if (typeof targetBtn.scrollIntoView === 'function') {
+        targetBtn.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      }
+    }
+  }
 }
 
 const AssetCache = new Map();
@@ -1027,7 +1065,6 @@ async function preloadDefaultCharImages(onProgress = null) {
   });
   await Promise.all(workers);
 }
-
 // ==========================================
 // 汎用・ループ型 CSS 3D カバーフローエンジン
 // （directHorizontal: true 指定時は決定での選択モード入り不要で直接左右切替可能）
@@ -1805,7 +1842,7 @@ async function clearCustomVoice(category) {
 
 function testCustomVoice(category) {
   if (typeof VOICE === 'undefined') return;
-  if (!VOICE.customBuffers[category]) {
+  if (!VOICE.customBuffers[category] && !(VOICE.customRawMap[category] && VOICE.customRawMap[category].dataUrl)) {
     showToast('未設定です');
     return;
   }
@@ -2379,7 +2416,6 @@ function drawBoardFgAddon(ctx, canvas, engine, renderer) {
   const gb = (typeof isGbMode !== 'undefined' && isGbMode);
 
   if ((engine.allowBoardCutin || !engine.isPlayer) && engine.cutinTimer && engine.cutinTimer > 0) {
-    engine.cutinTimer--;
     const progress = engine.cutinTimer / (engine.cutinMax || 50);
     const alpha = Math.min(1, progress * 2.5);
     const slideX = progress > 0.8 ? (progress - 0.8) * 5 * W : 0;
@@ -2480,6 +2516,11 @@ async function initAssetsSystem() {
     const bgmWait = (typeof SceneBgm !== 'undefined' && SceneBgm.readyPromise)
       ? SceneBgm.readyPromise.catch(() => {})
       : Promise.resolve();
+
+    // ボイスファイルもバックグラウンドで事前解決（win/lose/attack）
+    if (typeof VOICE !== 'undefined' && typeof VOICE.preloadForCharacters === 'function') {
+      VOICE.preloadForCharacters(CHARACTERS.map(c => c.name)).catch(() => {});
+    }
 
     await Promise.race([
       Promise.all([preloadPromise, seWait, bgmWait]),

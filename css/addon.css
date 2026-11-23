@@ -1,5 +1,5 @@
 /* ==========================================
-   追加UI・PWAボタン・2D/3D切替トグル・3Dカバーフロー・白透明キャラ枠・スキル自作ラボ・共通2段階スライダー・縦ボトムナビ・シェア実寸箱・ボタンフォーカス演出・連勝/累計バッジ・練習右パネル・PC150%相当スケール・GBトーン用CSS
+   追加UI・PWAボタン・2D/3D切替トグル・3Dカバーフロー・白透明キャラ枠・スキル自作ラボ・共通2段階スライダー・縦ボトムナビ・シェア実寸箱・ボタンフォーカス演出・連勝/累計バッジ・練習右パネル・PC150%相当スケール・左右回転ボタン・GBトーン用CSS
    ========================================== */
 .char-select-bar {
   font-size: 0.85rem;
@@ -136,8 +136,32 @@
 }
 
 /* ==========================================
-   2D / 3D 盤面切り替えトグル（自キャラ設定・ローカル用）
+   2D / 3D 盤面切り替えトグル & 縦UI用プルダウン横並び
    ========================================== */
+.dim-controls-row {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.dim-rule-group-wrap {
+  width: 100%;
+}
+.dim-rule-select {
+  display: none;
+  width: 100%;
+  padding: 6px 10px;
+  font-size: 0.84rem;
+  border-radius: 12px;
+}
+.compact-dim-select {
+  width: auto !important;
+  padding: 3px 8px !important;
+  font-size: 0.8rem !important;
+  border-radius: 10px !important;
+}
+
 .self-dim-row {
   width: 100%;
   display: flex;
@@ -196,6 +220,75 @@
   border-color: #ffd700;
   color: #ffffff;
   box-shadow: 0 0 8px rgba(56, 189, 248, 0.5);
+}
+
+/* 縦UI：盤面ルール(プルダウン)＋自分の盤面を横並び1行に収約＆練習モードボタン1段ストレッチ */
+@media (orientation: portrait) {
+  .dim-controls-row {
+    flex-direction: row;
+    align-items: stretch;
+    gap: 8px;
+    width: 100%;
+  }
+  .dim-rule-group-wrap {
+    flex: 1 1 0;
+    min-width: 0;
+    background: rgba(15, 23, 42, 0.72);
+    border: 1px solid rgba(78, 204, 163, 0.35);
+    border-radius: 12px;
+    padding: 5px 8px;
+    justify-content: space-between;
+    gap: 4px;
+  }
+  .dim-rule-group-wrap .menu-option-label {
+    font-size: 0.74rem;
+  }
+  .dim-rule-group {
+    display: none !important;
+  }
+  .dim-rule-select {
+    display: block !important;
+    padding: 5px 8px;
+    font-size: 0.82rem;
+    border-radius: 10px;
+  }
+  .self-dim-row {
+    flex: 1 1 0;
+    min-width: 0;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: 4px;
+    padding: 5px 8px;
+  }
+  .self-dim-label {
+    font-size: 0.74rem;
+  }
+  .dim-self-toggle-btn {
+    width: 100%;
+    padding: 5px 6px;
+    font-size: 0.76rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .local-top-row-main .dim-rule-select.compact-dim-select {
+    display: inline-block !important;
+  }
+
+  /* 縦UI：練習モード選択ボタン（フリー〜勝ち抜き）＆難易度ボタンを横幅に合わせて1段ストレッチ */
+  #single-mode-buttons,
+  #story-difficulty-buttons {
+    flex-wrap: nowrap;
+    gap: 4px;
+    width: 100%;
+  }
+  #single-mode-buttons .pill-btn,
+  #story-difficulty-buttons .pill-btn {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 6px 4px;
+    font-size: clamp(0.64rem, 2.85vw, 0.78rem);
+    text-align: center;
+  }
 }
 
 /* ==========================================
@@ -1154,10 +1247,19 @@ body.settings-has-vnav #settings-overlay {
 }
 .local-top-controls {
   display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  width: 100%;
+}
+.local-top-row {
+  display: flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
   flex-wrap: wrap;
+  width: 100%;
 }
 .local-gamepad-hint {
   font-size: 0.7rem;
@@ -1947,6 +2049,7 @@ input[type="range"].slider-adjusting {
   .cf-stage-wrap.compact { height: 106px; }
   .cf-stage-wrap.compact .cf-card { width: 150px; height: 82px; }
 }
+
 /* ==========================================
    横画面複数人対戦用：盤面隣接インライン立ち絵カード & 連勝/累計バッジ
    ========================================== */
@@ -2490,33 +2593,71 @@ input[type="range"] { touch-action: pan-y; cursor: pointer; }
   display: block;
 }
 
-/* 縦1on1時：ミニ盤面＋操作系を余裕をもって収めるコンパクト調整 */
+/* せり上げボタン下の左右回転・移動タッチボタン */
+.rotate-btns-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 5px;
+  width: 100%;
+  flex-shrink: 0;
+}
+.rotate-touch-btn {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 38px;
+  padding: 0;
+  border-radius: 12px;
+  font-size: 1.08rem;
+  line-height: 1;
+  background: linear-gradient(155deg, #0f3460, #1d4ed8);
+  border: 1.5px solid #38bdf8;
+  box-shadow: 0 3px #0a1f44;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: none;
+}
+.rotate-touch-btn.is-pressed {
+  transform: scale(0.93) !important;
+  background: linear-gradient(155deg, #0284c7, #38bdf8);
+  border-color: #ffd700;
+}
+
+/* 縦1on1時：ミニ盤面＋操作系＋左右タッチボタンを余裕をもって収めるコンパクト調整 */
 #controls-container.compact-1on1 {
-  gap: 4px !important;
+  gap: 3px !important;
 }
 #controls-container.compact-1on1 .switch-wrapper {
-  padding: 3px 6px !important;
-  gap: 2px !important;
+  padding: 2px 5px !important;
+  gap: 1px !important;
+}
+#controls-container.compact-1on1 .switch-wrapper span {
+  font-size: 0.66rem !important;
 }
 #controls-container.compact-1on1 .switch-wrapper input[type="checkbox"].ui-toggle-input {
-  width: 46px;
-  height: 22px;
+  width: 44px;
+  height: 20px;
 }
 #controls-container.compact-1on1 .switch-wrapper input[type="checkbox"].ui-toggle-input::before {
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
 }
 #controls-container.compact-1on1 .switch-wrapper input[type="checkbox"].ui-toggle-input:checked::before {
-  transform: translateX(23px);
+  transform: translateX(22px);
 }
 #controls-container.compact-1on1 #rise-btn {
-  height: 34px !important;
+  height: 33px !important;
   padding: 4px 6px !important;
-  font-size: 0.88rem !important;
+  font-size: 0.84rem !important;
+}
+#controls-container.compact-1on1 .rotate-touch-btn {
+  height: 33px;
+  font-size: 0.98rem;
 }
 #controls-container.compact-1on1 #skill-btn {
-  min-height: 44px;
-  padding: 4px 5px;
+  min-height: 40px;
+  padding: 3px 5px;
 }
 
 .local-player-tabs { display: flex; justify-content: center; gap: 6px; flex-wrap: wrap; width: 100%; }

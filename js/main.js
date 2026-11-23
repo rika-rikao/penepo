@@ -1,5 +1,5 @@
 // ==========================================
-// 対戦・ターゲット・スマブラ風ローカル選択・連勝/累計勝利記録・縦UIバッジ・PC150%相当スケール・重なり防止統合管理
+// 対戦・ターゲット・スマブラ風ローカル選択・2D/3D/こんごう切替・連勝/累計勝利記録・縦UIバッジ・PC150%相当スケール統合管理
 // ==========================================
 let myEngine, myRenderer;
 let opponents = [];
@@ -36,6 +36,11 @@ let currentCustomSkillEnabled = true;
 let selectedSingleMode = 'free';
 let selectedComCount = 2;
 
+// 2D / 3D円筒 / こんごう モード管理
+let selectedDimRule = localStorage.getItem('pdw_dim_rule') || '2d';
+if (!['2d', '3d', 'mixed'].includes(selectedDimRule)) selectedDimRule = '2d';
+let selectedPlayerIs3D = (localStorage.getItem('pdw_player_is3d') === 'true');
+
 const HANDICAP_LABELS = {
   1: '1: 不利 (激ムズ)',
   2: '2: やや不利',
@@ -55,6 +60,122 @@ const RANKING_MODES = [
 let rankingModeIdx = 0;
 
 // ==========================================
+// 2D / 3D / こんごう モード制御
+// ==========================================
+function getEffectiveSelfIs3D() {
+  if (selectedDimRule === '3d') return true;
+  if (selectedDimRule === '2d') return false;
+  return !!selectedPlayerIs3D;
+}
+
+function getDimSummaryText(includeSelf = true) {
+  if (selectedDimRule === '3d') return '盤面: 3D円筒';
+  if (selectedDimRule === '2d') return '盤面: 2D';
+  return includeSelf ? `盤面: こんごう(自:${selectedPlayerIs3D ? '3D' : '2D'})` : '盤面: こんごう';
+}
+
+function syncDimRuleUI() {
+  const isSingleSolo = isElementActuallyVisible('single-menu') && selectedSingleMode !== 'survival';
+  if (isSingleSolo && selectedDimRule === 'mixed') {
+    selectedDimRule = selectedPlayerIs3D ? '3d' : '2d';
+    localStorage.setItem('pdw_dim_rule', selectedDimRule);
+  }
+
+  document.querySelectorAll('.dim-rule-group button[data-dim]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.dim === selectedDimRule);
+  });
+
+  const selfIs3D = getEffectiveSelfIs3D();
+  const selfText = selectedDimRule === 'mixed'
+    ? (selfIs3D ? '3D円筒 (18列)' : '2D (6列)')
+    : (selfIs3D ? '3D円筒 (ルール連動)' : '2D (ルール連動)');
+
+  ['story-self-dim-toggle', 'single-self-dim-toggle', 'com-self-dim-toggle', 'online-self-dim-toggle'].forEach(id => {
+    const btn = document.getElementById(id);
+    if (!btn) return;
+    btn.innerText = selfText;
+    btn.classList.toggle('is-3d', selfIs3D);
+    btn.classList.toggle('is-locked', selectedDimRule !== 'mixed');
+  });
+
+  if (typeof StoryManager !== 'undefined' && isElementActuallyVisible('story-stage-step')) {
+    StoryManager.renderPrepSummaryBar();
+  }
+  if (isElementActuallyVisible('local-menu')) {
+    renderLocalMenuUI();
+  }
+  if (isElementActuallyVisible('share-prep-overlay')) {
+    renderSharePrepUI();
+  }
+}
+
+function selectDimRule(rule, silent = false) {
+  const nextRule = ['2d', '3d', 'mixed'].includes(rule) ? rule : '2d';
+  if (!silent && selectedDimRule !== nextRule && typeof SE !== 'undefined') SE.play('select');
+  selectedDimRule = nextRule;
+  localStorage.setItem('pdw_dim_rule', selectedDimRule);
+
+  if (selectedDimRule === '2d') {
+    selectedPlayerIs3D = false;
+    localSlotsConfig.forEach(s => { s.is3D = false; });
+    sharePrepConfig.p1.is3D = false;
+    sharePrepConfig.p2.is3D = false;
+  } else if (selectedDimRule === '3d') {
+    selectedPlayerIs3D = true;
+    localSlotsConfig.forEach(s => { s.is3D = true; });
+    sharePrepConfig.p1.is3D = true;
+    sharePrepConfig.p2.is3D = true;
+  }
+  localStorage.setItem('pdw_player_is3D', String(!!selectedPlayerIs3D));
+  localStorage.setItem('pdw_player_is3d', String(!!selectedPlayerIs3D));
+  syncDimRuleUI();
+}
+
+function toggleSelectedPlayer3D() {
+  const isSingleSolo = isElementActuallyVisible('single-menu') && selectedSingleMode !== 'survival';
+  if (selectedDimRule === '2d') {
+    selectedPlayerIs3D = true;
+    selectedDimRule = isSingleSolo ? '3d' : 'mixed';
+  } else if (selectedDimRule === '3d') {
+    selectedPlayerIs3D = false;
+    selectedDimRule = isSingleSolo ? '2d' : 'mixed';
+  } else {
+    selectedPlayerIs3D = !selectedPlayerIs3D;
+  }
+  localStorage.setItem('pdw_dim_rule', selectedDimRule);
+  localStorage.setItem('pdw_player_is3d', String(!!selectedPlayerIs3D));
+  if (typeof SE !== 'undefined') SE.play('select');
+  syncDimRuleUI();
+}
+
+function resolveSelfIs3DForMode(mode) {
+  if (mode === 'local') {
+    if (selectedDimRule === '3d') return true;
+    if (selectedDimRule === '2d') return false;
+    return !!localSlotsConfig[0].is3D;
+  }
+  if (mode === 'share') {
+    if (selectedDimRule === '3d') return true;
+    if (selectedDimRule === '2d') return false;
+    return !!sharePrepConfig.p1.is3D;
+  }
+  return getEffectiveSelfIs3D();
+}
+
+function resolveOppIs3DForMode(mode, oppIndex) {
+  if (selectedDimRule === '3d') return true;
+  if (selectedDimRule === '2d') return false;
+  if (mode === 'local') {
+    const slot = localSlotsConfig[oppIndex + 1];
+    return !!(slot && slot.is3D);
+  }
+  if (mode === 'share') {
+    return !!sharePrepConfig.p2.is3D;
+  }
+  return Math.random() < 0.5;
+}
+
+// ==========================================
 // PCどの倍率でも150%相当のレイアウトになる動的スケール計算
 // ==========================================
 function updateResponsiveUiZoom() {
@@ -63,8 +184,6 @@ function updateResponsiveUiZoom() {
   const isPortrait = H >= W;
   let zoom = 1.0;
 
-  // PC等の大画面（100% / 125% 等）では実効解像度が ~1260x710 (FHD 150%相当) になるよう拡大
-  // 既に150%ズーム済みや狭い画面・スマホでは 1.0 を維持して崩れを防止
   if (!isPortrait && W >= 1020 && H >= 640) {
     zoom = Math.min(1.65, Math.max(1.0, Math.min(W / 1260, H / 710)));
   } else if (isPortrait && W >= 720 && H >= 960) {
@@ -77,8 +196,6 @@ function updateResponsiveUiZoom() {
 
 // ==========================================
 // 対戦モード 連勝(🏅/★) & 累計勝利(👑) & せいせき記録管理
-// ・ゲーム中のバッジはアプリ起動中のみ保持（モード別独立、アプリ終了でリセット）
-// ・せいせき画面には永続レコード（歴代記録）も表示
 // ==========================================
 const BATTLE_STATS_STORAGE_KEY = 'pdw_battle_stats_v1';
 const BATTLE_MODE_LABELS = {
@@ -297,7 +414,7 @@ function focusPrimaryMenuElement(containerId) {
 }
 
 // ==========================================
-// 退出確認モーダル（ポーズ中BGM一時停止/復帰） & ゲーム終了確認モーダル
+// 退出確認モーダル & ゲーム終了確認モーダル
 // ==========================================
 function openExitConfirmModal() {
   const modal = document.getElementById('exit-confirm-modal');
@@ -580,7 +697,7 @@ function beginSingleStartFlow() {
   openSkillAndConfirmFlow({
     charId: selectedCharId,
     allowCustom,
-    extraText: `練習: ${modeNames[selectedSingleMode] || 'フリー'} / 自作:${allowCustom ? 'ON' : 'OFF'}`,
+    extraText: `練習: ${modeNames[selectedSingleMode] || 'フリー'} / ${getDimSummaryText(selectedSingleMode === 'survival')} / 自作:${allowCustom ? 'ON' : 'OFF'}`,
     okLabel: 'OK！スタート',
     onConfirm: () => startSingleMode()
   });
@@ -601,7 +718,7 @@ function beginComStartFlow() {
   openSkillAndConfirmFlow({
     charId: selectedCharId,
     allowCustom,
-    extraText: `COM対戦 (${selectedComCount}人 / Lv.${lv} / 自作:${allowCustom ? 'ON' : 'OFF'})`,
+    extraText: `COM対戦 (${selectedComCount}人 / Lv.${lv} / ${getDimSummaryText(true)} / 自作:${allowCustom ? 'ON' : 'OFF'})`,
     okLabel: 'OK！対戦開始',
     onConfirm: () => startComGameFromSlider()
   });
@@ -622,7 +739,7 @@ function beginOnlineCreateFlow() {
   openSkillAndConfirmFlow({
     charId: selectedCharId,
     allowCustom,
-    extraText: `オンライン部屋作成 (${maxP}人 / 自作:${allowCustom ? 'ON' : 'OFF'})`,
+    extraText: `オンライン部屋作成 (${maxP}人 / ${getDimSummaryText(true)} / 自作:${allowCustom ? 'ON' : 'OFF'})`,
     okLabel: 'OK！部屋を作る',
     onConfirm: () => createRoom()
   });
@@ -644,7 +761,7 @@ function beginOnlineJoinFlow() {
   openSkillAndConfirmFlow({
     charId: selectedCharId,
     allowCustom,
-    extraText: `部屋参加: ${code.toUpperCase()}（自作可否はホスト準拠）`,
+    extraText: `部屋参加: ${code.toUpperCase()}（こんごう時自:${selectedPlayerIs3D ? '3D' : '2D'}）`,
     okLabel: 'OK！部屋に入る',
     onConfirm: () => joinRoom()
   });
@@ -808,6 +925,7 @@ function updateVerticalBottomNav() {
     const el = document.getElementById(id);
     return el && window.getComputedStyle(el).display !== 'none';
   };
+  const isGameActive = isVis('game-area');
   const isMenuOpen = isVis('menu-overlay');
   const isMainHub = isVis('main-menu') && isVis('main-menu-actions');
   const isWaiting = isVis('room-waiting');
@@ -821,7 +939,7 @@ function updateVerticalBottomNav() {
   else if (isVis('ranking-menu')) activeModeKey = 'ranking';
   else if (isMainHub) activeModeKey = 'home';
 
-  const shouldShow = isPortrait && isMenuOpen && (!isMainHub || isSettingsOpen) && !isWaiting && !isSharePrep && (activeModeKey !== null);
+  const shouldShow = isPortrait && !isGameActive && (isSettingsOpen || (isMenuOpen && !isMainHub)) && !isWaiting && !isSharePrep && (activeModeKey !== null);
 
   nav.style.display = shouldShow ? 'grid' : 'none';
   menuOverlay.classList.toggle('has-vertical-bottom-nav', shouldShow);
@@ -973,13 +1091,13 @@ function bindMenuHoverCursorSE() {
 }
 
 // ==========================================
-// ローカル対戦：スマブラ風 上半分タイル選択＆下半分4等分ドックUI
+// ローカル対戦：スマブラ風 上半分タイル選択＆下半分4等分ドックUI（自キャラ枠2D/3D切替対応）
 // ==========================================
 let localSlotsConfig = [
-  { isCom: false, comLevel: 3, handicap: 3, charId: 'main00', skillId: 'erase_color',       fallbackSkillId: 'erase_color',       phase: 'char',  cursorStage: 'char', charCursorIdx: 0, skillCursorIdx: 0 },
-  { isCom: false, comLevel: 3, handicap: 3, charId: 'sub01',  skillId: 'erase_rows',        fallbackSkillId: 'erase_rows',        phase: 'char',  cursorStage: 'char', charCursorIdx: 1, skillCursorIdx: 1 },
-  { isCom: true,  comLevel: 3, handicap: 3, charId: 'sub02',  skillId: 'purify_garbage',    fallbackSkillId: 'purify_garbage',    phase: 'ready', cursorStage: 'char', charCursorIdx: 2, skillCursorIdx: 2 },
-  { isCom: true,  comLevel: 3, handicap: 3, charId: 'sub03',  skillId: 'corrupt_enemy_row', fallbackSkillId: 'corrupt_enemy_row', phase: 'ready', cursorStage: 'char', charCursorIdx: 3, skillCursorIdx: 3 }
+  { isCom: false, comLevel: 3, handicap: 3, is3D: false, charId: 'main00', skillId: 'erase_color',       fallbackSkillId: 'erase_color',       phase: 'char',  cursorStage: 'char', charCursorIdx: 0, skillCursorIdx: 0 },
+  { isCom: false, comLevel: 3, handicap: 3, is3D: false, charId: 'sub01',  skillId: 'erase_rows',        fallbackSkillId: 'erase_rows',        phase: 'char',  cursorStage: 'char', charCursorIdx: 1, skillCursorIdx: 1 },
+  { isCom: true,  comLevel: 3, handicap: 3, is3D: false, charId: 'sub02',  skillId: 'purify_garbage',    fallbackSkillId: 'purify_garbage',    phase: 'ready', cursorStage: 'char', charCursorIdx: 2, skillCursorIdx: 2 },
+  { isCom: true,  comLevel: 3, handicap: 3, is3D: false, charId: 'sub03',  skillId: 'corrupt_enemy_row', fallbackSkillId: 'corrupt_enemy_row', phase: 'ready', cursorStage: 'char', charCursorIdx: 3, skillCursorIdx: 3 }
 ];
 let activeLocalTouchActor = 0;
 let localPadTargetSlot = [0, 1, 2, 3];
@@ -1032,6 +1150,26 @@ function getLocalEffectiveSlotSkill(slot) {
   if (!slot) return 'erase_color';
   const allowCustom = isLocalCustomSkillRuleOn();
   return getEffectivePlayerSkillId(slot.skillId, allowCustom, slot.fallbackSkillId);
+}
+
+function toggleLocalSlot3D(slotIdx) {
+  const slot = localSlotsConfig[slotIdx];
+  if (!slot) return;
+  cancelLocalAutoStart();
+  if (selectedDimRule === '2d') {
+    selectedDimRule = 'mixed';
+    localSlotsConfig.forEach(s => { s.is3D = false; });
+    slot.is3D = true;
+  } else if (selectedDimRule === '3d') {
+    selectedDimRule = 'mixed';
+    localSlotsConfig.forEach(s => { s.is3D = true; });
+    slot.is3D = false;
+  } else {
+    slot.is3D = !slot.is3D;
+  }
+  localStorage.setItem('pdw_dim_rule', selectedDimRule);
+  if (typeof SE !== 'undefined') SE.play('select');
+  syncDimRuleUI();
 }
 
 function isLocalSlotPadConnected(slotIdx, pads = null) {
@@ -1109,6 +1247,8 @@ function resetLocalSelectionStates() {
   for (let i = 0; i < 4; i++) {
     const slot = localSlotsConfig[i];
     if (i === 0) slot.isCom = false;
+    if (selectedDimRule === '2d') slot.is3D = false;
+    else if (selectedDimRule === '3d') slot.is3D = true;
     slot.handicap = Math.max(1, Math.min(5, slot.handicap || 3));
     slot.comLevel = Math.max(1, Math.min(99, slot.comLevel || 3));
     slot.charCursorIdx = Math.max(0, CHAR_PICKER_ORDER.indexOf(slot.charId));
@@ -2032,6 +2172,8 @@ function renderLocalMenuUI() {
       ? (availSkills[slot.skillCursorIdx] || getLocalEffectiveSlotSkill(slot))
       : getLocalEffectiveSlotSkill(slot);
 
+    const slotIs3D = selectedDimRule === '3d' ? true : (selectedDimRule === '2d' ? false : !!slot.is3D);
+
     slotEl.className = `local-dock-slot p${i}` + (activeLocalTouchActor === i ? ' is-active-touch' : '');
 
     const topRow = document.createElement('div');
@@ -2112,6 +2254,15 @@ function renderLocalMenuUI() {
     }
     slotEl.appendChild(editBtn);
 
+    // 自キャラ枠内の 2D / 3D 切り替えトグルボタン
+    const dimBtn = document.createElement('button');
+    dimBtn.type = 'button';
+    dimBtn.dataset.localFocusId = `slot-dim-${i}`;
+    dimBtn.className = 'local-slot-dim-btn' + (slotIs3D ? ' is-3d' : '');
+    dimBtn.innerText = slotIs3D ? '盤面: 3D円筒' : '盤面: 2D';
+    dimBtn.onclick = (ev) => { ev.stopPropagation(); toggleLocalSlot3D(i); };
+    slotEl.appendChild(dimBtn);
+
     const hdRow = document.createElement('div');
     hdRow.className = 'local-slot-slider-row';
     const hdHead = document.createElement('div');
@@ -2188,11 +2339,11 @@ function startLocalGame() {
 }
 
 // ==========================================
-// シェア対戦（複数回タップ誤爆防止） & メニューナビゲーション & 勝利統計記録
+// シェア対戦（複数回タップ誤爆防止・2D/3D/こんごう対応） & メニューナビゲーション & 勝利統計記録
 // ==========================================
 let sharePrepConfig = {
-  p1: { charId: 'main00', handicap: 3, skillEnabled: false, customSkillEnabled: true, skillId: 'erase_color', fallbackSkillId: 'erase_color', ready: false },
-  p2: { charId: 'sub01',  handicap: 3, skillId: 'erase_rows', fallbackSkillId: 'erase_rows', ready: false }
+  p1: { charId: 'main00', handicap: 3, is3D: false, skillEnabled: false, customSkillEnabled: true, skillId: 'erase_color', fallbackSkillId: 'erase_color', ready: false },
+  p2: { charId: 'sub01',  handicap: 3, is3D: false, skillId: 'erase_rows', fallbackSkillId: 'erase_rows', ready: false }
 };
 let shareStartTimer = null;
 const recentPointerTapRecords = [];
@@ -2296,6 +2447,13 @@ function openSharePrepMenu(silent = false) {
   if (typeof closeRangeDigitEdit === 'function') closeRangeDigitEdit();
   sharePrepConfig.p1.ready = false;
   sharePrepConfig.p2.ready = false;
+  if (selectedDimRule === '2d') {
+    sharePrepConfig.p1.is3D = false;
+    sharePrepConfig.p2.is3D = false;
+  } else if (selectedDimRule === '3d') {
+    sharePrepConfig.p1.is3D = true;
+    sharePrepConfig.p2.is3D = true;
+  }
   if (sharePrepConfig.p1.charId === 'custom' && !CustomAssets.chara) sharePrepConfig.p1.charId = 'main00';
   if (sharePrepConfig.p2.charId === 'custom' && !CustomAssets.chara) sharePrepConfig.p2.charId = 'sub01';
   if (shareStartTimer) { clearTimeout(shareStartTimer); shareStartTimer = null; }
@@ -2413,6 +2571,53 @@ function renderSharePrepSide(playerNum) {
     hdRow.appendChild(b);
   });
 
+  // 2D / 3D / こんごう 切り替え行
+  const dimRow = document.createElement('div');
+  dimRow.className = 'share-prep-row';
+  if (isP1) {
+    const dimLbl = document.createElement('span');
+    dimLbl.className = 'share-prep-lbl';
+    dimLbl.innerText = '形式:';
+    dimRow.appendChild(dimLbl);
+    [{ r: '2d', t: '2D' }, { r: '3d', t: '3D' }, { r: 'mixed', t: 'こんごう' }].forEach(item => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'share-pill-btn' + (selectedDimRule === item.r ? ' active' : '');
+      b.innerText = item.t;
+      bindMultiTouchTap(b, () => {
+        sharePrepConfig.p1.ready = false;
+        sharePrepConfig.p2.ready = false;
+        selectDimRule(item.r);
+      });
+      dimRow.appendChild(b);
+    });
+  }
+  const myIs3D = selectedDimRule === '3d' ? true : (selectedDimRule === '2d' ? false : !!cfg.is3D);
+  const selfDimBtn = document.createElement('button');
+  selfDimBtn.type = 'button';
+  selfDimBtn.className = 'share-pill-btn' + (myIs3D ? ' active' : '');
+  selfDimBtn.innerText = myIs3D ? '自盤面: 3D円筒' : '自盤面: 2D';
+  bindMultiTouchTap(selfDimBtn, () => {
+    if (selectedDimRule === '2d') {
+      selectedDimRule = 'mixed';
+      sharePrepConfig.p1.is3D = false;
+      sharePrepConfig.p2.is3D = false;
+      cfg.is3D = true;
+    } else if (selectedDimRule === '3d') {
+      selectedDimRule = 'mixed';
+      sharePrepConfig.p1.is3D = true;
+      sharePrepConfig.p2.is3D = true;
+      cfg.is3D = false;
+    } else {
+      cfg.is3D = !cfg.is3D;
+    }
+    localStorage.setItem('pdw_dim_rule', selectedDimRule);
+    cfg.ready = false;
+    SE.play('select');
+    syncDimRuleUI();
+  });
+  dimRow.appendChild(selfDimBtn);
+
   const skRow = document.createElement('div');
   skRow.className = 'share-prep-row';
   if (isP1) {
@@ -2489,7 +2694,7 @@ function renderSharePrepSide(playerNum) {
     checkSharePrepBothReady();
   });
 
-  container.append(hdr, grid, hdRow, skRow, readyBtn);
+  container.append(hdr, grid, hdRow, dimRow, skRow, readyBtn);
 }
 
 function startShareGame() {
@@ -2691,6 +2896,7 @@ function showSingleMenu(silent = false) {
   document.getElementById('single-menu').style.display = 'flex';
   selectSingleModeBtn(selectedSingleMode);
   syncHandicapFromSlider(document.getElementById('handicap-val')?.value || 3);
+  syncDimRuleUI();
   renderCharPicker('single-char-picker', { storyOnly: false });
   if (typeof enhanceAllRangeSliders === 'function') enhanceAllRangeSliders();
   refreshMenuLayoutState();
@@ -2704,6 +2910,7 @@ function showComMenu(silent = false) {
   document.getElementById('com-menu').style.display = 'flex';
   selectComCountBtn(selectedComCount);
   syncHandicapFromSlider(document.getElementById('handicap-val')?.value || 3);
+  syncDimRuleUI();
   renderCharPicker('com-char-picker', { storyOnly: false });
   updateModeWinBadgesUI();
   if (typeof enhanceAllRangeSliders === 'function') enhanceAllRangeSliders();
@@ -2717,6 +2924,7 @@ function showLocalMenu(silent = false) {
   hideAllMenuSubViews();
   document.getElementById('local-menu').style.display = 'flex';
   resetLocalSelectionStates();
+  syncDimRuleUI();
   renderLocalMenuUI();
   refreshMenuLayoutState();
   if (document.activeElement) document.activeElement.blur();
@@ -2729,6 +2937,7 @@ function showOnlineMenu(silent = false) {
   hideAllMenuSubViews();
   document.getElementById('online-menu').style.display = 'flex';
   syncHandicapFromSlider(document.getElementById('handicap-val')?.value || 3);
+  syncDimRuleUI();
   renderCharPicker('online-char-picker', { storyOnly: false });
   updateModeWinBadgesUI();
   if (typeof enhanceAllRangeSliders === 'function') enhanceAllRangeSliders();
@@ -2826,7 +3035,11 @@ function showRankingMenu(silent = false) {
 }
 
 function updateSingleMenu() {
-  document.getElementById('survival-settings').style.display = (selectedSingleMode === 'survival') ? 'flex' : 'none';
+  const isSurvival = (selectedSingleMode === 'survival');
+  document.getElementById('survival-settings').style.display = isSurvival ? 'flex' : 'none';
+  const mixedBtn = document.getElementById('single-dim-mixed-btn');
+  if (mixedBtn) mixedBtn.style.display = isSurvival ? 'inline-block' : 'none';
+  syncDimRuleUI();
 }
 let survivalBaseLevel = 1;
 
@@ -2941,9 +3154,41 @@ function playGarbageSendAnimation(fromOppId, toOppId, isHard) {
   setTimeout(() => { if (animEl.parentNode) animEl.parentNode.removeChild(animEl); }, 800);
 }
 
-function distributeGarbage(senderId, totalBlocks, isHard) {
+function scaleAttackPanelsByRatio(panels, ratio) {
+  if (!Array.isArray(panels) || panels.length === 0) return [];
+  if (ratio >= 0.999) return panels.map(p => ({ ...p }));
+  if (ratio <= 0) return [];
+
+  const result = [];
+  let accum = 0;
+  for (let i = 0; i < panels.length; i++) {
+    const p = panels[i];
+    if (p.h > 1) {
+      const exactH = p.h * ratio;
+      const wholeH = Math.floor(exactH);
+      const frac = exactH - wholeH;
+      if (wholeH >= 1) {
+        result.push({ w: p.w, h: wholeH, isHard: !!p.isHard });
+      }
+      const fracW = Math.floor(p.w * frac + 1e-6);
+      if (fracW >= 1) {
+        result.push({ w: fracW, h: 1, isHard: !!p.isHard });
+      }
+    } else {
+      const exactW = p.w * ratio + accum;
+      const wInt = Math.floor(exactW + 1e-6);
+      accum = exactW - wInt;
+      if (wInt >= 1) {
+        result.push({ w: wInt, h: 1, isHard: !!p.isHard });
+      }
+    }
+  }
+  return result;
+}
+
+function distributeGarbage(senderId, totalBlocks, isHard, attackSpec = null) {
   if (isMatchOver && !isPracticeMode) return;
-  if (currentMode.startsWith('online')) { distributeGarbageOnline(senderId, totalBlocks, isHard); return; }
+  if (currentMode.startsWith('online')) { distributeGarbageOnline(senderId, totalBlocks, isHard, attackSpec); return; }
 
   let candidateOpponents = [];
   if (senderId === 'player') {
@@ -2966,31 +3211,26 @@ function distributeGarbage(senderId, totalBlocks, isHard) {
 
   const hasTarget = targetOppId !== null && candidateOpponents.some(o => o.id === targetOppId);
   let sentAny = false;
-  if (hasTarget && candidateOpponents.length > 1) {
-    const targetBlocks = Math.floor(totalBlocks * 0.5);
-    const otherEachBlocks = Math.floor((totalBlocks * 0.5) / (candidateOpponents.length - 1));
-    candidateOpponents.forEach(opp => {
-      const count = (opp.id === targetOppId) ? targetBlocks : otherEachBlocks;
-      if (count > 0) {
-        sentAny = true;
-        playGarbageSendAnimation(senderId, opp.id, isHard);
-        sendBlocksToOpponent(opp, count, isHard);
-      }
-    });
-  } else {
-    const eachBlocks = Math.floor(totalBlocks / candidateOpponents.length);
-    if (eachBlocks > 0) {
-      sentAny = true;
-      candidateOpponents.forEach(opp => {
-        playGarbageSendAnimation(senderId, opp.id, isHard);
-        sendBlocksToOpponent(opp, eachBlocks, isHard);
-      });
+  const n = candidateOpponents.length;
+
+  candidateOpponents.forEach(opp => {
+    let ratio = 1.0;
+    if (n > 1) {
+      if (hasTarget) ratio = (opp.id === targetOppId) ? 0.5 : (0.5 / (n - 1));
+      else ratio = 1.0 / n;
     }
-  }
+    const count = Math.floor(totalBlocks * ratio);
+    const oppSpec = attackSpec ? { ...attackSpec, shareRatio: ratio } : null;
+    if (count > 0 || (oppSpec && ratio > 0)) {
+      sentAny = true;
+      playGarbageSendAnimation(senderId, opp.id, isHard);
+      sendBlocksToOpponent(opp, count, isHard, oppSpec);
+    }
+  });
   if (sentAny) playAttackVoiceForSender(senderId);
 }
 
-function distributeGarbageOnline(senderId, totalBlocks, isHard) {
+function distributeGarbageOnline(senderId, totalBlocks, isHard, attackSpec = null) {
   let candidateOpponents = [];
   if (senderId === myOnlineId) candidateOpponents = opponents.filter(o => !o.engine.gameOver);
   else {
@@ -3004,53 +3244,90 @@ function distributeGarbageOnline(senderId, totalBlocks, isHard) {
     targetOppId = opponents[myTargetIndex].id;
   }
   const hasTarget = targetOppId !== null && candidateOpponents.some(o => o.id === targetOppId);
+  const n = candidateOpponents.length;
   let targetsDict = {};
-  if (hasTarget && candidateOpponents.length > 1) {
-    const targetBlocks = Math.floor(totalBlocks * 0.5);
-    const otherEachBlocks = Math.floor((totalBlocks * 0.5) / (candidateOpponents.length - 1));
-    candidateOpponents.forEach(opp => {
-      const count = (opp.id === targetOppId) ? targetBlocks : otherEachBlocks;
-      if (count > 0) targetsDict[opp.id] = count;
-    });
-  } else {
-    const eachBlocks = Math.floor(totalBlocks / candidateOpponents.length);
-    if (eachBlocks > 0) candidateOpponents.forEach(opp => targetsDict[opp.id] = eachBlocks);
-  }
+  let targetSpecs = {};
+
+  candidateOpponents.forEach(opp => {
+    let ratio = 1.0;
+    if (n > 1) {
+      if (hasTarget) ratio = (opp.id === targetOppId) ? 0.5 : (0.5 / (n - 1));
+      else ratio = 1.0 / n;
+    }
+    const count = Math.floor(totalBlocks * ratio);
+    const oppSpec = attackSpec ? { ...attackSpec, shareRatio: ratio } : null;
+    if (count > 0 || oppSpec) {
+      targetsDict[opp.id] = count;
+      targetSpecs[opp.id] = { count, attackSpec: oppSpec };
+    }
+  });
   if (Object.keys(targetsDict).length === 0) return;
 
   playAttackVoiceForSender(senderId);
   if (myOnlineId === 'host' || hostDisconnected) {
-    for (const [tId, count] of Object.entries(targetsDict)) {
+    for (const [tId, entry] of Object.entries(targetSpecs)) {
       playGarbageSendAnimation(senderId, tId, isHard);
-      if (tId === myOnlineId) { if (!isPracticeMode) sendBlocksToOpponent({ engine: myEngine }, count, isHard); }
-      else {
+      if (tId === myOnlineId) {
+        if (!isPracticeMode) sendBlocksToOpponent({ engine: myEngine }, entry.count, isHard, entry.attackSpec);
+      } else {
         const opp = opponents.find(o => o.id === tId);
-        if (opp && opp.type === 'com') sendBlocksToOpponent(opp, count, isHard);
+        if (opp && opp.type === 'com') sendBlocksToOpponent(opp, entry.count, isHard, entry.attackSpec);
       }
     }
     if (myOnlineId === 'host' && !hostDisconnected) {
-      onlineConnections.forEach(c => { if (c && c.open) c.send({ type: 'add_garbage_multi', senderId, targets: targetsDict, isHard }); });
+      onlineConnections.forEach(c => {
+        if (c && c.open) {
+          c.send({ type: 'add_garbage_multi', senderId, targets: targetsDict, targetSpecs, isHard });
+        }
+      });
     }
   } else {
     for (const tId of Object.keys(targetsDict)) playGarbageSendAnimation(myOnlineId, tId, isHard);
     if (onlineConnections[0] && onlineConnections[0].open) {
-      onlineConnections[0].send({ type: 'garbage_request', senderId: myOnlineId, targets: targetsDict, isHard });
+      onlineConnections[0].send({ type: 'garbage_request', senderId: myOnlineId, targets: targetsDict, targetSpecs, isHard });
     }
   }
 }
 
-function sendBlocksToOpponent(opp, count, isHard) {
+function sendBlocksToOpponent(opp, count, isHard, attackSpec = null) {
   if (!opp || !opp.engine) return;
-  let finalCount = count;
+  const oppCols = opp.engine.cols || COLS;
   const incMult = opp.engine.skillModifiers ? (opp.engine.skillModifiers.incomingGarbageMult || 1.0) : (opp.engine.isSacrifice ? 1.2 : 1.0);
+
+  if (attackSpec && Array.isArray(attackSpec.events) && typeof resolveAttackSpecToPanels === 'function') {
+    const basePanels = resolveAttackSpecToPanels(attackSpec, oppCols);
+    const ratio = (attackSpec.shareRatio !== undefined) ? attackSpec.shareRatio : 1.0;
+    const scaledPanels = scaleAttackPanelsByRatio(basePanels, ratio);
+
+    scaledPanels.forEach(p => {
+      let pw = Math.max(1, Math.min(oppCols, p.w));
+      let ph = Math.max(1, p.h);
+      if (incMult > 1.0) {
+        if (ph === 1 && pw < oppCols) {
+          pw = Math.min(oppCols, Math.ceil(pw * incMult));
+        } else {
+          ph = Math.ceil(ph * incMult);
+        }
+      }
+      opp.engine.addGarbage(pw, ph, !!p.isHard, true);
+    });
+    return;
+  }
+
+  let finalCount = count;
+  if (oppCols !== COLS) {
+    finalCount = Math.max(1, Math.round(finalCount * (oppCols / COLS)));
+  }
   if (incMult > 1.0) {
     finalCount = Math.ceil(finalCount * incMult);
   }
-  let fullRows = Math.floor(finalCount / 6), remainder = finalCount % 6;
-  if (fullRows > 0) opp.engine.addGarbage(6, fullRows, isHard, true);
-  if (remainder >= 3 || (remainder > 0 && fullRows === 0)) opp.engine.addGarbage(remainder, 1, isHard, true);
+  let fullRows = Math.floor(finalCount / oppCols), remainder = finalCount % oppCols;
+  if (fullRows > 0) opp.engine.addGarbage(oppCols, fullRows, isHard, true);
+  const minRemThreshold = oppCols === COLS ? 3 : Math.max(3, Math.floor(oppCols * 0.4));
+  if (remainder >= minRemThreshold || (remainder > 0 && fullRows === 0)) {
+    opp.engine.addGarbage(remainder, 1, isHard, true);
+  }
 }
-
 let battleEndState = { active: false, canDismissAt: 0, onContinue: null, prevAnyPadPressed: false };
 
 function buildBattleEndPortraitDom(wrapEl, theme, isWin, scoreInfo = null) {
@@ -3241,17 +3518,20 @@ function startPracticeMode() {
   isPracticeMode = true;
   document.getElementById('result-overlay').style.display = 'none';
   const handicap = parseInt(document.getElementById('handicap-val').value) || 3;
-  myEngine = new PonEngine(null, null, handicap, true);
+  const practiceIs3D = (typeof resolveOnlineMyIs3D === 'function') ? resolveOnlineMyIs3D(onlineDimRule) : getEffectiveSelfIs3D();
+  myEngine = new PonEngine(null, null, handicap, true, null, { is3D: practiceIs3D });
   myEngine.isPractice = true;
   myEngine.garbageQueue = [];
   myEngine.onSendGarbage = null;
+  if (myRenderer) myRenderer.viewCol = null;
   myEngine.onSwap = () => { if (typeof triggerSwapVibration === 'function') triggerSwapVibration(false, getMainPlayerPadSlot()); };
   myEngine.onGarbageLanded = () => { if (typeof triggerGarbageLandVibration === 'function') triggerGarbageLandVibration(getMainPlayerPadSlot()); };
   myEngine.onStateChange = (state) => {
     if (state === 'gameover') {
-      myEngine = new PonEngine(null, null, handicap, true);
+      myEngine = new PonEngine(null, null, handicap, true, null, { is3D: practiceIs3D });
       myEngine.isPractice = true;
       myEngine.onSendGarbage = null;
+      if (myRenderer) myRenderer.viewCol = null;
       myEngine.onSwap = () => { if (typeof triggerSwapVibration === 'function') triggerSwapVibration(false, getMainPlayerPadSlot()); };
       myEngine.onGarbageLanded = () => { if (typeof triggerGarbageLandVibration === 'function') triggerGarbageLandVibration(getMainPlayerPadSlot()); };
     }
@@ -3408,6 +3688,7 @@ function checkMatchEnd() {
     else if (myOnlineId === 'host') checkRematchCondition();
   }
 }
+
 function stopAllEngines() {
   clearKeyboardHoldStates();
   if (myEngine) {
@@ -3492,9 +3773,11 @@ function checkPanic() {
   if (!myEngine || matchState !== 'playing' || isMatchOver) return;
   const checkEnginePanic = (eng) => {
     if (!eng || eng.gameOver) return false;
-    const panicThresholdR = ROWS * 0.3;
-    for (let r = 0; r < ROWS; r++) {
-      for (let c = 0; c < COLS; c++) {
+    const rows = eng.rows || ROWS;
+    const cols = eng.cols || COLS;
+    const panicThresholdR = rows * 0.3;
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
         const b = eng.grid[r][c];
         if (b !== null && b.state === 'normal' && (r - eng.riseOffset) <= panicThresholdR) return true;
       }
@@ -3627,7 +3910,7 @@ function configureSkillStateForEngine(skillState, engine, enabled, rawSkillId, w
     }
   }
 
-    skillState.enabled = !!enabled;
+  skillState.enabled = !!enabled;
   skillState.skillId = skId;
   skillState.isNoSkill = isNoSkill;
   skillState.isSacrifice = isSacrifice;
@@ -3863,9 +4146,6 @@ function activateShareP2Skill() {
   activateLocalOpponentSkill(opponents[0]);
 }
 
-// ==========================================
-// オンライン対戦：各プレイヤー等分フレーム背景
-// ==========================================
 function refreshOnlineSplitFrames() {
   const container = document.getElementById('online-split-frames-bg');
   if (!container) return;
@@ -3914,9 +4194,6 @@ function refreshOnlineSplitFrames() {
   });
 }
 
-// ==========================================
-// バトル中サイド演出枠（1人練習時左右パネル）& インライン立ち絵（横複数人対戦時）
-// ==========================================
 function setSidePortraitElement(imgEl, theme) {
   if (!imgEl || !theme) return;
   imgEl.classList.remove('square-or-wide');
@@ -4299,7 +4576,7 @@ function refreshBattleSidePanels() {
   p1Card.style.display = 'flex';
   p1Card.style.borderColor = myRenderer.theme.color || '#10b981';
   document.getElementById('battle-side-p1-name').innerText = myRenderer.theme.name || 'YOU';
-  document.getElementById('battle-side-p1-tag').innerText = 'PLAYER';
+  document.getElementById('battle-side-p1-tag').innerText = myEngine && myEngine.is3D ? 'PLAYER 3D' : 'PLAYER';
   setSidePortraitElement(document.getElementById('battle-side-p1-img'), myRenderer.theme);
 
   if (currentMode.startsWith('single_') && currentMode !== 'single_survival') {
@@ -4315,13 +4592,14 @@ function refreshBattleSidePanels() {
 }
 
 function getModeLabelForBottomBar() {
-  if (currentMode === 'story') return 'STORY';
-  if (currentMode === 'com') return `COM戦 Lv.${currentComLevel}`;
-  if (currentMode === 'online') return 'ONLINE P2P';
-  if (currentMode === 'single_ta') return 'TIME ATTACK';
-  if (currentMode === 'single_sa') return 'SCORE ATTACK';
-  if (currentMode === 'single_survival') return `勝ち抜き ${currentSurvivalWins}勝`;
-  return 'PRACTICE';
+  const dimSuffix = myEngine && myEngine.is3D ? ' (3D)' : '';
+  if (currentMode === 'story') return `STORY${dimSuffix}`;
+  if (currentMode === 'com') return `COM戦 Lv.${currentComLevel}${dimSuffix}`;
+  if (currentMode === 'online') return `ONLINE P2P${dimSuffix}`;
+  if (currentMode === 'single_ta') return `TIME ATTACK${dimSuffix}`;
+  if (currentMode === 'single_sa') return `SCORE ATTACK${dimSuffix}`;
+  if (currentMode === 'single_survival') return `勝ち抜き ${currentSurvivalWins}勝${dimSuffix}`;
+  return `PRACTICE${dimSuffix}`;
 }
 
 function ensureBottomStatusBadgesContainer(bar, statsEl) {
@@ -4454,12 +4732,13 @@ function resetGameLogic() {
     ? (sharePrepConfig.p1.handicap || 3)
     : (currentMode === 'local' ? (localSlotsConfig[0].handicap || 3) : (parseInt(document.getElementById('handicap-val').value) || 3));
   const sharedSeed = Math.floor(Math.random() * 0xFFFFFFFF);
+  const myIs3D = resolveSelfIs3DForMode(currentMode);
 
   myRenderer = new BoardRenderer('my-canvas');
   myEngine = new PonEngine(
     (state) => { if (state === 'gameover') checkMatchEnd(); },
-    (totalBlocks, isHard) => { distributeGarbage('player', totalBlocks, isHard); },
-    handicap, true, sharedSeed
+    (totalBlocks, isHard, attackSpec = null) => { distributeGarbage('player', totalBlocks, isHard, attackSpec); },
+    handicap, true, sharedSeed, { is3D: myIs3D }
   );
   myEngine.onRowPushed = handleMyRowPushed;
   myEngine.onSwap = () => {
@@ -4624,10 +4903,11 @@ function resetGameLogic() {
     const oppHandicap = isShareMode
       ? (sharePrepConfig.p2.handicap || 3)
       : ((currentMode === 'local' && slotCfg) ? (slotCfg.handicap || 3) : 3);
+    const oppIs3D = resolveOppIs3DForMode(currentMode, i);
     const rEngine = new PonEngine(
       (state) => { if (state === 'gameover') checkMatchEnd(); },
-      (totalBlocks, isHard) => { distributeGarbage(oppId, totalBlocks, isHard); },
-      oppHandicap, (currentMode === 'local' || isShareMode), sharedSeed
+      (totalBlocks, isHard, attackSpec = null) => { distributeGarbage(oppId, totalBlocks, isHard, attackSpec); },
+      oppHandicap, (currentMode === 'local' || currentMode === 'share'), sharedSeed, { is3D: oppIs3D }
     );
     rEngine.garbageQueue = []; rEngine.allowBoardCutin = (currentMode === 'local');
 
@@ -4868,369 +5148,6 @@ function performExitGame(silent = false) {
   }
   if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(220);
 }
-
-function toggleContinuousSwipe() {
-  const cb = document.getElementById('continuous-swipe');
-  if (!cb) return;
-  cb.checked = !cb.checked;
-  SE.play('cursorMove');
-  showToast(`連続移動: ${cb.checked ? 'ON' : 'OFF'}`);
-}
-
-function createPlayerInputState() {
-  return {
-    padState: {}, prevPadState: {},
-    padHoldFrames: { Up: 0, Down: 0, Left: 0, Right: 0 },
-    padDirTime: {
-      Up:    { held: false, startAt: 0, lastAt: 0, releaseAt: 0 },
-      Down:  { held: false, startAt: 0, lastAt: 0, releaseAt: 0 },
-      Left:  { held: false, startAt: 0, lastAt: 0, releaseAt: 0 },
-      Right: { held: false, startAt: 0, lastAt: 0, releaseAt: 0 }
-    },
-    padLastPressAt: {},
-    padWaitRelease: {},
-    padGrabState: { active: false, side: 'left', col: 0, row: 0, consumed: false },
-    keyGrabState: { active: false, side: 'left', col: 0, row: 0, consumed: false },
-    keyHeld: { Up: false, Down: false, Left: false, Right: false },
-    keyHoldFrames: { Up: 0, Down: 0, Left: 0, Right: 0 },
-    keyDirTime: {
-      Up:    { held: false, startAt: 0, lastAt: 0 },
-      Down:  { held: false, startAt: 0, lastAt: 0 },
-      Left:  { held: false, startAt: 0, lastAt: 0 },
-      Right: { held: false, startAt: 0, lastAt: 0 }
-    }
-  };
-}
-
-let p1InputState = createPlayerInputState();
-let padState = p1InputState.padState, prevPadState = p1InputState.prevPadState;
-let padHoldFrames = p1InputState.padHoldFrames, padGrabState = p1InputState.padGrabState, keyGrabState = p1InputState.keyGrabState;
-let touchRowFollowCallback = null, shareP2RowFollowCallback = null;
-const PAD_DAS_MS = 205, PAD_ARR_MS = 32, PAD_BOUNCE_MS = 65, PAD_DIR_RELEASE_MS = 28, PAD_DIR_MIN_INTERVAL_MS = 75;
-const KEY_DAS_MS = 145, KEY_ARR_MS = 26;
-
-function resetAllLocalInputStates() {
-  p1InputState = createPlayerInputState();
-  padState = p1InputState.padState; prevPadState = p1InputState.prevPadState;
-  padHoldFrames = p1InputState.padHoldFrames; padGrabState = p1InputState.padGrabState; keyGrabState = p1InputState.keyGrabState;
-  shareP2RowFollowCallback = null;
-}
-
-function clearKeyboardHoldStates() {
-  const clearState = (st) => {
-    if (!st) return;
-    if (st.keyGrabState) st.keyGrabState.active = st.keyGrabState.consumed = false;
-    if (st.keyHeld) st.keyHeld = { Up: false, Down: false, Left: false, Right: false };
-    if (st.keyHoldFrames) st.keyHoldFrames = { Up: 0, Down: 0, Left: 0, Right: 0 };
-    if (st.keyDirTime) {
-      st.keyDirTime = {
-        Up:    { held: false, startAt: 0, lastAt: 0 },
-        Down:  { held: false, startAt: 0, lastAt: 0 },
-        Left:  { held: false, startAt: 0, lastAt: 0 },
-        Right: { held: false, startAt: 0, lastAt: 0 }
-      };
-    }
-  };
-  clearState(p1InputState);
-  opponents.forEach(opp => {
-    if (opp && opp.inputState) clearState(opp.inputState);
-  });
-}
-
-function handleMyRowPushed() {
-  if (padGrabState.active && padGrabState.row > 0) padGrabState.row--;
-  if (keyGrabState.active && keyGrabState.row > 0) keyGrabState.row--;
-  if (touchRowFollowCallback) touchRowFollowCallback();
-}
-
-function cycleTargetForLocalOpponent(opp, dir = 1) {
-  if (!opp || !opp.engine || opp.engine.gameOver || isMatchOver) return;
-  const validIds = [null];
-  if (myEngine && !myEngine.gameOver) validIds.push('player');
-  opponents.forEach(o => { if (o.id !== opp.id && o.engine && !o.engine.gameOver) validIds.push(o.id); });
-  if (validIds.length <= 1) return;
-  let pos = validIds.indexOf(opp.targetId);
-  if (pos === -1) pos = 0;
-  opp.targetId = validIds[(pos + dir + validIds.length) % validIds.length];
-  SE.play('cursorMove');
-}
-
-function resetPadDirTimeState(stateObj) {
-  if (!stateObj || !stateObj.padDirTime) return;
-  ['Up', 'Down', 'Left', 'Right'].forEach(d => {
-    stateObj.padDirTime[d].held = false;
-    stateObj.padDirTime[d].releaseAt = 0;
-  });
-}
-
-function pollSingleGamepad(engine, cfgPad, stateObj, padObj, isMainPlayer, oppRef = null, now = performance.now()) {
-  if (!padObj) {
-    if (engine) engine.isRisingManualPad = false;
-    stateObj.padHoldFrames = { Up: 0, Down: 0, Left: 0, Right: 0 };
-    resetPadDirTimeState(stateObj);
-    stateObj.padGrabState.active = stateObj.padGrabState.consumed = false;
-    return;
-  }
-  stateObj.prevPadState = { ...stateObj.padState };
-  padObj.buttons.forEach((b, i) => stateObj.padState[i] = !!b.pressed);
-
-  if (stateObj.padWaitRelease) {
-    Object.keys(stateObj.padWaitRelease).forEach(k => {
-      if (!stateObj.padState[k]) delete stateObj.padWaitRelease[k];
-    });
-  }
-
-  if (typeof padInputLockUntil !== 'undefined' && now < padInputLockUntil) {
-    if (engine) engine.isRisingManualPad = false;
-    resetPadDirTimeState(stateObj);
-    return;
-  }
-
-  const isPressed = (btnIdx) => btnIdx !== null && btnIdx !== undefined && !!stateObj.padState[btnIdx];
-  const justPressed = (btnIdx) => {
-    if (btnIdx === null || btnIdx === undefined) return false;
-    if (!stateObj.padState[btnIdx] || stateObj.prevPadState[btnIdx]) return false;
-    if (stateObj.padWaitRelease && stateObj.padWaitRelease[btnIdx]) return false;
-    const lastT = stateObj.padLastPressAt ? (stateObj.padLastPressAt[btnIdx] || 0) : 0;
-    if (now - lastT < PAD_BOUNCE_MS) return false;
-    if (stateObj.padLastPressAt) stateObj.padLastPressAt[btnIdx] = now;
-    return true;
-  };
-
-  if (isMainPlayer && justPressed(cfgPad.Pause)) {
-    if (isExitConfirmOpen) {
-      closeExitConfirmModal();
-      return;
-    }
-    if (document.getElementById('game-area').style.display === 'flex' && document.getElementById('result-overlay').style.display !== 'flex' && !battleEndState.active) {
-      stateObj.padHoldFrames = { Up: 0, Down: 0, Left: 0, Right: 0 };
-      resetPadDirTimeState(stateObj);
-      stateObj.padGrabState.active = stateObj.padGrabState.consumed = false;
-      exitGame();
-      return;
-    }
-  }
-  if (isExitConfirmOpen) {
-    if (engine) engine.isRisingManualPad = false;
-    resetPadDirTimeState(stateObj);
-    return;
-  }
-  if (!engine || engine.gameOver || (isMatchOver && !isPracticeMode)) {
-    stateObj.padHoldFrames = { Up: 0, Down: 0, Left: 0, Right: 0 };
-    resetPadDirTimeState(stateObj);
-    stateObj.padGrabState.active = stateObj.padGrabState.consumed = false;
-    if (engine) engine.isRisingManualPad = false;
-    return;
-  }
-  if (isMainPlayer && justPressed(cfgPad.ToggleContinuous)) toggleContinuousSwipe();
-  if (justPressed(cfgPad.GrabLeft)) startGrabForEngine(engine, stateObj.padGrabState, 'left');
-  else if (justPressed(cfgPad.GrabRight)) startGrabForEngine(engine, stateObj.padGrabState, 'right');
-  if (stateObj.padGrabState.active) {
-    if ((stateObj.padGrabState.side === 'left' && !isPressed(cfgPad.GrabLeft)) || (stateObj.padGrabState.side === 'right' && !isPressed(cfgPad.GrabRight))) {
-      stateObj.padGrabState.active = stateObj.padGrabState.consumed = false;
-    }
-  }
-
-  const checkDirTrigger = (dirName, btnIdx) => {
-    const dt = stateObj.padDirTime[dirName];
-    const down = isPressed(btnIdx);
-    if (!down) {
-      if (dt.held) {
-        if (!dt.releaseAt) dt.releaseAt = now;
-        if ((now - dt.releaseAt) >= PAD_DIR_RELEASE_MS) {
-          dt.held = false;
-          dt.releaseAt = 0;
-        }
-      }
-      return false;
-    }
-    dt.releaseAt = 0;
-    if (stateObj.padWaitRelease && stateObj.padWaitRelease[btnIdx]) {
-      dt.held = true;
-      dt.startAt = now;
-      dt.lastAt = now;
-      return false;
-    }
-    if (!dt.held) {
-      const lastDirT = stateObj.padLastPressAt ? (stateObj.padLastPressAt[`dir_${dirName}`] || 0) : 0;
-      dt.held = true;
-      dt.startAt = now;
-      dt.lastAt = now;
-      if (now - lastDirT < PAD_DIR_MIN_INTERVAL_MS) return false;
-      if (stateObj.padLastPressAt) stateObj.padLastPressAt[`dir_${dirName}`] = now;
-      return true;
-    }
-    if ((now - dt.startAt) >= PAD_DAS_MS && (now - dt.lastAt) >= PAD_ARR_MS) {
-      dt.lastAt = now;
-      return true;
-    }
-    return false;
-  };
-
-  let moved = false;
-  if (isPressed(cfgPad.Up) && isPressed(cfgPad.Down)) {
-    stateObj.padDirTime.Up.held = stateObj.padDirTime.Down.held = false;
-    stateObj.padDirTime.Up.releaseAt = stateObj.padDirTime.Down.releaseAt = 0;
-  } else {
-    if (checkDirTrigger('Up', cfgPad.Up) && engine.cursor.y > 0) {
-      engine.cursor.y--; moved = true;
-      if (stateObj.padGrabState.active) { stateObj.padGrabState.row = engine.cursor.y; stateObj.padGrabState.col = stateObj.padGrabState.side === 'left' ? engine.cursor.x : engine.cursor.x + 1; stateObj.padGrabState.consumed = false; }
-    }
-    if (checkDirTrigger('Down', cfgPad.Down) && engine.cursor.y < ROWS - 1) {
-      engine.cursor.y++; moved = true;
-      if (stateObj.padGrabState.active) { stateObj.padGrabState.row = engine.cursor.y; stateObj.padGrabState.col = stateObj.padGrabState.side === 'left' ? engine.cursor.x : engine.cursor.x + 1; stateObj.padGrabState.consumed = false; }
-    }
-  }
-  if (isPressed(cfgPad.Left) && isPressed(cfgPad.Right)) {
-    stateObj.padDirTime.Left.held = stateObj.padDirTime.Right.held = false;
-    stateObj.padDirTime.Left.releaseAt = stateObj.padDirTime.Right.releaseAt = 0;
-  } else {
-    if (checkDirTrigger('Left', cfgPad.Left)) {
-      if (stateObj.padGrabState.active) executeGrabMoveForEngine(engine, stateObj.padGrabState, -1);
-      else if (engine.cursor.x > 0) { engine.cursor.x--; moved = true; }
-    }
-    if (checkDirTrigger('Right', cfgPad.Right)) {
-      if (stateObj.padGrabState.active) executeGrabMoveForEngine(engine, stateObj.padGrabState, 1);
-      else if (engine.cursor.x < COLS - 2) { engine.cursor.x++; moved = true; }
-    }
-  }
-  if (moved) SE.play('cursorMove');
-  if (justPressed(cfgPad.Swap)) engine.swap(engine.cursor.x, engine.cursor.y);
-  engine.isRisingManualPad = !!(isPressed(cfgPad.Rise1) || isPressed(cfgPad.Rise2));
-  if (isMainPlayer) {
-    if (justPressed(cfgPad.TargetRight)) cycleTarget(1);
-    if (justPressed(cfgPad.TargetLeft)) cycleTarget(-1);
-    if (justPressed(cfgPad.Skill)) activatePlayerSkill();
-  } else if (oppRef) {
-    if (justPressed(cfgPad.TargetRight)) cycleTargetForLocalOpponent(oppRef, 1);
-    if (justPressed(cfgPad.TargetLeft)) cycleTargetForLocalOpponent(oppRef, -1);
-    if (justPressed(cfgPad.Skill)) activateLocalOpponentSkill(oppRef);
-  }
-}
-
-function pollSingleKeyboardHold(engine, stateObj, now = performance.now()) {
-  if (!engine || !stateObj || !stateObj.keyHeld) return;
-  if (isExitConfirmOpen || engine.gameOver || (isMatchOver && !isPracticeMode)) {
-    stateObj.keyHoldFrames = { Up: 0, Down: 0, Left: 0, Right: 0 };
-    if (stateObj.keyDirTime) {
-      ['Up', 'Down', 'Left', 'Right'].forEach(d => { stateObj.keyDirTime[d].held = false; });
-    }
-    return;
-  }
-  if (typeof getCurrentPadContextKey === 'function' && getCurrentPadContextKey() !== 'game') return;
-
-  const checkKeyDirRepeat = (dirName) => {
-    const dt = stateObj.keyDirTime[dirName];
-    if (!stateObj.keyHeld[dirName]) {
-      dt.held = false;
-      return false;
-    }
-    if (!dt.held) {
-      dt.held = true;
-      dt.startAt = now;
-      dt.lastAt = now;
-      return false;
-    }
-    if ((now - dt.startAt) >= KEY_DAS_MS && (now - dt.lastAt) >= KEY_ARR_MS) {
-      dt.lastAt = now;
-      return true;
-    }
-    return false;
-  };
-  let moved = false;
-  if (stateObj.keyHeld.Up && stateObj.keyHeld.Down) {
-    stateObj.keyDirTime.Up.held = stateObj.keyDirTime.Down.held = false;
-  } else {
-    if (checkKeyDirRepeat('Up') && engine.cursor.y > 0) {
-      engine.cursor.y--; moved = true;
-      if (stateObj.keyGrabState.active) { stateObj.keyGrabState.row = engine.cursor.y; stateObj.keyGrabState.col = stateObj.keyGrabState.side === 'left' ? engine.cursor.x : engine.cursor.x + 1; stateObj.keyGrabState.consumed = false; }
-    }
-    if (checkKeyDirRepeat('Down') && engine.cursor.y < ROWS - 1) {
-      engine.cursor.y++; moved = true;
-      if (stateObj.keyGrabState.active) { stateObj.keyGrabState.row = engine.cursor.y; stateObj.keyGrabState.col = stateObj.keyGrabState.side === 'left' ? engine.cursor.x : engine.cursor.x + 1; stateObj.keyGrabState.consumed = false; }
-    }
-  }
-  if (stateObj.keyHeld.Left && stateObj.keyHeld.Right) {
-    stateObj.keyDirTime.Left.held = stateObj.keyDirTime.Right.held = false;
-  } else {
-    if (checkKeyDirRepeat('Left')) {
-      if (stateObj.keyGrabState.active) executeGrabMoveForEngine(engine, stateObj.keyGrabState, -1);
-      else if (engine.cursor.x > 0) { engine.cursor.x--; moved = true; }
-    }
-    if (checkKeyDirRepeat('Right')) {
-      if (stateObj.keyGrabState.active) executeGrabMoveForEngine(engine, stateObj.keyGrabState, 1);
-      else if (engine.cursor.x < COLS - 2) { engine.cursor.x++; moved = true; }
-    }
-  }
-  if (moved) SE.play('cursorMove');
-}
-
-function pollKeyboardHoldInput(now = performance.now()) {
-  pollSingleKeyboardHold(myEngine, p1InputState, now);
-  if (currentMode === 'local' || currentMode === 'share') {
-    opponents.forEach(opp => {
-      if (opp.type === 'local_human' && opp.inputState) pollSingleKeyboardHold(opp.engine, opp.inputState, now);
-    });
-  }
-}
-
-function startGrabForEngine(engine, grabState, side) {
-  if (!engine) return;
-  grabState.active = true; grabState.side = side;
-  grabState.col = side === 'left' ? engine.cursor.x : engine.cursor.x + 1;
-  grabState.row = engine.cursor.y; grabState.consumed = false;
-}
-
-function executeGrabMoveForEngine(engine, grabState, dx) {
-  if (!engine || !grabState.active || grabState.consumed) return false;
-  const continuous = document.getElementById('continuous-swipe')?.checked;
-  let swapped = false;
-  if (dx > 0 && grabState.col < COLS - 1) {
-    if (engine.swap(grabState.col, grabState.row)) { SE.play('cursorMove'); grabState.col++; swapped = true; }
-  } else if (dx < 0 && grabState.col > 0) {
-    if (engine.swap(grabState.col - 1, grabState.row)) { SE.play('cursorMove'); grabState.col--; swapped = true; }
-  }
-  if (swapped) {
-    engine.cursor.x = grabState.side === 'left' ? Math.min(COLS - 2, Math.max(0, grabState.col)) : Math.min(COLS - 2, Math.max(0, grabState.col - 1));
-    if (!continuous) grabState.consumed = true;
-  }
-  return swapped;
-}
-
-function pollGamepadInput(now = performance.now()) {
-  const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()) : [];
-  if (battleEndState.active) {
-    const anyPressed = pads.some(p => p && p.connected && p.buttons.some(b => b.pressed));
-    if (anyPressed && !battleEndState.prevAnyPadPressed) tryDismissBattleEndOverlay();
-    battleEndState.prevAnyPadPressed = anyPressed;
-    return;
-  }
-  if (typeof getCurrentPadContextKey === 'function' && getCurrentPadContextKey() !== 'game') {
-    const pad0 = getPad0Object(pads);
-    if (pad0) {
-      p1InputState.padState = readPadButtonsMap(pad0);
-      p1InputState.prevPadState = { ...p1InputState.padState };
-    }
-    return;
-  }
-  const slot0 = playerConfigs[0].padSlot;
-  let pad0 = null;
-  if (slot0 >= 0 && pads[slot0]) {
-    pad0 = pads[slot0];
-  } else if (slot0 === 0 && currentMode !== 'local' && currentMode !== 'share') {
-    pad0 = pads.find(p => p && p.connected) || null;
-  }
-  pollSingleGamepad(myEngine, playerConfigs[0].pad, p1InputState, pad0, true, null, now);
-  if (currentMode === 'local' || currentMode === 'share') {
-    opponents.forEach(opp => {
-      if (opp.type === 'local_human' && opp.inputState) {
-        const slot = playerConfigs[opp.playerSlotIndex].padSlot;
-        pollSingleGamepad(opp.engine, playerConfigs[opp.playerSlotIndex].pad, opp.inputState, (slot >= 0 && pads[slot]) ? pads[slot] : null, false, opp, now);
-      }
-    });
-  }
-}
-
 function updateGarbagePreview(engine, containerId) {
   const container = document.getElementById(containerId);
   if (!container || !engine) return;
@@ -5245,11 +5162,14 @@ function updateGarbagePreview(engine, containerId) {
   container.dataset.qStr = cStr;
   container.innerHTML = '';
   const gb = (typeof isGbMode !== 'undefined' && isGbMode);
+  const colsRef = engine.cols || COLS;
+  const minW = colsRef >= 18 ? 10 : 18;
   compressed.forEach((g, idx) => {
     const block = document.createElement('div');
     const bgCol = gb ? (g.isHard ? '#cccccc' : '#4a4a4a') : (g.isHard ? '#a8b2bd' : '#5c636a');
     const brCol = idx === 0 ? (gb ? '#ffffff' : '#ffd700') : '#dee2e6';
-    block.style.cssText = `background:${bgCol};border:1.5px solid ${brCol};border-radius:3px;width:${Math.min(48,Math.max(18,g.w*7))}px;height:${Math.min(26,Math.max(14,g.h*6))}px;flex-shrink:0;display:flex;align-items:center;justify-content:center;${idx>0?'opacity:0.58;':''}`;
+    const ratioW = Math.round((g.w / colsRef) * 42);
+    block.style.cssText = `background:${bgCol};border:1.5px solid ${brCol};border-radius:3px;width:${Math.min(48,Math.max(minW,ratioW))}px;height:${Math.min(26,Math.max(14,g.h*6))}px;flex-shrink:0;display:flex;align-items:center;justify-content:center;${idx>0?'opacity:0.58;':''}`;
     if (g.count > 1) {
       const span = document.createElement('span');
       span.innerText = `×${g.count}`;
@@ -5271,9 +5191,13 @@ function beginSurvivalNextEnemyEnter(opp) {
   if (pool.length === 0) pool = CHARACTERS.filter(c => c.id !== myCid);
   const nextChar = pool[Math.floor(Math.random() * pool.length)] || CHARACTERS[0];
   const nextLv = getSurvivalLevel(survivalBaseLevel, currentSurvivalWins + 1);
+  const nextIs3D = (selectedDimRule === '3d')
+    ? true
+    : (selectedDimRule === '2d' ? false : (Math.random() < 0.5));
 
   const nextTheme = buildThemeForCharacter(nextChar.id, null, false);
   opp.renderer.theme = nextTheme;
+  opp.renderer.viewCol = null;
   opp.level = nextLv;
 
   if (typeof applyBoardFrame === 'function') {
@@ -5303,11 +5227,14 @@ function beginSurvivalNextEnemyEnter(opp) {
     if (nameEl) nameEl.innerText = nextTheme.name || '';
   }
 
+  opp.engine.is3D = nextIs3D;
+  opp.engine.cols = nextIs3D ? (typeof COLS_3D !== 'undefined' ? COLS_3D : 18) : COLS;
   opp.engine.endAnim = null;
   opp.engine.gameOver = false;
   opp.engine.shakeTimer = 0;
   opp.engine.riseOffset = 0;
   opp.engine.stopTimer = 0;
+  opp.engine.cursor = { x: 2, y: 6 };
   opp.engine.grid = Array.from({ length: opp.engine.rows }, () => Array(opp.engine.cols).fill(null));
   opp.engine.nextRow = [];
   opp.ai = null;
@@ -5325,8 +5252,10 @@ function beginSurvivalNextEnemyEnter(opp) {
     opp.engine.shakeTimer = 0;
     opp.engine.riseOffset = 0;
     opp.engine.stopTimer = 0;
+    opp.engine.cursor = { x: 2, y: 6 };
+    opp.engine.initSeed = Math.floor(Math.random() * 0xFFFFFFFF) >>> 0;
     opp.engine.grid = Array.from({ length: opp.engine.rows }, () => Array(opp.engine.cols).fill(null));
-    opp.engine.initGrid(5);
+    opp.engine.initGrid();
     if (document.getElementById('survival-cancel-sent')?.checked) {
       opp.engine.garbageQueue = [];
     }
@@ -5443,10 +5372,433 @@ function gameLoop(time) {
   loopId = requestAnimationFrame(gameLoop);
 }
 
+function toggleContinuousSwipe() {
+  const cb = document.getElementById('continuous-swipe');
+  if (!cb) return;
+  cb.checked = !cb.checked;
+  SE.play('cursorMove');
+  showToast(`連続移動: ${cb.checked ? 'ON' : 'OFF'}`);
+}
+
+function createPlayerInputState() {
+  return {
+    padState: {}, prevPadState: {},
+    padHoldFrames: { Up: 0, Down: 0, Left: 0, Right: 0 },
+    padDirTime: {
+      Up:    { held: false, startAt: 0, lastAt: 0, releaseAt: 0 },
+      Down:  { held: false, startAt: 0, lastAt: 0, releaseAt: 0 },
+      Left:  { held: false, startAt: 0, lastAt: 0, releaseAt: 0 },
+      Right: { held: false, startAt: 0, lastAt: 0, releaseAt: 0 }
+    },
+    padLastPressAt: {},
+    padWaitRelease: {},
+    padGrabState: { active: false, side: 'left', col: 0, row: 0, consumed: false },
+    keyGrabState: { active: false, side: 'left', col: 0, row: 0, consumed: false },
+    keyHeld: { Up: false, Down: false, Left: false, Right: false },
+    keyHoldFrames: { Up: 0, Down: 0, Left: 0, Right: 0 },
+    keyDirTime: {
+      Up:    { held: false, startAt: 0, lastAt: 0 },
+      Down:  { held: false, startAt: 0, lastAt: 0 },
+      Left:  { held: false, startAt: 0, lastAt: 0 },
+      Right: { held: false, startAt: 0, lastAt: 0 }
+    }
+  };
+}
+
+let p1InputState = createPlayerInputState();
+let padState = p1InputState.padState, prevPadState = p1InputState.prevPadState;
+let padHoldFrames = p1InputState.padHoldFrames, padGrabState = p1InputState.padGrabState, keyGrabState = p1InputState.keyGrabState;
+let touchRowFollowCallback = null, shareP2RowFollowCallback = null;
+const PAD_DAS_MS = 205, PAD_ARR_MS = 32, PAD_BOUNCE_MS = 65, PAD_DIR_RELEASE_MS = 28, PAD_DIR_MIN_INTERVAL_MS = 75;
+const KEY_DAS_MS = 145, KEY_ARR_MS = 26;
+
+function resetAllLocalInputStates() {
+  p1InputState = createPlayerInputState();
+  padState = p1InputState.padState; prevPadState = p1InputState.prevPadState;
+  padHoldFrames = p1InputState.padHoldFrames; padGrabState = p1InputState.padGrabState; keyGrabState = p1InputState.keyGrabState;
+  shareP2RowFollowCallback = null;
+}
+
+function clearKeyboardHoldStates() {
+  const clearState = (st) => {
+    if (!st) return;
+    if (st.keyGrabState) st.keyGrabState.active = st.keyGrabState.consumed = false;
+    if (st.keyHeld) st.keyHeld = { Up: false, Down: false, Left: false, Right: false };
+    if (st.keyHoldFrames) st.keyHoldFrames = { Up: 0, Down: 0, Left: 0, Right: 0 };
+    if (st.keyDirTime) {
+      st.keyDirTime = {
+        Up:    { held: false, startAt: 0, lastAt: 0 },
+        Down:  { held: false, startAt: 0, lastAt: 0 },
+        Left:  { held: false, startAt: 0, lastAt: 0 },
+        Right: { held: false, startAt: 0, lastAt: 0 }
+      };
+    }
+  };
+  clearState(p1InputState);
+  opponents.forEach(opp => {
+    if (opp && opp.inputState) clearState(opp.inputState);
+  });
+}
+
+function handleMyRowPushed() {
+  if (padGrabState.active && padGrabState.row > 0) padGrabState.row--;
+  if (keyGrabState.active && keyGrabState.row > 0) keyGrabState.row--;
+  if (touchRowFollowCallback) touchRowFollowCallback();
+}
+
+function cycleTargetForLocalOpponent(opp, dir = 1) {
+  if (!opp || !opp.engine || opp.engine.gameOver || isMatchOver) return;
+  const validIds = [null];
+  if (myEngine && !myEngine.gameOver) validIds.push('player');
+  opponents.forEach(o => { if (o.id !== opp.id && o.engine && !o.engine.gameOver) validIds.push(o.id); });
+  if (validIds.length <= 1) return;
+  let pos = validIds.indexOf(opp.targetId);
+  if (pos === -1) pos = 0;
+  opp.targetId = validIds[(pos + dir + validIds.length) % validIds.length];
+  SE.play('cursorMove');
+}
+
+function resetPadDirTimeState(stateObj) {
+  if (!stateObj || !stateObj.padDirTime) return;
+  ['Up', 'Down', 'Left', 'Right'].forEach(d => {
+    stateObj.padDirTime[d].held = false;
+    stateObj.padDirTime[d].releaseAt = 0;
+  });
+}
+
+function moveEngineCursorHoriz(engine, dx) {
+  if (!engine) return false;
+  const cols = engine.cols || COLS;
+  if (engine.is3D) {
+    engine.cursor.x = (engine.cursor.x + dx + cols) % cols;
+    return true;
+  }
+  if (dx < 0 && engine.cursor.x > 0) {
+    engine.cursor.x--;
+    return true;
+  }
+  if (dx > 0 && engine.cursor.x < cols - 2) {
+    engine.cursor.x++;
+    return true;
+  }
+  return false;
+}
+
+function syncGrabColFromCursor(engine, grabState) {
+  if (!engine || !grabState || !grabState.active) return;
+  const cols = engine.cols || COLS;
+  grabState.row = engine.cursor.y;
+  grabState.col = grabState.side === 'left'
+    ? engine.cursor.x
+    : (engine.is3D ? (engine.cursor.x + 1) % cols : engine.cursor.x + 1);
+  grabState.consumed = false;
+}
+
+function startGrabForEngine(engine, grabState, side) {
+  if (!engine) return;
+  const cols = engine.cols || COLS;
+  grabState.active = true;
+  grabState.side = side;
+  grabState.col = side === 'left'
+    ? engine.cursor.x
+    : (engine.is3D ? (engine.cursor.x + 1) % cols : engine.cursor.x + 1);
+  grabState.row = engine.cursor.y;
+  grabState.consumed = false;
+}
+
+function executeGrabMoveForEngine(engine, grabState, dx) {
+  if (!engine || !grabState.active || grabState.consumed) return false;
+  const continuous = document.getElementById('continuous-swipe')?.checked;
+  const cols = engine.cols || COLS;
+  let swapped = false;
+
+  if (engine.is3D) {
+    if (dx > 0) {
+      if (engine.swap(grabState.col, grabState.row)) {
+        SE.play('cursorMove');
+        grabState.col = (grabState.col + 1) % cols;
+        swapped = true;
+      }
+    } else if (dx < 0) {
+      const leftCol = (grabState.col - 1 + cols) % cols;
+      if (engine.swap(leftCol, grabState.row)) {
+        SE.play('cursorMove');
+        grabState.col = leftCol;
+        swapped = true;
+      }
+    }
+    if (swapped) {
+      engine.cursor.x = grabState.side === 'left'
+        ? grabState.col
+        : (grabState.col - 1 + cols) % cols;
+      if (!continuous) grabState.consumed = true;
+    }
+  } else {
+    if (dx > 0 && grabState.col < cols - 1) {
+      if (engine.swap(grabState.col, grabState.row)) { SE.play('cursorMove'); grabState.col++; swapped = true; }
+    } else if (dx < 0 && grabState.col > 0) {
+      if (engine.swap(grabState.col - 1, grabState.row)) { SE.play('cursorMove'); grabState.col--; swapped = true; }
+    }
+    if (swapped) {
+      engine.cursor.x = grabState.side === 'left' ? Math.min(cols - 2, Math.max(0, grabState.col)) : Math.min(cols - 2, Math.max(0, grabState.col - 1));
+      if (!continuous) grabState.consumed = true;
+    }
+  }
+  return swapped;
+}
+
+function pollSingleGamepad(engine, cfgPad, stateObj, padObj, isMainPlayer, oppRef = null, now = performance.now()) {
+  if (!padObj) {
+    if (engine) engine.isRisingManualPad = false;
+    stateObj.padHoldFrames = { Up: 0, Down: 0, Left: 0, Right: 0 };
+    resetPadDirTimeState(stateObj);
+    stateObj.padGrabState.active = stateObj.padGrabState.consumed = false;
+    return;
+  }
+  stateObj.prevPadState = { ...stateObj.padState };
+  padObj.buttons.forEach((b, i) => stateObj.padState[i] = !!b.pressed);
+
+  if (stateObj.padWaitRelease) {
+    Object.keys(stateObj.padWaitRelease).forEach(k => {
+      if (!stateObj.padState[k]) delete stateObj.padWaitRelease[k];
+    });
+  }
+
+  if (typeof padInputLockUntil !== 'undefined' && now < padInputLockUntil) {
+    if (engine) engine.isRisingManualPad = false;
+    resetPadDirTimeState(stateObj);
+    return;
+  }
+
+  const isPressed = (btnIdx) => btnIdx !== null && btnIdx !== undefined && !!stateObj.padState[btnIdx];
+  const justPressed = (btnIdx) => {
+    if (btnIdx === null || btnIdx === undefined) return false;
+    if (!stateObj.padState[btnIdx] || stateObj.prevPadState[btnIdx]) return false;
+    if (stateObj.padWaitRelease && stateObj.padWaitRelease[btnIdx]) return false;
+    const lastT = stateObj.padLastPressAt ? (stateObj.padLastPressAt[btnIdx] || 0) : 0;
+    if (now - lastT < PAD_BOUNCE_MS) return false;
+    if (stateObj.padLastPressAt) stateObj.padLastPressAt[btnIdx] = now;
+    return true;
+  };
+
+  if (isMainPlayer && justPressed(cfgPad.Pause)) {
+    if (isExitConfirmOpen) {
+      closeExitConfirmModal();
+      return;
+    }
+    if (document.getElementById('game-area').style.display === 'flex' && document.getElementById('result-overlay').style.display !== 'flex' && !battleEndState.active) {
+      stateObj.padHoldFrames = { Up: 0, Down: 0, Left: 0, Right: 0 };
+      resetPadDirTimeState(stateObj);
+      stateObj.padGrabState.active = stateObj.padGrabState.consumed = false;
+      exitGame();
+      return;
+    }
+  }
+  if (isExitConfirmOpen) {
+    if (engine) engine.isRisingManualPad = false;
+    resetPadDirTimeState(stateObj);
+    return;
+  }
+  if (!engine || engine.gameOver || (isMatchOver && !isPracticeMode)) {
+    stateObj.padHoldFrames = { Up: 0, Down: 0, Left: 0, Right: 0 };
+    resetPadDirTimeState(stateObj);
+    stateObj.padGrabState.active = stateObj.padGrabState.consumed = false;
+    if (engine) engine.isRisingManualPad = false;
+    return;
+  }
+  if (isMainPlayer && justPressed(cfgPad.ToggleContinuous)) toggleContinuousSwipe();
+  if (justPressed(cfgPad.GrabLeft)) startGrabForEngine(engine, stateObj.padGrabState, 'left');
+  else if (justPressed(cfgPad.GrabRight)) startGrabForEngine(engine, stateObj.padGrabState, 'right');
+  if (stateObj.padGrabState.active) {
+    if ((stateObj.padGrabState.side === 'left' && !isPressed(cfgPad.GrabLeft)) || (stateObj.padGrabState.side === 'right' && !isPressed(cfgPad.GrabRight))) {
+      stateObj.padGrabState.active = stateObj.padGrabState.consumed = false;
+    }
+  }
+
+  const checkDirTrigger = (dirName, btnIdx) => {
+    const dt = stateObj.padDirTime[dirName];
+    const down = isPressed(btnIdx);
+    if (!down) {
+      if (dt.held) {
+        if (!dt.releaseAt) dt.releaseAt = now;
+        if ((now - dt.releaseAt) >= PAD_DIR_RELEASE_MS) {
+          dt.held = false;
+          dt.releaseAt = 0;
+        }
+      }
+      return false;
+    }
+    dt.releaseAt = 0;
+    if (stateObj.padWaitRelease && stateObj.padWaitRelease[btnIdx]) {
+      dt.held = true;
+      dt.startAt = now;
+      dt.lastAt = now;
+      return false;
+    }
+    if (!dt.held) {
+      const lastDirT = stateObj.padLastPressAt ? (stateObj.padLastPressAt[`dir_${dirName}`] || 0) : 0;
+      dt.held = true;
+      dt.startAt = now;
+      dt.lastAt = now;
+      if (now - lastDirT < PAD_DIR_MIN_INTERVAL_MS) return false;
+      if (stateObj.padLastPressAt) stateObj.padLastPressAt[`dir_${dirName}`] = now;
+      return true;
+    }
+    if ((now - dt.startAt) >= PAD_DAS_MS && (now - dt.lastAt) >= PAD_ARR_MS) {
+      dt.lastAt = now;
+      return true;
+    }
+    return false;
+  };
+
+  let moved = false;
+  const rows = engine.rows || ROWS;
+  if (isPressed(cfgPad.Up) && isPressed(cfgPad.Down)) {
+    stateObj.padDirTime.Up.held = stateObj.padDirTime.Down.held = false;
+    stateObj.padDirTime.Up.releaseAt = stateObj.padDirTime.Down.releaseAt = 0;
+  } else {
+    if (checkDirTrigger('Up', cfgPad.Up) && engine.cursor.y > 0) {
+      engine.cursor.y--; moved = true;
+      syncGrabColFromCursor(engine, stateObj.padGrabState);
+    }
+    if (checkDirTrigger('Down', cfgPad.Down) && engine.cursor.y < rows - 1) {
+      engine.cursor.y++; moved = true;
+      syncGrabColFromCursor(engine, stateObj.padGrabState);
+    }
+  }
+  if (isPressed(cfgPad.Left) && isPressed(cfgPad.Right)) {
+    stateObj.padDirTime.Left.held = stateObj.padDirTime.Right.held = false;
+    stateObj.padDirTime.Left.releaseAt = stateObj.padDirTime.Right.releaseAt = 0;
+  } else {
+    if (checkDirTrigger('Left', cfgPad.Left)) {
+      if (stateObj.padGrabState.active) executeGrabMoveForEngine(engine, stateObj.padGrabState, -1);
+      else if (moveEngineCursorHoriz(engine, -1)) moved = true;
+    }
+    if (checkDirTrigger('Right', cfgPad.Right)) {
+      if (stateObj.padGrabState.active) executeGrabMoveForEngine(engine, stateObj.padGrabState, 1);
+      else if (moveEngineCursorHoriz(engine, 1)) moved = true;
+    }
+  }
+  if (moved) SE.play('cursorMove');
+  if (justPressed(cfgPad.Swap)) engine.swap(engine.cursor.x, engine.cursor.y);
+  engine.isRisingManualPad = !!(isPressed(cfgPad.Rise1) || isPressed(cfgPad.Rise2));
+  if (isMainPlayer) {
+    if (justPressed(cfgPad.TargetRight)) cycleTarget(1);
+    if (justPressed(cfgPad.TargetLeft)) cycleTarget(-1);
+    if (justPressed(cfgPad.Skill)) activatePlayerSkill();
+  } else if (oppRef) {
+    if (justPressed(cfgPad.TargetRight)) cycleTargetForLocalOpponent(oppRef, 1);
+    if (justPressed(cfgPad.TargetLeft)) cycleTargetForLocalOpponent(oppRef, -1);
+    if (justPressed(cfgPad.Skill)) activateLocalOpponentSkill(oppRef);
+  }
+}
+
+function pollSingleKeyboardHold(engine, stateObj, now = performance.now()) {
+  if (!engine || !stateObj || !stateObj.keyHeld) return;
+  if (isExitConfirmOpen || engine.gameOver || (isMatchOver && !isPracticeMode)) {
+    stateObj.keyHoldFrames = { Up: 0, Down: 0, Left: 0, Right: 0 };
+    if (stateObj.keyDirTime) {
+      ['Up', 'Down', 'Left', 'Right'].forEach(d => { stateObj.keyDirTime[d].held = false; });
+    }
+    return;
+  }
+  if (typeof getCurrentPadContextKey === 'function' && getCurrentPadContextKey() !== 'game') return;
+
+  const checkKeyDirRepeat = (dirName) => {
+    const dt = stateObj.keyDirTime[dirName];
+    if (!stateObj.keyHeld[dirName]) {
+      dt.held = false;
+      return false;
+    }
+    if (!dt.held) {
+      dt.held = true;
+      dt.startAt = now;
+      dt.lastAt = now;
+      return false;
+    }
+    if ((now - dt.startAt) >= KEY_DAS_MS && (now - dt.lastAt) >= KEY_ARR_MS) {
+      dt.lastAt = now;
+      return true;
+    }
+    return false;
+  };
+  let moved = false;
+  const rows = engine.rows || ROWS;
+  if (stateObj.keyHeld.Up && stateObj.keyHeld.Down) {
+    stateObj.keyDirTime.Up.held = stateObj.keyDirTime.Down.held = false;
+  } else {
+    if (checkKeyDirRepeat('Up') && engine.cursor.y > 0) {
+      engine.cursor.y--; moved = true;
+      syncGrabColFromCursor(engine, stateObj.keyGrabState);
+    }
+    if (checkKeyDirRepeat('Down') && engine.cursor.y < rows - 1) {
+      engine.cursor.y++; moved = true;
+      syncGrabColFromCursor(engine, stateObj.keyGrabState);
+    }
+  }
+  if (stateObj.keyHeld.Left && stateObj.keyHeld.Right) {
+    stateObj.keyDirTime.Left.held = stateObj.keyDirTime.Right.held = false;
+  } else {
+    if (checkKeyDirRepeat('Left')) {
+      if (stateObj.keyGrabState.active) executeGrabMoveForEngine(engine, stateObj.keyGrabState, -1);
+      else if (moveEngineCursorHoriz(engine, -1)) moved = true;
+    }
+    if (checkKeyDirRepeat('Right')) {
+      if (stateObj.keyGrabState.active) executeGrabMoveForEngine(engine, stateObj.keyGrabState, 1);
+      else if (moveEngineCursorHoriz(engine, 1)) moved = true;
+    }
+  }
+  if (moved) SE.play('cursorMove');
+}
+
+function pollKeyboardHoldInput(now = performance.now()) {
+  pollSingleKeyboardHold(myEngine, p1InputState, now);
+  if (currentMode === 'local' || currentMode === 'share') {
+    opponents.forEach(opp => {
+      if (opp.type === 'local_human' && opp.inputState) pollSingleKeyboardHold(opp.engine, opp.inputState, now);
+    });
+  }
+}
+
+function pollGamepadInput(now = performance.now()) {
+  const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()) : [];
+  if (battleEndState.active) {
+    const anyPressed = pads.some(p => p && p.connected && p.buttons.some(b => b.pressed));
+    if (anyPressed && !battleEndState.prevAnyPadPressed) tryDismissBattleEndOverlay();
+    battleEndState.prevAnyPadPressed = anyPressed;
+    return;
+  }
+  if (typeof getCurrentPadContextKey === 'function' && getCurrentPadContextKey() !== 'game') {
+    const pad0 = getPad0Object(pads);
+    if (pad0) {
+      p1InputState.padState = readPadButtonsMap(pad0);
+      p1InputState.prevPadState = { ...p1InputState.padState };
+    }
+    return;
+  }
+  const slot0 = playerConfigs[0].padSlot;
+  let pad0 = null;
+  if (slot0 >= 0 && pads[slot0]) {
+    pad0 = pads[slot0];
+  } else if (slot0 === 0 && currentMode !== 'local' && currentMode !== 'share') {
+    pad0 = pads.find(p => p && p.connected) || null;
+  }
+  pollSingleGamepad(myEngine, playerConfigs[0].pad, p1InputState, pad0, true, null, now);
+  if (currentMode === 'local' || currentMode === 'share') {
+    opponents.forEach(opp => {
+      if (opp.type === 'local_human' && opp.inputState) {
+        const slot = playerConfigs[opp.playerSlotIndex].padSlot;
+        pollSingleGamepad(opp.engine, playerConfigs[opp.playerSlotIndex].pad, opp.inputState, (slot >= 0 && pads[slot]) ? pads[slot] : null, false, opp, now);
+      }
+    });
+  }
+}
+
 function handleKeyboardActionForPlayer(engine, cfgKey, stateObj, code, isRepeat, isMainPlayer, oppRef, e) {
   if (!engine || engine.gameOver || (isMatchOver && !isPracticeMode)) return false;
   let handled = false, moved = false;
   const now = performance.now();
+  const rows = engine.rows || ROWS;
   if (isMainPlayer && code === cfgKey.ToggleContinuous) { handled = true; if (!isRepeat) toggleContinuousSwipe(); }
   if (code === cfgKey.GrabLeft) { handled = true; if (!isRepeat) startGrabForEngine(engine, stateObj.keyGrabState, 'left'); }
   if (code === cfgKey.GrabRight) { handled = true; if (!isRepeat) startGrabForEngine(engine, stateObj.keyGrabState, 'right'); }
@@ -5457,7 +5809,7 @@ function handleKeyboardActionForPlayer(engine, cfgKey, stateObj, code, isRepeat,
       if (stateObj.keyDirTime) stateObj.keyDirTime.Up = { held: true, startAt: now, lastAt: now };
       if (engine.cursor.y > 0) {
         engine.cursor.y--; moved = true;
-        if (stateObj.keyGrabState.active) { stateObj.keyGrabState.row = engine.cursor.y; stateObj.keyGrabState.col = stateObj.keyGrabState.side === 'left' ? engine.cursor.x : engine.cursor.x + 1; stateObj.keyGrabState.consumed = false; }
+        syncGrabColFromCursor(engine, stateObj.keyGrabState);
       }
     }
   }
@@ -5466,9 +5818,9 @@ function handleKeyboardActionForPlayer(engine, cfgKey, stateObj, code, isRepeat,
     if (!isRepeat) {
       stateObj.keyHeld.Down = true; stateObj.keyHoldFrames.Down = 1;
       if (stateObj.keyDirTime) stateObj.keyDirTime.Down = { held: true, startAt: now, lastAt: now };
-      if (engine.cursor.y < ROWS - 1) {
+      if (engine.cursor.y < rows - 1) {
         engine.cursor.y++; moved = true;
-        if (stateObj.keyGrabState.active) { stateObj.keyGrabState.row = engine.cursor.y; stateObj.keyGrabState.col = stateObj.keyGrabState.side === 'left' ? engine.cursor.x : engine.cursor.x + 1; stateObj.keyGrabState.consumed = false; }
+        syncGrabColFromCursor(engine, stateObj.keyGrabState);
       }
     }
   }
@@ -5478,7 +5830,7 @@ function handleKeyboardActionForPlayer(engine, cfgKey, stateObj, code, isRepeat,
       stateObj.keyHeld.Left = true; stateObj.keyHoldFrames.Left = 1;
       if (stateObj.keyDirTime) stateObj.keyDirTime.Left = { held: true, startAt: now, lastAt: now };
       if (stateObj.keyGrabState.active) executeGrabMoveForEngine(engine, stateObj.keyGrabState, -1);
-      else if (engine.cursor.x > 0) { engine.cursor.x--; moved = true; }
+      else if (moveEngineCursorHoriz(engine, -1)) moved = true;
     }
   }
   if (code === cfgKey.Right) {
@@ -5487,7 +5839,7 @@ function handleKeyboardActionForPlayer(engine, cfgKey, stateObj, code, isRepeat,
       stateObj.keyHeld.Right = true; stateObj.keyHoldFrames.Right = 1;
       if (stateObj.keyDirTime) stateObj.keyDirTime.Right = { held: true, startAt: now, lastAt: now };
       if (stateObj.keyGrabState.active) executeGrabMoveForEngine(engine, stateObj.keyGrabState, 1);
-      else if (engine.cursor.x < COLS - 2) { engine.cursor.x++; moved = true; }
+      else if (moveEngineCursorHoriz(engine, 1)) moved = true;
     }
   }
   if (moved) SE.play('cursorMove');
@@ -5612,8 +5964,9 @@ function getCanvasCoordsFromPointer(cvs, e, isSelf180Rotated = false) {
   return { x: (e.clientX - rect.left) * (cvs.width / rect.width), y: (e.clientY - rect.top) * (cvs.height / rect.height) };
 }
 
-function bindBoardTouchInput(cvs, getEngine, getContinuousChecked, isSelf180Rotated, setRowFollowCb) {
+function bindBoardTouchInput(cvs, getEngine, getContinuousChecked, isSelf180Rotated, setRowFollowCb, getRenderer = null) {
   let activePointerId = null, grabbedCol = -1, grabbedRow = -1, initialCanvasX = 0, initialCanvasY = 0;
+  let lastCanvasX = 0, dragMode = 'swap';
   if (setRowFollowCb) setRowFollowCb(() => { if (activePointerId !== null && grabbedRow > 0) grabbedRow--; });
 
   cvs.addEventListener('pointerdown', (e) => {
@@ -5625,8 +5978,23 @@ function bindBoardTouchInput(cvs, getEngine, getContinuousChecked, isSelf180Rota
     try { cvs.setPointerCapture(e.pointerId); } catch (_) {}
     const pt = getCanvasCoordsFromPointer(cvs, e, isSelf180Rotated);
     initialCanvasX = pt.x; initialCanvasY = pt.y;
-    grabbedCol = Math.max(0, Math.min(COLS - 1, Math.floor(initialCanvasX / CELL_PX)));
-    grabbedRow = Math.max(0, Math.min(ROWS - 1, Math.floor((initialCanvasY + engine.riseOffset * CELL_PX) / CELL_PX)));
+    lastCanvasX = pt.x;
+
+    const renderer = typeof getRenderer === 'function' ? getRenderer() : null;
+    if (engine.is3D && renderer && typeof renderer.getCellFromCanvasPoint === 'function') {
+      const cell = renderer.getCellFromCanvasPoint(engine, pt.x, pt.y);
+      grabbedCol = cell.col;
+      grabbedRow = cell.row;
+      const cols = engine.cols || COLS_3D;
+      const bHere = engine.grid[grabbedRow] && engine.grid[grabbedRow][grabbedCol];
+      const bLeft = engine.grid[grabbedRow] && engine.grid[grabbedRow][(grabbedCol - 1 + cols) % cols];
+      const bRight = engine.grid[grabbedRow] && engine.grid[grabbedRow][(grabbedCol + 1) % cols];
+      dragMode = (!bHere && !bLeft && !bRight) ? 'rotate' : 'swap';
+    } else {
+      grabbedCol = Math.max(0, Math.min((engine.cols || COLS) - 1, Math.floor(pt.x / CELL_PX)));
+      grabbedRow = Math.max(0, Math.min((engine.rows || ROWS) - 1, Math.floor((pt.y + engine.riseOffset * CELL_PX) / CELL_PX)));
+      dragMode = 'swap';
+    }
   });
 
   cvs.addEventListener('pointermove', (e) => {
@@ -5634,8 +6002,50 @@ function bindBoardTouchInput(cvs, getEngine, getContinuousChecked, isSelf180Rota
     const engine = getEngine();
     if (!engine || (isMatchOver && !isPracticeMode)) return;
     const pt = getCanvasCoordsFromPointer(cvs, e, isSelf180Rotated);
-    let targetCol = Math.max(0, Math.min(COLS - 1, Math.floor(pt.x / CELL_PX)));
     const continuous = getContinuousChecked();
+
+    if (engine.is3D) {
+      const cols = engine.cols || COLS_3D;
+      const stepPx = 28;
+      const diffPx = pt.x - lastCanvasX;
+      if (Math.abs(diffPx) < stepPx) return;
+      const steps = Math.trunc(diffPx / stepPx);
+      lastCanvasX += steps * stepPx;
+
+      if (dragMode === 'rotate') {
+        engine.cursor.x = ((engine.cursor.x - steps) % cols + cols) % cols;
+        SE.play('cursorMove');
+        return;
+      }
+
+      const dir = steps > 0 ? 1 : -1;
+      const count = Math.abs(steps);
+      for (let s = 0; s < count; s++) {
+        if (dir > 0) {
+          engine.cursor.x = grabbedCol;
+          engine.cursor.y = grabbedRow;
+          if (engine.swap(grabbedCol, grabbedRow)) {
+            SE.play('cursorMove');
+            grabbedCol = (grabbedCol + 1) % cols;
+            engine.cursor.x = grabbedCol;
+            if (!continuous) { activePointerId = null; break; }
+          } else break;
+        } else {
+          const leftCol = (grabbedCol - 1 + cols) % cols;
+          engine.cursor.x = leftCol;
+          engine.cursor.y = grabbedRow;
+          if (engine.swap(leftCol, grabbedRow)) {
+            SE.play('cursorMove');
+            grabbedCol = leftCol;
+            engine.cursor.x = (grabbedCol - 1 + cols) % cols;
+            if (!continuous) { activePointerId = null; break; }
+          } else break;
+        }
+      }
+      return;
+    }
+
+    let targetCol = Math.max(0, Math.min((engine.cols || COLS) - 1, Math.floor(pt.x / CELL_PX)));
     while (targetCol > grabbedCol) {
       engine.cursor.x = grabbedCol; engine.cursor.y = grabbedRow;
       if (engine.swap(grabbedCol, grabbedRow)) { SE.play('cursorMove'); grabbedCol++; if (!continuous) { activePointerId = null; break; } }
@@ -5656,10 +6066,20 @@ function bindBoardTouchInput(cvs, getEngine, getContinuousChecked, isSelf180Rota
     if (!isTapCandidate || !engine || (isMatchOver && !isPracticeMode)) return;
     const pt = getCanvasCoordsFromPointer(cvs, e, isSelf180Rotated);
     if (Math.abs(pt.x - initialCanvasX) < CELL_PX * 0.3 && Math.abs(pt.y - initialCanvasY) < CELL_PX * 0.3) {
-      let c = Math.floor(pt.x / CELL_PX);
-      if (c >= COLS - 1) c = COLS - 2;
-      if (engine.cursor.x !== c || engine.cursor.y !== grabbedRow) SE.play('cursorMove');
-      engine.cursor.x = c; engine.cursor.y = grabbedRow;
+      const renderer = typeof getRenderer === 'function' ? getRenderer() : null;
+      let c, r;
+      if (engine.is3D && renderer && typeof renderer.getCellFromCanvasPoint === 'function') {
+        const cell = renderer.getCellFromCanvasPoint(engine, pt.x, pt.y);
+        c = cell.col;
+        r = cell.row;
+      } else {
+        c = Math.floor(pt.x / CELL_PX);
+        if (c >= (engine.cols || COLS) - 1) c = (engine.cols || COLS) - 2;
+        r = grabbedRow;
+      }
+      if (engine.cursor.x !== c || engine.cursor.y !== r) SE.play('cursorMove');
+      engine.cursor.x = c;
+      engine.cursor.y = r;
     }
   };
   cvs.addEventListener('pointerup', (e) => endPointer(e, true));
@@ -5670,7 +6090,14 @@ function setupShareP2Input() {
   const p2Cvs = document.getElementById('rival-canvas-0');
   if (!p2Cvs || p2Cvs.dataset.shareBound === '1') return;
   p2Cvs.dataset.shareBound = '1';
-  bindBoardTouchInput(p2Cvs, () => (currentMode === 'share' && opponents[0]) ? opponents[0].engine : null, () => !!document.getElementById('p2-continuous-swipe')?.checked, true, (cb) => { shareP2RowFollowCallback = cb; });
+  bindBoardTouchInput(
+    p2Cvs,
+    () => (currentMode === 'share' && opponents[0]) ? opponents[0].engine : null,
+    () => !!document.getElementById('p2-continuous-swipe')?.checked,
+    true,
+    (cb) => { shareP2RowFollowCallback = cb; },
+    () => (currentMode === 'share' && opponents[0]) ? opponents[0].renderer : null
+  );
 }
 
 let inputSetupDone = false;
@@ -5679,7 +6106,14 @@ function setupInput() {
   inputSetupDone = true;
 
   const cvs = document.getElementById('my-canvas');
-  bindBoardTouchInput(cvs, () => myEngine, () => !!document.getElementById('continuous-swipe')?.checked, false, (cb) => { touchRowFollowCallback = cb; });
+  bindBoardTouchInput(
+    cvs,
+    () => myEngine,
+    () => !!document.getElementById('continuous-swipe')?.checked,
+    false,
+    (cb) => { touchRowFollowCallback = cb; },
+    () => myRenderer
+  );
 
   const riseBtn = document.getElementById('rise-btn');
   let p1RisePointerId = null;
@@ -5991,6 +6425,8 @@ function adjustLayout() {
     if (rivalsArea) rivalsArea.style.display = 'none';
 
     const effW = Math.min(W, H), effH = Math.max(W, H), halfH = effH / 2;
+    const homeBarGuardPx = Math.max(24, Math.round(halfH * 0.065));
+
     let p2Zone = document.getElementById('share-p2-zone'), p1Zone = document.getElementById('share-p1-zone');
     if (!p2Zone) {
       p2Zone = document.createElement('div');
@@ -6004,6 +6440,8 @@ function adjustLayout() {
       p1Zone.className = 'share-zone-half share-p1-zone';
       gameContainer.appendChild(p1Zone);
     }
+    p1Zone.style.paddingBottom = `${homeBarGuardPx}px`;
+    p2Zone.style.paddingBottom = `${homeBarGuardPx}px`;
 
     const rivalWrapper = document.getElementById('rival-wrapper-0');
     const p2BoardSizer = ensureShareSizerBox(p2Zone, 'share-p2-board-sizer', rivalWrapper, 1);
@@ -6027,11 +6465,12 @@ function adjustLayout() {
     }
     gameContainer.style.cssText = 'position:relative;width:100%;height:100%;display:flex;flex-direction:column;flex-wrap:nowrap;padding:0;gap:0;';
 
-    const baseBoardH = Math.max(532, myWrapper.offsetHeight || 532, rivalWrapper ? (rivalWrapper.offsetHeight || 532) : 532);
+    const baseBoardH = Math.max(540, myWrapper.offsetHeight || 540, rivalWrapper ? (rivalWrapper.offsetHeight || 540) : 540);
     const p1CtrlH = Math.max(160, controls.offsetHeight || 180);
     const p2CtrlH = p2Controls ? Math.max(160, p2Controls.offsetHeight || 180) : 180;
     const baseTotalW = 224 + 110 + 10;
-    const scale = Math.max(0.32, Math.min(2.0, (halfH - 16) / baseBoardH, (effW - 14) / baseTotalW));
+    const availHalfH = Math.max(140, halfH - homeBarGuardPx - 14);
+    const scale = Math.max(0.30, Math.min(2.0, availHalfH / baseBoardH, (effW - 14) / baseTotalW));
 
     myWrapper.style.transform = `scale(${scale})`;
     p1BoardSizer.style.width = `${Math.round(224 * scale)}px`;
@@ -6090,8 +6529,8 @@ function adjustLayout() {
 
     const totalPlayers = 1 + oppCount;
     const baseW = 224;
-    const baseH = currentSkillEnabled ? 555 : 525;
-    const portraitH = 468;
+    const baseH = currentSkillEnabled ? 564 : 536;
+    const portraitH = 476;
     const portraitW = totalPlayers === 2 ? 150 : (totalPlayers === 3 ? 104 : 74);
     const showPortraits = (totalPlayers >= 2);
     const totalPortraits = showPortraits ? totalPlayers : 0;
@@ -6152,9 +6591,9 @@ function adjustLayout() {
 
     if (oppCount >= 1) {
       const totalPlayers = 1 + oppCount;
-      const baseBoardW = 224, baseBoardH = 525, ctrlW = 110;
+      const baseBoardW = 224, baseBoardH = 536, ctrlW = 110;
       const portraitW = totalPlayers === 2 ? 150 : (totalPlayers === 3 ? 104 : 74);
-      const portraitH = 468;
+      const portraitH = 476;
       const gapPx = totalPlayers >= 4 ? 6 : 8;
       const itemCount = totalPlayers * 2 + 1;
       const totalBaseW = totalPlayers * baseBoardW + totalPlayers * portraitW + ctrlW + (itemCount - 1) * gapPx;
@@ -6221,7 +6660,7 @@ function adjustLayout() {
     if (isLeft) { controls.style.order = '1'; myWrapper.style.order = '2'; }
     else { myWrapper.style.order = '2'; controls.style.order = '3'; }
 
-    const baseBoardW = 224, baseBoardH = 525, ctrlW = 110;
+    const baseBoardW = 224, baseBoardH = 536, ctrlW = 110;
     const availableW = Math.max(240, W - sideMargin * 2 - 14);
     const availableH = Math.max(240, H - topSafeExitPx - 24);
     const myScale = Math.max(0.4, Math.min(maxDynamicScale, availableH / baseBoardH, availableW / (baseBoardW + ctrlW + 14)));
@@ -6235,7 +6674,7 @@ function adjustLayout() {
     updateAllPortraitHUDs();
     updateMyZoneFrameLayout(null);
   } else if (oppCount <= 1) {
-    const bottomReserve = showBottomBar ? 66 : 10;
+    const bottomReserve = showBottomBar ? 68 : 12;
     const topReserve = Math.max(isPortrait ? 58 : 48, topSafeExitPx + 6);
     rivalsTopArea.style.display = 'none'; rivalsArea.style.display = 'none';
     if (exitBtn.parentNode !== gameArea) gameArea.appendChild(exitBtn);
@@ -6251,7 +6690,7 @@ function adjustLayout() {
         if (rivalWrapper.parentNode !== controls) controls.insertBefore(rivalWrapper, controls.firstChild);
         rivalWrapper.style.setProperty('order', '-1', 'important');
         const rivalScale = 110 / 224;
-        const originalRivalH = rivalWrapper.offsetHeight || 520;
+        const originalRivalH = rivalWrapper.offsetHeight || 532;
         const horizCenterOffset = (110 - 224) / 2;
         rivalWrapper.style.transformOrigin = 'top center';
         rivalWrapper.style.transform = `scale(${rivalScale})`;
@@ -6267,7 +6706,7 @@ function adjustLayout() {
         rivalWrapper.style.marginRight = `${horizCenterOffset}px`;
         rivalWrapper.style.marginBottom = `${originalRivalH * rivalScale - originalRivalH}px`;
       }
-      controls.style.height = '525px'; controls.style.justifyContent = 'flex-start';
+      controls.style.height = '536px'; controls.style.justifyContent = 'flex-start';
       if (handednessWrapper) handednessWrapper.style.marginTop = 'auto';
     } else {
       controls.classList.remove('compact-1on1');
@@ -6275,7 +6714,7 @@ function adjustLayout() {
       if (handednessWrapper) handednessWrapper.style.marginTop = '0';
     }
 
-    const baseBoardH = 525, availH = Math.max(220, H - topReserve - bottomReserve - 10), contentW = 344;
+    const baseBoardH = 536, availH = Math.max(220, H - topReserve - bottomReserve - 10), contentW = 344;
     const myScale = Math.max(0.4, Math.min(maxDynamicScale, availH / baseBoardH, (W - 14) / contentW));
     myWrapper.style.transform = `scale(${myScale})`; controls.style.transform = `scale(${myScale})`;
     myWrapper.style.transformOrigin = 'center'; controls.style.transformOrigin = 'center';
@@ -6285,11 +6724,11 @@ function adjustLayout() {
     updateBottomStatusBar();
     updateMyZoneFrameLayout(null);
   } else {
-    const bottomReserve = showBottomBar ? 66 : 10;
+    const bottomReserve = showBottomBar ? 68 : 12;
     rivalsArea.style.display = 'none';
     const maxTopH = Math.max(92, Math.min(H * 0.22, 168));
     rivalsTopArea.style.cssText = `display:flex;position:absolute;top:4px;left:0;width:100vw;height:${maxTopH}px;flex-direction:row;align-items:center;justify-content:center;gap:6px;z-index:30;overflow:hidden;`;
-    const availW = W - 12, scaleH = (maxTopH - 6) / 520, scaleW = availW / (oppCount * 224 + (oppCount - 1) * 6);
+    const availW = W - 12, scaleH = (maxTopH - 6) / 532, scaleW = availW / (oppCount * 224 + (oppCount - 1) * 6);
     const miniScale = Math.min(scaleH, scaleW, 0.85);
 
     opponents.forEach((_, i) => {
@@ -6297,7 +6736,7 @@ function adjustLayout() {
       if (el) {
         if (el.parentNode !== rivalsTopArea) rivalsTopArea.appendChild(el);
         el.style.position = 'relative'; el.style.transform = `scale(${miniScale})`; el.style.transformOrigin = 'center center';
-        el.style.margin = `${(520 - 520 * miniScale) / -2}px ${(224 - 224 * miniScale) / -2}px`;
+        el.style.margin = `${(532 - 532 * miniScale) / -2}px ${(224 - 224 * miniScale) / -2}px`;
         el.style.width = '224px'; el.style.flexShrink = '0';
       }
     });
@@ -6310,7 +6749,7 @@ function adjustLayout() {
     gameContainer.style.cssText = `display:flex;flex-direction:${isLeft ? 'row' : 'row-reverse'};align-items:center;justify-content:center;position:absolute;top:${maxTopH + 8}px;left:0;width:100vw;height:${H - maxTopH - 8 - bottomReserve}px;padding:0;gap:10px;`;
     const maxCenterH = Math.max(200, H - maxTopH - 18 - bottomReserve), contentW = 344;
     const ctrlBaseH = controls.scrollHeight ? Math.max(340, controls.scrollHeight) : 360;
-    const myScale = Math.max(0.32, Math.min(maxDynamicScale, maxCenterH / Math.max(525, ctrlBaseH), (W - 14) / contentW));
+    const myScale = Math.max(0.32, Math.min(maxDynamicScale, maxCenterH / Math.max(536, ctrlBaseH), (W - 14) / contentW));
     myWrapper.style.transform = `scale(${myScale})`; controls.style.transform = `scale(${myScale})`;
     myWrapper.style.transformOrigin = 'center'; controls.style.transformOrigin = 'center';
     myWrapper.style.margin = `0 ${(224 - 224 * myScale) / -2}px`; controls.style.margin = `0 ${(110 - 110 * myScale) / -2}px`;
@@ -6362,6 +6801,7 @@ window.addEventListener('DOMContentLoaded', () => {
   if (typeof initPwaInstallSupport === 'function') initPwaInstallSupport();
   bindSwitchMenuHoverEvents();
   bindMenuHoverCursorSE();
+  syncDimRuleUI();
   refreshMenuLayoutState(true);
   updateModeWinBadgesUI();
   if (typeof syncPlayerSkillSelects === 'function') syncPlayerSkillSelects();

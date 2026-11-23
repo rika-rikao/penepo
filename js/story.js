@@ -1,5 +1,5 @@
 // ==========================================
-// ストーリーモード（全7話：2段階UI・スキルモーダル＆自作スキルON/OFF連携）
+// ストーリーモード（全7話：2段階UI・スキルモーダル＆自作スキルON/OFF・2D/3D連携）
 // ==========================================
 const STORY_DIFFICULTIES = {
   easy:   { label: 'やさしい',   levels: [1, 2, 4, 6, 8, 12, 16],     allUseCheat: false },
@@ -241,6 +241,7 @@ const StoryManager = {
     const menu = document.getElementById('story-menu');
     menu.style.display = 'flex';
     this.syncDifficultyButtons();
+    if (typeof syncDimRuleUI === 'function') syncDimRuleUI();
 
     if (typeof renderCharPicker === 'function') {
       renderCharPicker('story-char-picker', { storyOnly: true });
@@ -281,11 +282,12 @@ const StoryManager = {
       this.goToStageStep();
       return;
     }
+    const dimLabel = (typeof getDimSummaryText === 'function') ? ` / ${getDimSummaryText(true)}` : '';
     if (typeof openSkillAndConfirmFlow === 'function') {
       openSkillAndConfirmFlow({
         charId: this.getSelectedCharId(),
         allowCustom: this.isCustomSkillEnabled(),
-        extraText: `難易度: ${STORY_DIFFICULTIES[this.getDifficultyKey()].label} / 自作:${this.isCustomSkillEnabled() ? 'ON' : 'OFF'}`,
+        extraText: `難易度: ${STORY_DIFFICULTIES[this.getDifficultyKey()].label}${dimLabel} / 自作:${this.isCustomSkillEnabled() ? 'ON' : 'OFF'}`,
         okLabel: 'ステージ選択へ ▶',
         onConfirm: () => {
           this.goToStageStep();
@@ -316,6 +318,7 @@ const StoryManager = {
     const stageStep = document.getElementById('story-stage-step');
     if (stageStep) stageStep.style.display = 'none';
     if (prepStep) prepStep.style.display = 'flex';
+    if (typeof syncDimRuleUI === 'function') syncDimRuleUI();
     if (typeof focusPrimaryMenuElement === 'function') {
       focusPrimaryMenuElement('story-prep-step');
     }
@@ -327,6 +330,7 @@ const StoryManager = {
     const diffLabel = STORY_DIFFICULTIES[this.getDifficultyKey()].label;
     const ch = getCharacterById(this.getSelectedCharId());
     const allowCustom = this.isCustomSkillEnabled();
+    const dimText = (typeof getDimSummaryText === 'function') ? getDimSummaryText(true) : '2D';
     let skillTxt = 'OFF';
     if (this.isPlayerSkillEnabled()) {
       const rawSk = typeof selectedPlayerSkill !== 'undefined' ? selectedPlayerSkill : 'erase_color';
@@ -338,6 +342,7 @@ const StoryManager = {
     bar.innerHTML = `
       <span class="story-summary-chip">難易度: ${diffLabel}</span>
       <span class="story-summary-chip">キャラ: ${ch.name}</span>
+      <span class="story-summary-chip">${dimText}</span>
       <span class="story-summary-chip">スキル: ${skillTxt} (自作:${allowCustom ? 'ON' : 'OFF'})</span>
     `;
   },

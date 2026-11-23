@@ -1,5 +1,5 @@
 // ==========================================
-// COM用 Cheat AI クラス & プレイヤー共用スキルロジック（リフレクション・多段階浄化・自作スキル対応）
+// COM用 Cheat AI クラス & プレイヤー共用スキルロジック（2D/3D可変列・リフレクション・自作スキル対応）
 // ==========================================
 const SKILL_IDS = [
   'erase_color',
@@ -128,18 +128,20 @@ class cheat extends ComAI {
   }
 
   analyzeBoardForSkill() {
+    const rows = this.engine.rows || ROWS;
+    const cols = this.engine.cols || COLS;
     let maxH = 0;
     let garbageCount = 0;
     const colorCounts = {};
-    const targetRows = [ROWS - 1, ROWS - 5, ROWS - 9];
+    const targetRows = [rows - 1, rows - 5, rows - 9];
     let rowClearCount = 0;
 
-    for (let r = 0; r < ROWS; r++) {
+    for (let r = 0; r < rows; r++) {
       const isTargetRow = targetRows.includes(r);
-      for (let c = 0; c < COLS; c++) {
+      for (let c = 0; c < cols; c++) {
         const b = this.engine.grid[r][c];
         if (b !== null) {
-          maxH = Math.max(maxH, ROWS - r);
+          maxH = Math.max(maxH, rows - r);
           if (b.type === 'garbage') {
             garbageCount++;
             if (isTargetRow && b.state === 'normal') rowClearCount++;
@@ -159,7 +161,7 @@ class cheat extends ComAI {
       if (numId >= 1 && numId <= 6 && cnt > 0) normalColorKinds++;
     });
 
-    const isPinch = (maxH >= 9 || this.engine.dangerTimer < (this.engine.getMaxDangerTimer() - 40));
+    const isPinch = (maxH >= rows - 4 || this.engine.dangerTimer < (this.engine.getMaxDangerTimer() - 40));
     const hasLiveEnemy = (myEngine && !myEngine.gameOver && !isPracticeMode)
       || opponents.some(o => o.id !== this.id && o.engine && !o.engine.gameOver);
 
@@ -219,13 +221,14 @@ class cheat extends ComAI {
       }
     }
 
+    const rows = this.engine.rows || ROWS;
     const orderedSkills = this.pickOrderedSkills(analysis);
     for (const skill of orderedSkills) {
       if (skill === 'erase_color') {
         const res = execSkillEraseColor(this.engine, this.id);
         if (res.success) { this.triggerSkillBanner(res.text); return true; }
       } else if (skill === 'erase_rows') {
-        const res = execSkillEraseRows(this.engine, this.id, [ROWS - 1, ROWS - 5, ROWS - 9]);
+        const res = execSkillEraseRows(this.engine, this.id, [rows - 1, rows - 5, rows - 9]);
         if (res.success) { this.triggerSkillBanner(res.text); return true; }
       } else if (skill === 'purify_garbage') {
         const res = execSkillPurifyGarbage(this.engine);
@@ -319,11 +322,13 @@ class cheat extends ComAI {
     let bestId = candidates[0].id;
     let bestHeight = -1;
     candidates.forEach(cand => {
+      const cCols = cand.engine.cols || COLS;
+      const cRows = cand.engine.rows || ROWS;
       let h = 0;
-      for (let c = 0; c < COLS; c++) {
-        for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < cCols; c++) {
+        for (let r = 0; r < cRows; r++) {
           if (cand.engine.grid[r][c] !== null) {
-            h = Math.max(h, ROWS - r);
+            h = Math.max(h, cRows - r);
             break;
           }
         }
@@ -392,7 +397,7 @@ function applyCustomSkillStartEffects(engine, customConfig) {
 
   const startGarbageLv = parseInt(d.dem_start_garbage || 0, 10);
   if (startGarbageLv > 0) {
-    engine.addGarbage(6, startGarbageLv, false, true);
+    engine.addGarbage(engine.cols || COLS, startGarbageLv, false, true);
     if (engine.garbageQueue.length > 0) {
       engine.garbageQueue[engine.garbageQueue.length - 1].delay = 40;
     }
@@ -403,6 +408,7 @@ function applyCustomSkillStartEffects(engine, customConfig) {
 
 function executeCustomPlayerSkill(engine, senderId, preferredTarget, customConfig) {
   if (!engine || !customConfig) return { success: false };
+  const rows = engine.rows || ROWS;
   const m = customConfig.merits || {};
   let anySuccess = false;
 
@@ -422,9 +428,9 @@ function executeCustomPlayerSkill(engine, senderId, preferredTarget, customConfi
   const eraseRowsLv = parseInt(m.erase_rows || 0, 10);
   if (eraseRowsLv > 0) {
     const rowSets = {
-      1: [ROWS - 1, ROWS - 5],
-      2: [ROWS - 1, ROWS - 5, ROWS - 9],
-      3: [ROWS - 1, ROWS - 3, ROWS - 5, ROWS - 7, ROWS - 9]
+      1: [rows - 1, rows - 5],
+      2: [rows - 1, rows - 5, rows - 9],
+      3: [rows - 1, rows - 3, rows - 5, rows - 7, rows - 9]
     };
     const res = execSkillEraseRows(engine, senderId, rowSets[eraseRowsLv] || rowSets[2]);
     if (res && res.success) anySuccess = true;
@@ -472,8 +478,10 @@ function executeCustomPlayerSkill(engine, senderId, preferredTarget, customConfi
 
 function hasGarbageInEngine(engine) {
   if (!engine) return false;
-  for (let r = 0; r < ROWS; r++) {
-    for (let c = 0; c < COLS; c++) {
+  const rows = engine.rows || ROWS;
+  const cols = engine.cols || COLS;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
       if (engine.grid[r][c] && engine.grid[r][c].type === 'garbage') return true;
     }
   }
@@ -482,10 +490,12 @@ function hasGarbageInEngine(engine) {
 
 function rebalanceGarbageGroupIds(engine) {
   if (!engine) return;
-  const visited = Array.from({ length: ROWS }, () => Array(COLS).fill(false));
+  const rows = engine.rows || ROWS;
+  const cols = engine.cols || COLS;
+  const visited = Array.from({ length: rows }, () => Array(cols).fill(false));
 
-  for (let r = 0; r < ROWS; r++) {
-    for (let c = 0; c < COLS; c++) {
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
       const start = engine.grid[r][c];
       if (!start || start.type !== 'garbage' || start.state === 'match' || !start.groupId || visited[r][c]) continue;
 
@@ -497,8 +507,14 @@ function rebalanceGarbageGroupIds(engine) {
       while (queue.length > 0) {
         const [cr, cc] = queue.shift();
         engine.grid[cr][cc].groupId = newGroupId;
-        [[cr - 1, cc], [cr + 1, cc], [cr, cc - 1], [cr, cc + 1]].forEach(([nr, nc]) => {
-          if (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS && !visited[nr][nc]) {
+        const adj = [[cr - 1, cc], [cr + 1, cc]];
+        if (engine.is3D) {
+          adj.push([cr, (cc - 1 + cols) % cols], [cr, (cc + 1) % cols]);
+        } else {
+          adj.push([cr, cc - 1], [cr, cc + 1]);
+        }
+        adj.forEach(([nr, nc]) => {
+          if (nr >= 0 && nr < rows && nc >= 0 && nc < cols && !visited[nr][nc]) {
             const nb = engine.grid[nr][nc];
             if (nb && nb.type === 'garbage' && nb.state !== 'match' && nb.groupId === origGroupId) {
               visited[nr][nc] = true;
@@ -520,6 +536,7 @@ function executePlayerCheatSkill(engine, senderId, preferredTarget = -1, chosenS
     }
   }
 
+  const rows = engine.rows || ROWS;
   const skill = SKILL_IDS.includes(chosenSkill) ? chosenSkill : 'erase_color';
 
   if (skill === 'no_skill' || skill === 'sacrifice') {
@@ -538,7 +555,7 @@ function executePlayerCheatSkill(engine, senderId, preferredTarget = -1, chosenS
     return execSkillEraseColor(engine, senderId);
   }
   if (skill === 'erase_rows') {
-    return execSkillEraseRows(engine, senderId, [ROWS - 1, ROWS - 5, ROWS - 9]);
+    return execSkillEraseRows(engine, senderId, [rows - 1, rows - 5, rows - 9]);
   }
   if (skill === 'seal_skill') {
     return execSkillSealSkill(senderId, preferredTarget);
@@ -550,9 +567,11 @@ function executePlayerCheatSkill(engine, senderId, preferredTarget = -1, chosenS
 }
 
 function execSkillEraseColor(engine, senderId, colorCount = 2) {
+  const rows = engine.rows || ROWS;
+  const cols = engine.cols || COLS;
   const presentTypes = new Set();
-  for (let r = 0; r < ROWS; r++) {
-    for (let c = 0; c < COLS; c++) {
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
       const b = engine.grid[r][c];
       if (b && b.state === 'normal' && b.type !== 'garbage') {
         presentTypes.add(b.type);
@@ -570,8 +589,8 @@ function execSkillEraseColor(engine, senderId, colorCount = 2) {
   const pickedSet = new Set(pickedTypes);
 
   let erased = 0;
-  for (let r = 0; r < ROWS; r++) {
-    for (let c = 0; c < COLS; c++) {
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
       const b = engine.grid[r][c];
       if (b && b.state === 'normal' && pickedSet.has(b.type)) {
         b.state = 'match';
@@ -582,11 +601,12 @@ function execSkillEraseColor(engine, senderId, colorCount = 2) {
   }
   if (erased === 0) return { success: false };
 
+  const normErased = Math.round(erased * (COLS / cols));
   SE.play('normalErase');
   engine.stopTimer = Math.max(engine.stopTimer, 60);
-  engine.score += erased * 15;
-  if (erased >= 4 && engine.onSendGarbage) {
-    engine.onSendGarbage(Math.min(12, Math.floor(erased / 2) + 2), false);
+  engine.score += normErased * 15;
+  if (normErased >= 4 && engine.onSendGarbage) {
+    engine.onSendGarbage(Math.min(12, Math.floor(normErased / 2) + 2), false);
   }
   const symbols = pickedTypes.map(t => {
     const conf = COLORS.find(col => col.id === t);
@@ -596,11 +616,13 @@ function execSkillEraseColor(engine, senderId, colorCount = 2) {
 }
 
 function execSkillEraseRows(engine, senderId, targetRows) {
+  const rows = engine.rows || ROWS;
+  const cols = engine.cols || COLS;
   let erased = 0;
   let erasedGarbage = false;
   for (const r of targetRows) {
-    if (r < 0 || r >= ROWS) continue;
-    for (let c = 0; c < COLS; c++) {
+    if (r < 0 || r >= rows) continue;
+    for (let c = 0; c < cols; c++) {
       const b = engine.grid[r][c];
       if (b && b.state === 'normal') {
         if (b.type === 'garbage') {
@@ -625,11 +647,12 @@ function execSkillEraseRows(engine, senderId, targetRows) {
     rebalanceGarbageGroupIds(engine);
   }
 
+  const normErased = Math.round(erased * (COLS / cols));
   SE.play('normalErase');
   engine.stopTimer = Math.max(engine.stopTimer, 60);
-  engine.score += erased * 15;
-  if (erased >= 5 && engine.onSendGarbage) {
-    engine.onSendGarbage(Math.min(12, Math.floor(erased / 2) + 2), false);
+  engine.score += normErased * 15;
+  if (normErased >= 5 && engine.onSendGarbage) {
+    engine.onSendGarbage(Math.min(12, Math.floor(normErased / 2) + 2), false);
   }
   return { success: true, text: 'SKILL: 1・5・9段消し!' };
 }
@@ -643,11 +666,12 @@ function execSkillPurifyGarbage(engine, riseSteps = 2, purifyFraction = 1.0) {
 
 function execSkillReflection(engine, senderId, preferredTarget = -1, reflectRatio = 0.75) {
   if (!engine) return { success: false };
+  const rows = engine.rows || ROWS;
+  const cols = engine.cols || COLS;
 
-  // 現在盤面に落下済みのお邪魔ブロックのみをカウント＆消去（予告キューは対象外）
   let garbageCount = 0;
-  for (let r = 0; r < ROWS; r++) {
-    for (let c = 0; c < COLS; c++) {
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
       const b = engine.grid[r][c];
       if (b && b.type === 'garbage' && b.state !== 'match') {
         b.state = 'match';
@@ -662,10 +686,11 @@ function execSkillReflection(engine, senderId, preferredTarget = -1, reflectRati
   }
   if (garbageCount === 0) return { success: false };
 
-  const reflectTotal = Math.max(1, Math.floor(garbageCount * (reflectRatio || 0.75)));
+  const normCount = garbageCount * (COLS / cols);
+  const reflectTotal = Math.max(1, Math.floor(normCount * (reflectRatio || 0.75)));
   SE.play('garbageErase');
   engine.stopTimer = Math.max(engine.stopTimer, 45);
-  engine.score += garbageCount * 10;
+  engine.score += Math.round(normCount * 10);
 
   if (engine.onSendGarbage) {
     engine.onSendGarbage(reflectTotal, false);
@@ -674,10 +699,12 @@ function execSkillReflection(engine, senderId, preferredTarget = -1, reflectRati
 }
 
 function execSkillConvertBlocks(engine, sourceCount = 3, destCount = 2) {
+  const rows = engine.rows || ROWS;
+  const cols = engine.cols || COLS;
   const normalIds = COLORS.filter(col => !col.isSpecial).map(col => col.id);
   const presentNormalSet = new Set();
-  for (let r = 0; r < ROWS; r++) {
-    for (let c = 0; c < COLS; c++) {
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
       const b = engine.grid[r][c];
       if (b && b.state === 'normal' && normalIds.includes(b.type)) {
         presentNormalSet.add(b.type);
@@ -706,8 +733,8 @@ function execSkillConvertBlocks(engine, sourceCount = 3, destCount = 2) {
   const destColors = otherColors.slice(0, Math.max(1, destCount));
 
   let converted = 0;
-  for (let r = 0; r < ROWS; r++) {
-    for (let c = 0; c < COLS; c++) {
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
       const b = engine.grid[r][c];
       if (b && b.state === 'normal' && sourceSet.has(b.type)) {
         b.type = destColors[Math.floor(Math.random() * destColors.length)];
@@ -793,15 +820,17 @@ function execSkillCorruptEnemyRow(senderId, preferredTarget = -1, options = {}) 
   const target = collectSkillTargets(senderId, preferredTarget);
   if (!target) return { success: false };
 
+  const tRows = target.engine.rows || ROWS;
+  const tCols = target.engine.cols || COLS;
   const rowCount = Math.max(1, options.rowCount || 1);
   const dropWidth = options.dropWidth !== undefined ? options.dropWidth : 3;
 
   const candidateRows = [];
   const fallbackRows = [];
-  for (let r = 0; r < ROWS; r++) {
+  for (let r = 0; r < tRows; r++) {
     let hasAnyBlock = false;
     let hasNonGarbage = false;
-    for (let c = 0; c < COLS; c++) {
+    for (let c = 0; c < tCols; c++) {
       const b = target.engine.grid[r][c];
       if (b !== null) {
         hasAnyBlock = true;
@@ -832,7 +861,8 @@ function execSkillCorruptEnemyRow(senderId, preferredTarget = -1, options = {}) 
   } else {
     chosenRows.forEach(r => applyCorruptRowToEngine(target.engine, r));
     if (dropWidth > 0) {
-      target.engine.addGarbage(dropWidth, 1, false);
+      const scaledW = Math.max(1, Math.min(tCols, Math.round(dropWidth * (tCols / COLS))));
+      target.engine.addGarbage(scaledW, 1, false);
       if (target.engine.garbageQueue.length > 0) {
         target.engine.garbageQueue[target.engine.garbageQueue.length - 1].delay = 45;
       }
@@ -846,9 +876,10 @@ function execSkillCorruptEnemyRow(senderId, preferredTarget = -1, options = {}) 
 }
 
 function applyCorruptRowToEngine(targetEngine, row) {
-  if (!targetEngine || row < 0 || row >= ROWS) return;
+  if (!targetEngine || row < 0 || row >= (targetEngine.rows || ROWS)) return;
+  const cols = targetEngine.cols || COLS;
   const groupId = targetEngine.allocGroupId ? targetEngine.allocGroupId() : (Date.now() + Math.random());
-  for (let c = 0; c < COLS; c++) {
+  for (let c = 0; c < cols; c++) {
     const existing = targetEngine.grid[row][c];
     if (!existing || (existing.type !== 'garbage' && existing.state === 'normal')) {
       targetEngine.grid[row][c] = {

@@ -404,7 +404,8 @@ async function checkServerUpdatesOnBoot() {
   return false;
 }
 
-const COLS = 6, ROWS = 12, CELL_PX = 36;
+// 2D=6列, 3D円筒=18列, 全段パズル可能領域化によりROWS=13
+const COLS = 6, COLS_3D = 18, ROWS = 13, CELL_PX = 36;
 
 const COLORS = [
   { id: 1, bg: '#ff3366', symbol: '♥' }, { id: 2, bg: '#ffd700', symbol: '★' },
@@ -860,7 +861,6 @@ const SE = {
   }
 };
 SE.readyPromise = SE.load();
-
 // ==========================================
 // VOICE 制御（attack / win / lose 拡張子非依存・HTMLAudioフォールバック強化 & カスタムボイス対応）
 // ==========================================
@@ -983,7 +983,6 @@ const VOICE = {
             this.resolvedCache[cacheKey] = entry;
             return entry;
           } catch (_) {
-            // decodeAudioData失敗時もHTML5 Audioで再生可能かフォールバック確認
             const okUrl = await this.probeAudioUrl(urlPath);
             if (okUrl) {
               const entry = { type: 'url', data: okUrl };
@@ -2014,7 +2013,6 @@ const SceneBgm = {
   }
 };
 SceneBgm.preload();
-
 let bgmAudio = new WebAudioBGMPlayer(audioCtx);
 let panicBgmAudio = new WebAudioBGMPlayer(audioCtx, 'assets/bgm/panic00.m4a');
 panicBgmAudio.loop = true;

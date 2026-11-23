@@ -511,8 +511,7 @@ input[type="checkbox"].ui-toggle-input:checked::after {
 }
 .canvas-container { 
   border: 3px solid #3282b8;
-  border-bottom: 2px solid rgba(255, 255, 255, 0.2);
-  border-radius: 10px 10px 4px 4px; 
+  border-radius: 10px; 
   background: #070b14;
   box-shadow: 0 10px 26px rgba(0, 0, 0, 0.8);
   overflow: hidden; 

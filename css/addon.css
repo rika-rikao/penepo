@@ -1,5 +1,5 @@
 /* ==========================================
-   追加UI・PWAボタン・3Dカバーフロー・白透明キャラ枠・スキル自作ラボ・共通2段階スライダー・縦ボトムナビ・シェア実寸箱・ボタンフォーカス演出・連勝/累計バッジ・練習右パネル・PC150%相当スケール・GBトーン用CSS
+   追加UI・PWAボタン・2D/3D切替トグル・3Dカバーフロー・白透明キャラ枠・スキル自作ラボ・共通2段階スライダー・縦ボトムナビ・シェア実寸箱・ボタンフォーカス演出・連勝/累計バッジ・練習右パネル・PC150%相当スケール・GBトーン用CSS
    ========================================== */
 .char-select-bar {
   font-size: 0.85rem;
@@ -20,7 +20,9 @@
 .local-actor-btn,
 .local-slot-type-btn,
 .local-slot-edit-btn,
+.local-slot-dim-btn,
 .local-select-tile,
+.dim-self-toggle-btn,
 .share-pill-btn,
 .share-ready-btn,
 .share-prep-char-btn,
@@ -35,6 +37,8 @@
 
 .pill-btn.active,
 .local-actor-btn.active,
+.local-slot-dim-btn.is-3d,
+.dim-self-toggle-btn.is-3d,
 .share-pill-btn.active,
 .share-ready-btn.is-ready,
 .share-prep-char-btn.selected,
@@ -62,9 +66,15 @@
 .local-slot-edit-btn:hover:not(:disabled),
 .local-slot-edit-btn:focus:not(:disabled),
 .local-slot-edit-btn:focus-visible:not(:disabled),
+.local-slot-dim-btn:hover:not(:disabled),
+.local-slot-dim-btn:focus:not(:disabled),
+.local-slot-dim-btn:focus-visible:not(:disabled),
 .local-select-tile:hover:not(:disabled),
 .local-select-tile:focus:not(:disabled),
 .local-select-tile:focus-visible:not(:disabled),
+.dim-self-toggle-btn:hover:not(:disabled),
+.dim-self-toggle-btn:focus:not(:disabled),
+.dim-self-toggle-btn:focus-visible:not(:disabled),
 .share-pill-btn:hover:not(:disabled),
 .share-pill-btn:focus:not(:disabled),
 .share-pill-btn:focus-visible:not(:disabled),
@@ -126,6 +136,69 @@
 }
 
 /* ==========================================
+   2D / 3D 盤面切り替えトグル（自キャラ設定・ローカル用）
+   ========================================== */
+.self-dim-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: rgba(15, 23, 42, 0.72);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  border-radius: 12px;
+  padding: 6px 10px;
+}
+.self-dim-label {
+  font-size: 0.78rem;
+  font-weight: 800;
+  color: #cbd5e1;
+  white-space: nowrap;
+}
+.dim-self-toggle-btn {
+  background: linear-gradient(135deg, #162447, #0f3460);
+  color: #f8fafc;
+  border: 1.5px solid #4ecca3;
+  border-radius: 14px;
+  padding: 5px 14px;
+  font-size: 0.8rem;
+  font-weight: 900;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.dim-self-toggle-btn.is-3d {
+  background: linear-gradient(135deg, #0ea5e9, #7c3aed);
+  border-color: #ffd700;
+  color: #ffffff;
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.55);
+}
+.dim-self-toggle-btn.is-locked {
+  border-style: dashed;
+}
+.compact-dim-group .pill-btn {
+  padding: 4px 9px;
+  font-size: 0.74rem;
+}
+.local-slot-dim-btn {
+  width: 100%;
+  padding: 3px 6px;
+  border-radius: 8px;
+  border: 1.5px solid rgba(78, 204, 163, 0.6);
+  background: rgba(15, 52, 96, 0.86);
+  color: #e2e8f0;
+  font-size: 0.68rem;
+  font-weight: 900;
+  cursor: pointer;
+  text-align: center;
+}
+.local-slot-dim-btn.is-3d {
+  background: linear-gradient(135deg, #0284c7, #6d28d9);
+  border-color: #ffd700;
+  color: #ffffff;
+  box-shadow: 0 0 8px rgba(56, 189, 248, 0.5);
+}
+
+/* ==========================================
    PWAインストールバー（PWA起動時は強制非表示）
    ========================================== */
 .pwa-install-bar {
@@ -177,7 +250,7 @@ body.settings-has-vnav #settings-overlay {
   left: 0;
   right: 0;
   bottom: 0;
-  z-index: 305;
+  z-index: 310;
   display: none;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 5px;
@@ -186,6 +259,7 @@ body.settings-has-vnav #settings-overlay {
   backdrop-filter: blur(12px);
   border-top: 1.5px solid rgba(78, 204, 163, 0.55);
   box-shadow: 0 -6px 20px rgba(0, 0, 0, 0.72);
+  touch-action: manipulation;
 }
 @media (orientation: landscape) {
   .vertical-bottom-nav {
@@ -1873,7 +1947,6 @@ input[type="range"].slider-adjusting {
   .cf-stage-wrap.compact { height: 106px; }
   .cf-stage-wrap.compact .cf-card { width: 150px; height: 82px; }
 }
-
 /* ==========================================
    横画面複数人対戦用：盤面隣接インライン立ち絵カード & 連勝/累計バッジ
    ========================================== */
@@ -2126,7 +2199,6 @@ input[type="range"].slider-adjusting {
   font-size: 0.72rem; font-weight: 800; color: #ffd700; white-space: nowrap;
 }
 
-/* シェア対戦時など、予告欄の右端に連勝・累計アイコンを出すコンパクト枠 */
 .preview-win-badges {
   display: flex;
   align-items: center;
@@ -2189,7 +2261,6 @@ input[type="range"].slider-adjusting {
   border-radius: 999px; background: rgba(255, 255, 255, 0.1); color: #cbd5e1;
 }
 
-/* 横UI練習モード右側情報パネル */
 .battle-side-practice-info {
   width: 100%;
   display: flex;
@@ -2590,6 +2661,7 @@ body.share-force-portrait #toast { top: 50%; left: auto; right: 16px; transform:
   background: linear-gradient(180deg, rgba(233, 69, 96, 0.14), rgba(15, 23, 42, 0.92));
 }
 .share-prep-half.share-p1-side {
+  padding-bottom: max(18px, env(safe-area-inset-bottom));
   background: linear-gradient(180deg, rgba(15, 23, 42, 0.92), rgba(0, 212, 255, 0.14));
 }
 .share-prep-center-bar {
@@ -2646,7 +2718,7 @@ body.share-force-portrait #toast { top: 50%; left: auto; right: 16px; transform:
   color: #08121f; box-shadow: 0 0 12px rgba(0, 230, 118, 0.8);
 }
 
-/* シェア対戦：実寸ラッパー方式（2P盤面消滅防止） */
+/* シェア対戦：実寸ラッパー方式（2P盤面消滅防止＋底部ホームバーガード対応） */
 #game-area.share-mode { background: #0d1321; }
 #game-area.share-mode #game-container {
   position: relative; display: flex; flex-direction: column; width: 100%; height: 100%; padding: 0; gap: 0;
@@ -2654,6 +2726,7 @@ body.share-force-portrait #toast { top: 50%; left: auto; right: 16px; transform:
 .share-zone-half {
   flex: 1; min-height: 0; width: 100%; display: flex; flex-direction: row; align-items: center;
   justify-content: center; position: relative; overflow: visible; gap: 8px;
+  box-sizing: border-box;
 }
 .share-zone-half.share-p2-zone {
   transform: rotate(180deg); border-top: 2px solid rgba(255, 255, 255, 0.25);

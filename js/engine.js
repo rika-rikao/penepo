@@ -1,5 +1,5 @@
 // ==========================================
-// ゲームエンジン（全段パズル可能化 / 凹凸共通初期盤面 / 3D円筒18列正面投影 / 新お邪魔パネル計算ルール対応）
+// ゲームエンジン（全段パズル可能化 / 凹凸共通初期盤面 / 3D円筒18列正面投影 / 新お邪魔パネル計算ルール＆混合倍率補正対応）
 // ==========================================
 function createSeededRng(seed) {
   let s = seed >>> 0;
@@ -39,35 +39,37 @@ function generateComboGarbagePanels(comboSize, isHard = false) {
   return panels.concat(extraPanels);
 }
 
-// 連鎖数に応じたお邪魔パネル配列（受け手列数に応じて2D=6列 / 3D=18列へ展開）
-function generateChainGarbagePanels(chainCount, targetCols = COLS_3D, isHard = false) {
+// 連鎖数に応じたお邪魔パネル配列（盤面列数に応じて2D=6列 / 3D=18列へ展開）
+function generateChainGarbagePanels(chainCount, baseCols = COLS_3D, isHard = false) {
   const n = Math.floor(chainCount);
   if (n < 2) return [];
-  if (targetCols >= 18) {
+  if (baseCols >= 18) {
     if (n === 2) return [{ w: 6, h: 1, isHard }];
     if (n === 3) return [{ w: 12, h: 1, isHard }];
     const h = Math.min(12, n - 3);
     return [{ w: 18, h, isHard }];
   }
   const h = Math.min(12, n - 1);
-  return [{ w: Math.min(targetCols, 6), h, isHard }];
+  return [{ w: Math.min(baseCols, 6), h, isHard }];
 }
 
 // 攻撃仕様オブジェクトを受け手盤面の列数に合わせたお邪魔パネル配列へ解決
+// （盤面混合時は 2D→3D で3倍、3D→2D で1/3倍にスケーリング）
 function resolveAttackSpecToPanels(spec, targetCols = COLS) {
   if (!spec || !Array.isArray(spec.events)) return [];
+  const senderCols = (spec.senderCols && spec.senderCols > 0) ? spec.senderCols : targetCols;
+  const is3DSender = senderCols >= 18;
   const rawPanels = [];
-  const is3DTarget = targetCols >= 18;
 
   spec.events.forEach(ev => {
     if (!ev) return;
     if (ev.kind === 'chain') {
-      const list = generateChainGarbagePanels(ev.chain, targetCols, !!ev.isHard);
+      const list = generateChainGarbagePanels(ev.chain, senderCols, !!ev.isHard);
       list.forEach(p => rawPanels.push(p));
     } else if (ev.kind === 'combo') {
       let list = generateComboGarbagePanels(ev.size, !!ev.isHard);
       // 3D盤面で20個以上のとき、先頭3個（6列×3＝18列）を18列×1段の1周パネルへ統合
-      if (is3DTarget && ev.size >= 20 && list.length >= 3) {
+      if (is3DSender && ev.size >= 20 && list.length >= 3) {
         const rest = list.slice(3);
         const merged = [{ w: 18, h: 1, isHard: !!ev.isHard }];
         let fullRows = 1;
@@ -79,13 +81,13 @@ function resolveAttackSpecToPanels(spec, targetCols = COLS) {
         list = merged.concat(rest);
       }
       list.forEach(p => rawPanels.push({
-        w: Math.max(1, Math.min(targetCols, p.w)),
+        w: Math.max(1, Math.min(senderCols, p.w)),
         h: Math.max(1, Math.min(12, p.h)),
         isHard: !!p.isHard
       }));
     } else if (ev.kind === 'flat') {
       rawPanels.push({
-        w: Math.max(1, Math.min(targetCols, ev.w || 6)),
+        w: Math.max(1, Math.min(senderCols, ev.w || 6)),
         h: Math.max(1, Math.min(12, ev.h || 1)),
         isHard: !!ev.isHard
       });
@@ -144,6 +146,37 @@ function resolveAttackSpecToPanels(spec, targetCols = COLS) {
       }
     }
     finalPanels = reduced;
+  }
+
+  // 送信元と受け手の盤面列数が異なる場合（2D⇔3D混合）、幅比（3倍 / 1/3倍）で変換
+  if (senderCols !== targetCols && finalPanels.length > 0) {
+    const dimScale = targetCols / senderCols; // 2D->3D: 3.0, 3D->2D: 1/3
+    const scaled = [];
+    let normalAreaAccum = 0;
+    let hardAreaAccum = 0;
+
+    finalPanels.forEach(p => {
+      const a = p.w * p.h * dimScale;
+      if (p.isHard) hardAreaAccum += a;
+      else normalAreaAccum += a;
+    });
+
+    const emitAreaAsPanels = (areaVal, isHard) => {
+      const totalBlocks = Math.floor(areaVal + 1e-6);
+      if (totalBlocks <= 0) return;
+      const fullRows = Math.floor(totalBlocks / targetCols);
+      const rem = totalBlocks % targetCols;
+      if (fullRows > 0) {
+        scaled.push({ w: targetCols, h: Math.min(12, fullRows), isHard });
+      }
+      if (rem > 0) {
+        scaled.push({ w: rem, h: 1, isHard });
+      }
+    };
+
+    emitAreaAsPanels(normalAreaAccum, false);
+    emitAreaAsPanels(hardAreaAccum, true);
+    return scaled;
   }
 
   return finalPanels;
@@ -1716,6 +1749,7 @@ class PonEngine {
 
       if (events.length > 0 && this.onSendGarbage) {
         const attackSpec = {
+          senderCols: this.cols,
           events,
           outgoingMult: (this.skillModifiers && this.skillModifiers.outgoingGarbageMult < 1.0)
             ? this.skillModifiers.outgoingGarbageMult
@@ -2604,7 +2638,7 @@ class BoardRenderer {
     [0, totalH].forEach(yPos => {
       ctx.beginPath();
       for (let i = 0; i <= steps; i++) {
-        const frac = (i / steps) * 2 - 1; // -1 .. +1
+        const frac = (i / steps) * 2 - 1;
         const theta = isFrontHalf
           ? (frac * thetaEdge)
           : (frac >= 0 ? Math.PI - frac * thetaEdge : -Math.PI - frac * thetaEdge);
@@ -2731,11 +2765,9 @@ class BoardRenderer {
         const thetaL = thetaC - dTheta * 0.5;
         const thetaR = thetaC + dTheta * 0.5;
 
-        // 両端が90°を超えて折り返すセルや完全に盤面外のセルの歪みを防ぐ
         const cosL = Math.cos(thetaL);
         const cosR = Math.cos(thetaR);
         if ((cosL < 0 && cosR > 0) || (cosL > 0 && cosR < 0)) {
-          // 90°側面またぎセルは完全に画面外（|theta|>66°）なので描画スキップ
           continue;
         }
 

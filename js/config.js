@@ -469,6 +469,12 @@ const AppLoader = {
       if (typeof ensureAudioCtxResumed === 'function') {
         ensureAudioCtxResumed();
       }
+      if (typeof bgmAudio !== 'undefined' && bgmAudio && typeof bgmAudio.unlock === 'function') {
+        bgmAudio.unlock();
+      }
+      if (typeof panicBgmAudio !== 'undefined' && panicBgmAudio && typeof panicBgmAudio.unlock === 'function') {
+        panicBgmAudio.unlock();
+      }
       this.hide();
       if (typeof syncPadSnapshotsAll === 'function') {
         syncPadSnapshotsAll(350);
@@ -627,13 +633,33 @@ const SceneTransition = {
 const AudioContext = window.AudioContext || window.webkitAudioContext;
 const audioCtx = new AudioContext();
 
+function retryPendingGameBgmIfUnlocked() {
+  if (typeof isBgmIntendedToPlay !== 'undefined' && isBgmIntendedToPlay
+    && !(typeof isBgmPausedByModal !== 'undefined' && isBgmPausedByModal)
+    && typeof matchState !== 'undefined' && matchState === 'playing') {
+    const gameArea = document.getElementById('game-area');
+    if (gameArea && gameArea.style.display !== 'none') {
+      if (typeof bgmAudio !== 'undefined' && bgmAudio && !bgmAudio.isPlaying && bgmAudio._pendingPlayAfterResume) {
+        bgmAudio._pendingPlayAfterResume = false;
+        bgmAudio.play().catch(() => {});
+      }
+      if (typeof isPanic !== 'undefined' && isPanic && typeof panicBgmAudio !== 'undefined' && panicBgmAudio && !panicBgmAudio.isPlaying && panicBgmAudio._pendingPlayAfterResume) {
+        panicBgmAudio._pendingPlayAfterResume = false;
+        panicBgmAudio.play().catch(() => {});
+      }
+    }
+  }
+}
+
 function ensureAudioCtxResumed() {
   if (audioCtx.state === 'suspended') {
     audioCtx.resume().then(() => {
       if (typeof SceneBgm !== 'undefined') SceneBgm.onAudioUnlocked();
+      retryPendingGameBgmIfUnlocked();
     }).catch(() => {});
   } else {
     if (typeof SceneBgm !== 'undefined') SceneBgm.onAudioUnlocked();
+    retryPendingGameBgmIfUnlocked();
   }
   if (typeof SE !== 'undefined' && typeof SE.unlockFallbackAudios === 'function') {
     SE.unlockFallbackAudios();
@@ -861,6 +887,7 @@ const SE = {
   }
 };
 SE.readyPromise = SE.load();
+
 // ==========================================
 // VOICE 制御（attack / win / lose 拡張子非依存・HTMLAudioフォールバック強化 & カスタムボイス対応）
 // ==========================================
@@ -1189,6 +1216,7 @@ class WebAudioBGMPlayer {
     this.useFallback = false;
     this._unlocked = false;
     this._unlockReqId = 0;
+    this._pendingPlayAfterResume = false;
     this.fallbackAudio.addEventListener('ended', () => {
       if (this.useFallback && !this._isManualStop) {
         this.isPlaying = false;
@@ -1358,9 +1386,13 @@ class WebAudioBGMPlayer {
   async play() {
     const reqId = ++this._playRequestId;
     this._unlockReqId++;
+    this._pendingPlayAfterResume = false;
     if (this.ctx.state === 'suspended') {
       await this.ctx.resume().catch(() => {});
       if (reqId !== this._playRequestId) return Promise.resolve();
+      if (this.ctx.state === 'suspended') {
+        this._pendingPlayAfterResume = true;
+      }
     }
     if (!this.buffer && !this.useFallback) {
       await this.load();
@@ -1384,14 +1416,20 @@ class WebAudioBGMPlayer {
       try {
         await this.fallbackAudio.play();
         this._unlocked = true;
+        this._pendingPlayAfterResume = false;
       } catch (e) {
         this.isPlaying = false;
+        this._pendingPlayAfterResume = true;
         console.warn('Fallback BGM play error:', e);
       }
       return Promise.resolve();
     }
 
     if (!this.buffer) return Promise.resolve();
+    if (this.ctx.state === 'suspended') {
+      this._pendingPlayAfterResume = true;
+      return Promise.resolve();
+    }
     
     if (this.isPlaying) this.pause(false);
     if (reqId !== this._playRequestId) return Promise.resolve();
@@ -1422,6 +1460,7 @@ class WebAudioBGMPlayer {
     
     currentSource.start(0, offset);
     this.isPlaying = true;
+    this._pendingPlayAfterResume = false;
     this.updateGain();
     return Promise.resolve();
   }
@@ -1429,6 +1468,7 @@ class WebAudioBGMPlayer {
   pause(invalidateRequest = true) {
     if (invalidateRequest) {
       this._playRequestId++;
+      this._pendingPlayAfterResume = false;
     }
     if (this.useFallback) {
       this._unlockReqId++;
@@ -1755,12 +1795,16 @@ const SceneBgm = {
   isTrackContextValid(track) {
     const gameArea = document.getElementById('game-area');
     const isGameActive = gameArea && window.getComputedStyle(gameArea).display !== 'none';
+    const hasOp = (typeof OpAnimation !== 'undefined');
+    const opActive = hasOp && OpAnimation.isActive && OpAnimation.isActive();
+    const opLiquid = hasOp && typeof OpAnimation.isLiquidTransitioning === 'function' && OpAnimation.isLiquidTransitioning();
+
     if (track === 'op') {
-      return !isGameActive && typeof OpAnimation !== 'undefined' && OpAnimation.isActive && OpAnimation.isActive();
+      return !isGameActive && opActive && !opLiquid;
     }
     if (track === 'mode_select') {
       if (isGameActive) return false;
-      if (typeof OpAnimation !== 'undefined' && OpAnimation.isActive && OpAnimation.isActive()) return false;
+      if (opActive && !opLiquid) return false;
       if (typeof isBgmPlaying !== 'undefined' && isBgmPlaying) return false;
       const menuOverlay = document.getElementById('menu-overlay');
       return !!menuOverlay && window.getComputedStyle(menuOverlay).display !== 'none';
@@ -1775,6 +1819,11 @@ const SceneBgm = {
     }
     if (audioCtx.state !== 'running') {
       this.pendingTrack = track;
+      audioCtx.resume().then(() => {
+        if (audioCtx.state === 'running' && this.pendingTrack === track) {
+          this.onAudioUnlocked();
+        }
+      }).catch(() => {});
       return;
     }
 
@@ -1960,7 +2009,9 @@ const SceneBgm = {
     if (track === 'mode_select' && typeof isBgmPlaying !== 'undefined' && isBgmPlaying && bgmPlaylist.length > 0) {
       return;
     }
-    if (this.currentTrack === track && (this._source || this._fallbackAudio || this.pendingTrack === track)) {
+    const alreadyActive = (this._source || this._fallbackAudio);
+    const waitingSuspended = (this.pendingTrack === track && audioCtx.state === 'suspended');
+    if (this.currentTrack === track && (alreadyActive || waitingSuspended)) {
       return;
     }
 
@@ -2256,12 +2307,14 @@ function openSelectPickerModal(selectEl, titleText = null) {
     else if (!label && selectEl.id === 'online-max-players') label = 'オンライン最大人数を選択';
     else if (!label && selectEl.id === 'settings-pad-slot') label = '使用ゲームパッド番号';
     else if (!label && selectEl.id === 'settings-hub-char') label = 'ホーム立ち絵を選択';
+    else if (!label && selectEl.classList.contains('dim-rule-select')) label = '盤面形式を選択';
     titleEl.innerText = label || '選択してください';
   }
 
   optionsEl.innerHTML = '';
   let selectedBtn = null;
   Array.from(selectEl.options).forEach((opt) => {
+    if (opt.hidden || opt.disabled || opt.style.display === 'none') return;
     const btn = document.createElement('button');
     btn.type = 'button';
     const isSel = opt.value === selectEl.value;

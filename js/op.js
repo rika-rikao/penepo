@@ -41,6 +41,10 @@ const OpAnimation = {
     return this._active;
   },
 
+  isLiquidTransitioning() {
+    return !!(this._active && this._phase === 'liquid');
+  },
+
   isPortraitView() {
     return window.innerHeight >= window.innerWidth;
   },
@@ -945,7 +949,6 @@ const OpAnimation = {
 
     for (let i = 0; i < len; i++) {
       const a = bufA[i];
-      // Gooey閾値処理（feColorMatrix 28 * a - 11 相当）
       const goo = (a - 102) * 14;
       const outA = goo < 0 ? 0 : (goo > 255 ? 255 : goo);
       const off = i << 2;
@@ -1013,7 +1016,6 @@ const OpAnimation = {
     if (skipBtn) skipBtn.style.opacity = '0';
 
     if (overlay) {
-      // 重要: 透明くり抜き部分を後ろのメニューへ透かしつつ、連続タップの貫通は完全にブロックする
       overlay.style.background = 'transparent';
       overlay.style.pointerEvents = 'auto';
     }

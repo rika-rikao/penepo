@@ -600,6 +600,10 @@
         <div class="mode-two-col-grid">
           <div class="mode-left-col">
             <div id="story-char-picker" class="char-picker-panel"></div>
+            <div class="self-dim-row">
+              <span class="self-dim-label">自分の盤面:</span>
+              <button type="button" id="story-self-dim-toggle" class="dim-self-toggle-btn" onclick="toggleSelectedPlayer3D()">2D (6列)</button>
+            </div>
           </div>
           <div class="mode-right-top">
             <div class="menu-option-group">
@@ -609,6 +613,14 @@
                 <button type="button" class="pill-btn active" data-val="normal" onclick="StoryManager.onDifficultyChange('normal')">ふつう</button>
                 <button type="button" class="pill-btn" data-val="hard" onclick="StoryManager.onDifficultyChange('hard')">むずかしい</button>
                 <button type="button" class="pill-btn" data-val="unfair" onclick="StoryManager.onDifficultyChange('unfair')">りふじん</button>
+              </div>
+            </div>
+            <div class="menu-option-group">
+              <span class="menu-option-label">盤面形式:</span>
+              <div id="story-dim-buttons" class="pill-btn-group dim-rule-group">
+                <button type="button" class="pill-btn active" data-dim="2d" onclick="selectDimRule('2d')">2D</button>
+                <button type="button" class="pill-btn" data-dim="3d" onclick="selectDimRule('3d')">3D円筒</button>
+                <button type="button" class="pill-btn" data-dim="mixed" onclick="selectDimRule('mixed')">こんごう</button>
               </div>
             </div>
           </div>
@@ -649,8 +661,20 @@
       <div class="mode-two-col-grid">
         <div class="mode-left-col">
           <div id="single-char-picker" class="char-picker-panel"></div>
+          <div class="self-dim-row">
+            <span class="self-dim-label">自分の盤面:</span>
+            <button type="button" id="single-self-dim-toggle" class="dim-self-toggle-btn" onclick="toggleSelectedPlayer3D()">2D (6列)</button>
+          </div>
         </div>
         <div class="mode-right-top">
+          <div class="menu-option-group">
+            <span class="menu-option-label">盤面形式:</span>
+            <div id="single-dim-buttons" class="pill-btn-group dim-rule-group">
+              <button type="button" class="pill-btn active" data-dim="2d" onclick="selectDimRule('2d')">2D</button>
+              <button type="button" class="pill-btn" data-dim="3d" onclick="selectDimRule('3d')">3D円筒</button>
+              <button type="button" class="pill-btn" id="single-dim-mixed-btn" data-dim="mixed" onclick="selectDimRule('mixed')" style="display:none;">こんごう</button>
+            </div>
+          </div>
           <div class="slider-card">
             <div class="slider-card-row">
               <span>ハンデ:</span>
@@ -705,8 +729,20 @@
         <div class="mode-left-col">
           <div id="com-mode-win-badges" class="mode-win-badges-bar" style="display:none;"></div>
           <div id="com-char-picker" class="char-picker-panel"></div>
+          <div class="self-dim-row">
+            <span class="self-dim-label">自分の盤面:</span>
+            <button type="button" id="com-self-dim-toggle" class="dim-self-toggle-btn" onclick="toggleSelectedPlayer3D()">2D (6列)</button>
+          </div>
         </div>
         <div class="mode-right-top">
+          <div class="menu-option-group">
+            <span class="menu-option-label">盤面形式:</span>
+            <div id="com-dim-buttons" class="pill-btn-group dim-rule-group">
+              <button type="button" class="pill-btn active" data-dim="2d" onclick="selectDimRule('2d')">2D</button>
+              <button type="button" class="pill-btn" data-dim="3d" onclick="selectDimRule('3d')">3D円筒</button>
+              <button type="button" class="pill-btn" data-dim="mixed" onclick="selectDimRule('mixed')">こんごう</button>
+            </div>
+          </div>
           <div class="slider-card">
             <div class="slider-card-row">
               <span>ハンデ:</span>
@@ -759,6 +795,11 @@
               <option value="4">4人</option>
             </select>
           </div>
+          <div id="local-dim-buttons" class="pill-btn-group dim-rule-group compact-dim-group">
+            <button type="button" class="pill-btn active" data-dim="2d" onclick="selectDimRule('2d')">2D</button>
+            <button type="button" class="pill-btn" data-dim="3d" onclick="selectDimRule('3d')">3D円筒</button>
+            <button type="button" class="pill-btn" data-dim="mixed" onclick="selectDimRule('mixed')">こんごう</button>
+          </div>
           <label id="local-skill-label" class="switch-wrapper skill-rule-box" style="padding:3px 10px;">
             <input type="checkbox" id="local-skill-toggle" class="ui-toggle-input text" data-text-off="OFF" data-text-on="ON" onchange="onLocalSkillRuleToggle()">
             <span>スキル</span>
@@ -797,6 +838,10 @@
         <div class="mode-left-col">
           <div id="online-mode-win-badges" class="mode-win-badges-bar" style="display:none;"></div>
           <div id="online-char-picker" class="char-picker-panel"></div>
+          <div class="self-dim-row">
+            <span class="self-dim-label">自分の盤面:</span>
+            <button type="button" id="online-self-dim-toggle" class="dim-self-toggle-btn" onclick="toggleSelectedPlayer3D()">2D (6列)</button>
+          </div>
         </div>
         <div class="mode-right-top">
           <div style="display:flex; gap:8px; width:100%; align-items:center;">
@@ -806,6 +851,14 @@
               <option value="3">3人</option>
               <option value="4">4人</option>
             </select>
+          </div>
+          <div class="menu-option-group">
+            <span class="menu-option-label">盤面形式（ホストのルール優先）:</span>
+            <div id="online-dim-buttons" class="pill-btn-group dim-rule-group">
+              <button type="button" class="pill-btn active" data-dim="2d" onclick="selectDimRule('2d')">2D</button>
+              <button type="button" class="pill-btn" data-dim="3d" onclick="selectDimRule('3d')">3D円筒</button>
+              <button type="button" class="pill-btn" data-dim="mixed" onclick="selectDimRule('mixed')">こんごう</button>
+            </div>
           </div>
           <div class="slider-card">
             <div class="slider-card-row">
@@ -844,26 +897,26 @@
     <div id="pwa-install-bar" class="pwa-install-bar">
       <button type="button" id="pwa-install-btn" class="pwa-install-btn" onclick="triggerPwaInstall()">📲 アプリ化する (PWA)</button>
     </div>
-
-    <!-- 縦UI モード選択中・せってい画面専用 ボトムメニュー -->
-    <nav id="vertical-bottom-nav" class="vertical-bottom-nav" style="display:none;" aria-label="メニュー切り替え">
-      <button type="button" class="v-bottom-btn" data-nav="home" onclick="navigateFromBottomNav('home')">
-        <span class="v-bottom-icon">🏠</span><span class="v-bottom-label">めにゅー</span>
-      </button>
-      <button type="button" class="v-bottom-btn" data-nav="solo" onclick="navigateFromBottomNav('solo')">
-        <span class="v-bottom-icon">👤</span><span class="v-bottom-label">ひとりで</span>
-      </button>
-      <button type="button" class="v-bottom-btn" data-nav="multi" onclick="navigateFromBottomNav('multi')">
-        <span class="v-bottom-icon">👥</span><span class="v-bottom-label">みんなで</span>
-      </button>
-      <button type="button" class="v-bottom-btn" data-nav="settings" onclick="navigateFromBottomNav('settings')">
-        <span class="v-bottom-icon">⚙️</span><span class="v-bottom-label">せってい</span>
-      </button>
-      <button type="button" class="v-bottom-btn" data-nav="ranking" onclick="navigateFromBottomNav('ranking')">
-        <span class="v-bottom-icon">🏆</span><span class="v-bottom-label">せいせき</span>
-      </button>
-    </nav>
   </div>
+
+  <!-- 縦UI モード選択中・せってい画面専用 ボトムメニュー（せってい画面の上に表示できるよう#menu-overlay外へ配置） -->
+  <nav id="vertical-bottom-nav" class="vertical-bottom-nav" style="display:none;" aria-label="メニュー切り替え">
+    <button type="button" class="v-bottom-btn" data-nav="home" onclick="navigateFromBottomNav('home')">
+      <span class="v-bottom-icon">🏠</span><span class="v-bottom-label">めにゅー</span>
+    </button>
+    <button type="button" class="v-bottom-btn" data-nav="solo" onclick="navigateFromBottomNav('solo')">
+      <span class="v-bottom-icon">👤</span><span class="v-bottom-label">ひとりで</span>
+    </button>
+    <button type="button" class="v-bottom-btn" data-nav="multi" onclick="navigateFromBottomNav('multi')">
+      <span class="v-bottom-icon">👥</span><span class="v-bottom-label">みんなで</span>
+    </button>
+    <button type="button" class="v-bottom-btn" data-nav="settings" onclick="navigateFromBottomNav('settings')">
+      <span class="v-bottom-icon">⚙️</span><span class="v-bottom-label">せってい</span>
+    </button>
+    <button type="button" class="v-bottom-btn" data-nav="ranking" onclick="navigateFromBottomNav('ranking')">
+      <span class="v-bottom-icon">🏆</span><span class="v-bottom-label">せいせき</span>
+    </button>
+  </nav>
 
   <div id="game-area" class="right-handed">
     <div id="my-zone-frame-bg" aria-hidden="true"></div>

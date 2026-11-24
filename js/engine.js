@@ -1,4 +1,4 @@
-// ==========================================
+﻿// ==========================================
 // ゲームエンジン（全段パズル可能化 / 凹凸共通初期盤面 / 3D円筒18列正面投影 / 新お邪魔パネル計算ルール＆混合倍率補正対応）
 // ==========================================
 function createSeededRng(seed) {
@@ -1950,10 +1950,15 @@ class BoardRenderer {
     for (let c = 0; c < N; c++) {
       const delta = ((c + 0.5 - vCol + N * 1.5) % N) - N * 0.5;
       const thetaC = delta * dTheta;
+      const thetaL = thetaC - dTheta * 0.5;
+      const thetaR = thetaC + dTheta * 0.5;
+      const cosL = Math.cos(thetaL);
+      const cosR = Math.cos(thetaR);
       if (Math.cos(thetaC) < 0) continue;
+      if ((cosL < 0 && cosR > 0) || (cosL > 0 && cosR < 0)) continue;
 
-      const pL = this.project3DPoint(metrics, thetaC - dTheta * 0.5, approxRowY);
-      const pR = this.project3DPoint(metrics, thetaC + dTheta * 0.5, approxRowY);
+      const pL = this.project3DPoint(metrics, thetaL, approxRowY);
+      const pR = this.project3DPoint(metrics, thetaR, approxRowY);
       const minX = Math.min(pL.x, pR.x);
       const maxX = Math.max(pL.x, pR.x);
       if (maxX <= 0 || minX >= metrics.W) continue;
@@ -2034,36 +2039,38 @@ class BoardRenderer {
     ctx.restore();
   }
 
-  drawGbDotPattern(ctx, bx, by, bw, bh, radius, gbStyle) {
+  drawGbDotPattern(ctx, bx, by, bw, bh, radius, gbStyle, valScale = 1.0) {
     ctx.save();
     ctx.beginPath();
     ctx.roundRect(bx + 1, by + 1, bw - 2, bh - 2, Math.max(4, radius - 1));
     ctx.clip();
 
+    const accentCol = dimHexColor(gbStyle.accent, 0, valScale);
+
     if (gbStyle.pattern === 'solid_dark' || gbStyle.pattern === 'solid_light') {
       // 中央クリーンベタ
     } else if (gbStyle.pattern === 'inner_white_box') {
-      ctx.strokeStyle = gbStyle.accent;
+      ctx.strokeStyle = accentCol;
       ctx.lineWidth = 2.2;
       ctx.strokeRect(bx + 4, by + 4, bw - 8, bh - 8);
     } else if (gbStyle.pattern === 'top_bottom_bars') {
-      ctx.fillStyle = gbStyle.accent;
+      ctx.fillStyle = accentCol;
       ctx.fillRect(bx, by, bw, 4.5);
       ctx.fillRect(bx, by + bh - 4.5, bw, 4.5);
     } else if (gbStyle.pattern === 'white_circle_center') {
-      ctx.fillStyle = gbStyle.accent;
+      ctx.fillStyle = accentCol;
       ctx.beginPath();
       ctx.arc(bx + bw / 2, by + bh / 2, Math.min(bw, bh) * 0.37, 0, Math.PI * 2);
       ctx.fill();
     } else if (gbStyle.pattern === 'corner_triangles') {
-      ctx.fillStyle = gbStyle.accent;
+      ctx.fillStyle = accentCol;
       const cSize = 8;
       ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(bx + cSize, by); ctx.lineTo(bx, by + cSize); ctx.closePath(); ctx.fill();
       ctx.beginPath(); ctx.moveTo(bx + bw, by); ctx.lineTo(bx + bw - cSize, by); ctx.lineTo(bx + bw, by + cSize); ctx.closePath(); ctx.fill();
       ctx.beginPath(); ctx.moveTo(bx, by + bh); ctx.lineTo(bx + cSize, by + bh); ctx.lineTo(bx, by + bh - cSize); ctx.closePath(); ctx.fill();
       ctx.beginPath(); ctx.moveTo(bx + bw, by + bh); ctx.lineTo(bx + bw - cSize, by + bh); ctx.lineTo(bx + bw, by + bh - cSize); ctx.closePath(); ctx.fill();
     } else if (gbStyle.pattern === 'special_frame') {
-      ctx.strokeStyle = gbStyle.accent;
+      ctx.strokeStyle = accentCol;
       ctx.lineWidth = 2.4;
       ctx.strokeRect(bx + 4, by + 4, bw - 8, bh - 8);
     }
@@ -2079,6 +2086,8 @@ class BoardRenderer {
     const radius = 7;
     const gb = this.isGbActive();
     const gbStyle = gb ? (GB_BLOCK_PALETTE[conf.id] || GB_BLOCK_PALETTE[3]) : null;
+    const nextSat = 0.16;
+    const nextVal = 0.44;
 
     ctx.save();
     if (matchTimer > 0 && matchTimer <= 12) {
@@ -2089,14 +2098,15 @@ class BoardRenderer {
     }
 
     if (gb) {
-      ctx.fillStyle = isFlashing ? '#ffffff' : gbStyle.bg;
+      const valScale = isNextRow ? nextVal : 1.0;
+      ctx.fillStyle = isFlashing ? '#ffffff' : dimHexColor(gbStyle.bg, 0, valScale);
       ctx.beginPath();
       ctx.roundRect(bx, by, bw, bh, radius);
       ctx.fill();
 
       if (!isFlashing) {
-        this.drawGbDotPattern(ctx, bx, by, bw, bh, radius, gbStyle);
-        ctx.strokeStyle = gbStyle.stroke;
+        this.drawGbDotPattern(ctx, bx, by, bw, bh, radius, gbStyle, valScale);
+        ctx.strokeStyle = dimHexColor(gbStyle.stroke, 0, valScale);
         ctx.lineWidth = 2.0;
         ctx.beginPath();
         ctx.roundRect(bx + 0.8, by + 0.8, bw - 1.6, bh - 1.6, Math.max(4, radius - 1));
@@ -2109,23 +2119,33 @@ class BoardRenderer {
         ctx.stroke();
       }
     } else {
-      ctx.fillStyle = isFlashing ? '#94a3b8' : conf.bg;
+      ctx.fillStyle = isFlashing
+        ? '#94a3b8'
+        : (isNextRow ? dimHexColor(conf.bg, nextSat, nextVal) : conf.bg);
       ctx.beginPath();
       ctx.roundRect(bx, by, bw, bh, radius);
       ctx.fill();
 
       if (!isFlashing) {
         const topGrad = ctx.createLinearGradient(bx, by, bx, by + bh);
-        topGrad.addColorStop(0, 'rgba(255, 255, 255, 0.42)');
-        topGrad.addColorStop(0.42, 'rgba(255, 255, 255, 0.08)');
-        topGrad.addColorStop(0.55, 'rgba(0, 0, 0, 0.0)');
-        topGrad.addColorStop(1, 'rgba(0, 0, 0, 0.34)');
+        if (isNextRow) {
+          topGrad.addColorStop(0, 'rgba(255, 255, 255, 0.10)');
+          topGrad.addColorStop(0.5, 'rgba(0, 0, 0, 0.08)');
+          topGrad.addColorStop(1, 'rgba(0, 0, 0, 0.42)');
+        } else {
+          topGrad.addColorStop(0, 'rgba(255, 255, 255, 0.42)');
+          topGrad.addColorStop(0.42, 'rgba(255, 255, 255, 0.08)');
+          topGrad.addColorStop(0.55, 'rgba(0, 0, 0, 0.0)');
+          topGrad.addColorStop(1, 'rgba(0, 0, 0, 0.34)');
+        }
         ctx.fillStyle = topGrad;
         ctx.beginPath();
         ctx.roundRect(bx, by, bw, bh, radius);
         ctx.fill();
 
-        ctx.strokeStyle = conf.isSpecial ? 'rgba(0, 0, 0, 0.25)' : 'rgba(255, 255, 255, 0.36)';
+        ctx.strokeStyle = isNextRow
+          ? 'rgba(255, 255, 255, 0.16)'
+          : (conf.isSpecial ? 'rgba(0, 0, 0, 0.25)' : 'rgba(255, 255, 255, 0.36)');
         ctx.lineWidth = 1.25;
         ctx.beginPath();
         ctx.roundRect(bx + 1.5, by + 1.5, bw - 3, bh - 3, Math.max(4, radius - 2));
@@ -2147,13 +2167,14 @@ class BoardRenderer {
 
     if (gb) {
       if (!isFlashing) {
+        const valScale = isNextRow ? 0.52 : 1.0;
         if (gbStyle.pattern === 'inner_white_box') {
           ctx.lineJoin = 'round';
           ctx.lineWidth = 3.2;
-          ctx.strokeStyle = gbStyle.textStroke;
+          ctx.strokeStyle = dimHexColor(gbStyle.textStroke, 0, valScale);
           ctx.strokeText(conf.symbol, cx, cy);
         }
-        ctx.fillStyle = gbStyle.text;
+        ctx.fillStyle = dimHexColor(gbStyle.text, 0, valScale);
         ctx.fillText(conf.symbol, cx, cy);
       } else {
         ctx.fillStyle = '#000000';
@@ -2161,10 +2182,12 @@ class BoardRenderer {
       }
     } else {
       if (!isFlashing && !conf.isSpecial) {
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+        ctx.fillStyle = isNextRow ? 'rgba(0, 0, 0, 0.25)' : 'rgba(0, 0, 0, 0.45)';
         ctx.fillText(conf.symbol, cx, cy + 1.5);
       }
-      ctx.fillStyle = isFlashing ? '#ffffff' : (conf.textColor || '#ffffff');
+      ctx.fillStyle = isFlashing
+        ? '#ffffff'
+        : (isNextRow ? dimHexColor(conf.textColor || '#ffffff', nextSat, 0.56) : (conf.textColor || '#ffffff'));
       ctx.fillText(conf.symbol, cx, cy);
     }
 
@@ -2214,12 +2237,16 @@ class BoardRenderer {
     }
   }
 
-  drawGarbageCell(ctx, x, y, b, sameTop, sameBottom, sameLeft, sameRight) {
+  drawGarbageCell(ctx, x, y, b, sameTop, sameBottom, sameLeft, sameRight, isNextRow = false) {
     const isFlashing = (b.state === 'match' && Math.floor(b.timer / 4) % 2 === 0);
     const gb = this.isGbActive();
-    ctx.fillStyle = isFlashing
+    const nextSat = isNextRow ? 0.14 : 1.0;
+    const nextVal = isNextRow ? 0.46 : 1.0;
+
+    const rawFill = isFlashing
       ? '#ffffff'
       : (gb ? (b.isHard ? '#c8c8c8' : '#585858') : (b.isHard ? '#a8b2bd' : '#5c636a'));
+    ctx.fillStyle = isNextRow && !isFlashing ? dimHexColor(rawFill, nextSat, nextVal) : rawFill;
     ctx.fillRect(x, y, CELL_PX, CELL_PX);
 
     if (!isFlashing) {
@@ -2233,7 +2260,7 @@ class BoardRenderer {
         }
       } else {
         const gGrad = ctx.createLinearGradient(x, y, x, y + CELL_PX);
-        gGrad.addColorStop(0, 'rgba(255, 255, 255, 0.18)');
+        gGrad.addColorStop(0, isNextRow ? 'rgba(255, 255, 255, 0.06)' : 'rgba(255, 255, 255, 0.18)');
         gGrad.addColorStop(0.5, 'rgba(255, 255, 255, 0.0)');
         gGrad.addColorStop(1, 'rgba(0, 0, 0, 0.28)');
         ctx.fillStyle = gGrad;
@@ -2241,7 +2268,8 @@ class BoardRenderer {
       }
     }
 
-    ctx.strokeStyle = gb ? (b.isHard ? '#111111' : '#f0f0f0') : '#dee2e6';
+    const rawBorder = gb ? (b.isHard ? '#111111' : '#f0f0f0') : '#dee2e6';
+    ctx.strokeStyle = isNextRow ? dimHexColor(rawBorder, nextSat, 0.52) : rawBorder;
     ctx.lineWidth = gb ? 2.4 : 2;
     ctx.beginPath();
     if (!sameTop) { ctx.moveTo(x, y + 1); ctx.lineTo(x + CELL_PX, y + 1); }
@@ -2250,7 +2278,7 @@ class BoardRenderer {
     if (!sameRight) { ctx.moveTo(x + CELL_PX - 1, y); ctx.lineTo(x + CELL_PX - 1, y + CELL_PX); }
     ctx.stroke();
 
-    if (!isFlashing) {
+    if (!isFlashing && !isNextRow) {
       ctx.fillStyle = gb ? (b.isHard ? '#111111' : '#ffffff') : 'rgba(255, 255, 255, 0.35)';
       if (!sameTop && !sameLeft) { ctx.beginPath(); ctx.arc(x + 5, y + 5, 1.8, 0, Math.PI * 2); ctx.fill(); }
       if (!sameTop && !sameRight) { ctx.beginPath(); ctx.arc(x + CELL_PX - 5, y + 5, 1.8, 0, Math.PI * 2); ctx.fill(); }
@@ -2259,7 +2287,7 @@ class BoardRenderer {
     }
 
     if (b.isHard) {
-      ctx.strokeStyle = gb ? '#111111' : 'rgba(15, 15, 15, 0.45)';
+      ctx.strokeStyle = gb ? (isNextRow ? dimHexColor('#111111', 0, nextVal) : '#111111') : 'rgba(15, 15, 15, 0.45)';
       ctx.lineWidth = 5;
       ctx.beginPath();
       ctx.moveTo(x + CELL_PX * 0.25, y + CELL_PX * 0.25);
@@ -2268,7 +2296,9 @@ class BoardRenderer {
       ctx.lineTo(x + CELL_PX * 0.25, y + CELL_PX * 0.75);
       ctx.stroke();
 
-      ctx.strokeStyle = gb ? '#ffffff' : 'rgba(255, 255, 255, 0.5)';
+      ctx.strokeStyle = gb
+        ? (isNextRow ? dimHexColor('#ffffff', 0, 0.52) : '#ffffff')
+        : (isNextRow ? 'rgba(255, 255, 255, 0.25)' : 'rgba(255, 255, 255, 0.5)');
       ctx.lineWidth = 2.4;
       ctx.beginPath();
       ctx.moveTo(x + CELL_PX * 0.25, y + CELL_PX * 0.25);
@@ -2277,7 +2307,7 @@ class BoardRenderer {
       ctx.lineTo(x + CELL_PX * 0.25, y + CELL_PX * 0.75);
       ctx.stroke();
     } else if (!gb) {
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
+      ctx.fillStyle = isNextRow ? 'rgba(255, 255, 255, 0.04)' : 'rgba(255, 255, 255, 0.1)';
       ctx.beginPath();
       ctx.arc(x + CELL_PX / 2, y + CELL_PX / 2, CELL_PX / 4, 0, Math.PI * 2);
       ctx.fill();
@@ -2320,7 +2350,7 @@ class BoardRenderer {
         const sameBottom = b.groupId && r < engine.rows - 1 && engine.grid[r + 1][c] && engine.grid[r + 1][c].groupId === b.groupId;
         const sameLeft = b.groupId && cLeft >= 0 && engine.grid[r][cLeft] && engine.grid[r][cLeft].groupId === b.groupId;
         const sameRight = b.groupId && cRight < N && engine.grid[r][cRight] && engine.grid[r][cRight].groupId === b.groupId;
-        this.drawGarbageCell(ctx, x, y, b, sameTop, sameBottom, sameLeft, sameRight);
+        this.drawGarbageCell(ctx, x, y, b, sameTop, sameBottom, sameLeft, sameRight, false);
       }
     } else {
       const conf = COLORS.find(item => item.id === b.type);
@@ -2337,7 +2367,7 @@ class BoardRenderer {
   // ==========================================
   // 3D円筒用：台形パース＋角度付きブロック描画（前面・後面共通）
   // ==========================================
-  drawPanelBlock3D(ctx, pLT, pRT, pRB, pLB, conf, lighting, isFlashing, bounceY = 0, matchTimer = 0) {
+  drawPanelBlock3D(ctx, pLT, pRT, pRB, pLB, conf, lighting, isFlashing, bounceY = 0, matchTimer = 0, isNextRow = false) {
     const gb = this.isGbActive();
     const gbStyle = gb ? (GB_BLOCK_PALETTE[conf.id] || GB_BLOCK_PALETTE[3]) : null;
     const { satScale, valScale, isBack, alpha } = lighting;
@@ -2404,7 +2434,7 @@ class BoardRenderer {
         }
       }
 
-      ctx.strokeStyle = dimHexColor(strokeHex, 0, isBack ? valScale * 0.9 : Math.min(1, valScale + 0.15));
+      ctx.strokeStyle = dimHexColor(strokeHex, 0, isBack ? valScale * 0.9 : Math.min(1, valScale + (isNextRow ? 0.04 : 0.15)));
       ctx.lineWidth = isBack ? 1.2 : 1.8;
       traceQuadPath(ctx, qLT, qRT, qRB, qLB);
       ctx.stroke();
@@ -2420,9 +2450,9 @@ class BoardRenderer {
         const midTop = bilerpQuad(qLT, qRT, qRB, qLB, 0.5, 0);
         const midBot = bilerpQuad(qLT, qRT, qRB, qLB, 0.5, 1);
         const grad = ctx.createLinearGradient(midTop.x, midTop.y, midBot.x, midBot.y);
-        if (isBack) {
+        if (isBack || isNextRow) {
           grad.addColorStop(0, 'rgba(255, 255, 255, 0.08)');
-          grad.addColorStop(1, 'rgba(0, 0, 0, 0.35)');
+          grad.addColorStop(1, 'rgba(0, 0, 0, 0.38)');
         } else {
           grad.addColorStop(0, 'rgba(255, 255, 255, 0.42)');
           grad.addColorStop(0.42, 'rgba(255, 255, 255, 0.07)');
@@ -2437,10 +2467,10 @@ class BoardRenderer {
         const b1 = bilerpQuad(qLT, qRT, qRB, qLB, 0.96, 0.04);
         const b2 = bilerpQuad(qLT, qRT, qRB, qLB, 0.96, 0.96);
         const b3 = bilerpQuad(qLT, qRT, qRB, qLB, 0.04, 0.96);
-        ctx.strokeStyle = isBack
+        ctx.strokeStyle = (isBack || isNextRow)
           ? 'rgba(200, 210, 225, 0.16)'
           : (conf.isSpecial ? 'rgba(0, 0, 0, 0.28)' : 'rgba(255, 255, 255, 0.38)');
-        ctx.lineWidth = isBack ? 0.9 : 1.25;
+        ctx.lineWidth = (isBack || isNextRow) ? 0.9 : 1.25;
         traceQuadPath(ctx, b0, b1, b2, b3);
         ctx.stroke();
       } else {
@@ -2489,13 +2519,13 @@ class BoardRenderer {
           ctx.fillText(conf.symbol, 0, bounceY);
         }
       } else {
-        if (!isFlashing && !conf.isSpecial && !isBack) {
+        if (!isFlashing && !conf.isSpecial && !isBack && !isNextRow) {
           ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
           ctx.fillText(conf.symbol, 0, bounceY + 1.5);
         }
         const symCol = isFlashing
           ? dimHexColor('#ffffff', satScale, Math.min(1, valScale + 0.12))
-          : dimHexColor(conf.textColor || '#ffffff', satScale, isBack ? Math.min(0.68, valScale + 0.16) : Math.min(1, valScale + 0.08));
+          : dimHexColor(conf.textColor || '#ffffff', satScale, (isBack || isNextRow) ? Math.min(0.68, valScale + 0.16) : Math.min(1, valScale + 0.08));
         ctx.fillStyle = symCol;
         ctx.fillText(conf.symbol, 0, bounceY);
       }
@@ -2506,7 +2536,7 @@ class BoardRenderer {
     ctx.restore();
   }
 
-  drawGarbageCell3D(ctx, pLT, pRT, pRB, pLB, b, lighting, sameTop, sameBottom, sameLeft, sameRight) {
+  drawGarbageCell3D(ctx, pLT, pRT, pRB, pLB, b, lighting, sameTop, sameBottom, sameLeft, sameRight, isNextRow = false) {
     const isFlashing = (b.state === 'match' && Math.floor(b.timer / 4) % 2 === 0);
     const gb = this.isGbActive();
     const { satScale, valScale, isBack, alpha } = lighting;
@@ -2525,7 +2555,7 @@ class BoardRenderer {
       const midTop = bilerpQuad(pLT, pRT, pRB, pLB, 0.5, 0);
       const midBot = bilerpQuad(pLT, pRT, pRB, pLB, 0.5, 1);
       const gGrad = ctx.createLinearGradient(midTop.x, midTop.y, midBot.x, midBot.y);
-      gGrad.addColorStop(0, isBack ? 'rgba(255, 255, 255, 0.06)' : 'rgba(255, 255, 255, 0.18)');
+      gGrad.addColorStop(0, (isBack || isNextRow) ? 'rgba(255, 255, 255, 0.06)' : 'rgba(255, 255, 255, 0.18)');
       gGrad.addColorStop(0.5, 'rgba(255, 255, 255, 0.0)');
       gGrad.addColorStop(1, 'rgba(0, 0, 0, 0.28)');
       ctx.fillStyle = gGrad;
@@ -2534,7 +2564,7 @@ class BoardRenderer {
     }
 
     const rawBorder = gb ? (b.isHard ? '#111111' : '#f0f0f0') : '#dee2e6';
-    ctx.strokeStyle = dimHexColor(rawBorder, satScale, isBack ? valScale * 0.9 : Math.min(1, valScale + 0.15));
+    ctx.strokeStyle = dimHexColor(rawBorder, satScale, (isBack || isNextRow) ? valScale * 0.9 : Math.min(1, valScale + 0.15));
     ctx.lineWidth = isBack ? 1.2 : (gb ? 2.2 : 1.8);
     ctx.beginPath();
     if (!sameTop) { ctx.moveTo(pLT.x, pLT.y); ctx.lineTo(pRT.x, pRT.y); }
@@ -2558,7 +2588,7 @@ class BoardRenderer {
 
       ctx.strokeStyle = gb
         ? dimHexColor('#ffffff', 0, valScale)
-        : (isBack ? 'rgba(220, 220, 220, 0.28)' : 'rgba(255, 255, 255, 0.5)');
+        : ((isBack || isNextRow) ? 'rgba(220, 220, 220, 0.28)' : 'rgba(255, 255, 255, 0.5)');
       ctx.lineWidth = isBack ? 1.2 : 2.1;
       ctx.beginPath();
       ctx.moveTo(d0.x, d0.y); ctx.lineTo(d2.x, d2.y);
@@ -2613,7 +2643,7 @@ class BoardRenderer {
         const sameBottom = !isNextRow && b.groupId && r < engine.rows - 1 && engine.grid[r + 1][c] && engine.grid[r + 1][c].groupId === b.groupId;
         const sameLeft = !!(b.groupId && rowArr && rowArr[cLeft] && rowArr[cLeft].groupId === b.groupId);
         const sameRight = !!(b.groupId && rowArr && rowArr[cRight] && rowArr[cRight].groupId === b.groupId);
-        this.drawGarbageCell3D(ctx, pLT, pRT, pRB, pLB, b, lighting, sameTop, sameBottom, sameLeft, sameRight);
+        this.drawGarbageCell3D(ctx, pLT, pRT, pRB, pLB, b, lighting, sameTop, sameBottom, sameLeft, sameRight, isNextRow);
       }
     } else {
       const conf = COLORS.find(item => item.id === b.type);
@@ -2622,7 +2652,7 @@ class BoardRenderer {
         const isHighestCol = !isNextRow && isEnginePanic && highestCols.has(c);
         const bounceY = isHighestCol ? Math.sin(time / 60 + c) * 3 : 0;
         const matchTimer = (b.state === 'match') ? b.timer : 0;
-        this.drawPanelBlock3D(ctx, pLT, pRT, pRB, pLB, conf, lighting, isFlashing, bounceY, matchTimer);
+        this.drawPanelBlock3D(ctx, pLT, pRT, pRB, pLB, conf, lighting, isFlashing, bounceY, matchTimer, isNextRow);
       }
     }
   }
@@ -2705,6 +2735,7 @@ class BoardRenderer {
     const { N, W, dTheta } = metrics;
     const vCol = this.syncViewCol(engine);
     const gb = this.isGbActive();
+    const grayOutNextRow = !engine.endAnim;
 
     const cylGrad = ctx.createLinearGradient(0, 0, W, 0);
     cylGrad.addColorStop(0, 'rgba(0, 0, 0, 0.34)');
@@ -2771,7 +2802,14 @@ class BoardRenderer {
           continue;
         }
 
-        const lighting = this.getBlockLighting(thetaC);
+        let lighting = this.getBlockLighting(thetaC);
+        if (isNextRow && grayOutNextRow) {
+          lighting = {
+            ...lighting,
+            satScale: lighting.satScale * 0.16,
+            valScale: lighting.valScale * 0.45
+          };
+        }
 
         if (isNextRow) {
           const rowYTop = engine.rows * CELL_PX - offsetY;
@@ -2791,7 +2829,7 @@ class BoardRenderer {
           ctx.save();
           traceQuadPath(ctx, cLT, cRT, cRB, cLB);
           ctx.clip();
-          this.drawCell3D(ctx, engine, r, c, b, cLT, cRT, fRB, fLB, lighting, isEnginePanic, highestCols, time, true);
+          this.drawCell3D(ctx, engine, r, c, b, cLT, cRT, fRB, fLB, lighting, isEnginePanic, highestCols, time, grayOutNextRow);
           ctx.restore();
         } else {
           const rowYTop = r * CELL_PX - offsetY + (b.fallY * CELL_PX);
@@ -2999,6 +3037,7 @@ class BoardRenderer {
 
       if (offsetY > 0.5 && engine.nextRow) {
         const nextRowY = engine.rows * CELL_PX - offsetY;
+        const grayOutNextRow = !engine.endAnim;
         for (let c = 0; c < engine.cols; c++) {
           const b = engine.nextRow[c];
           if (b) {
@@ -3007,11 +3046,11 @@ class BoardRenderer {
             if (b.type === 'garbage') {
               const sameLeft = b.groupId && c > 0 && engine.nextRow[c - 1] && engine.nextRow[c - 1].groupId === b.groupId;
               const sameRight = b.groupId && c < engine.cols - 1 && engine.nextRow[c + 1] && engine.nextRow[c + 1].groupId === b.groupId;
-              this.drawGarbageCell(ctx, x, y, b, false, false, sameLeft, sameRight);
+              this.drawGarbageCell(ctx, x, y, b, false, false, sameLeft, sameRight, grayOutNextRow);
             } else {
               const conf = COLORS.find(item => item.id === b.type);
               if (conf) {
-                this.drawPanelBlock(ctx, x, y, conf, false, 0, false, 0);
+                this.drawPanelBlock(ctx, x, y, conf, false, 0, grayOutNextRow, 0);
               }
             }
           }

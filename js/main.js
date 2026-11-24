@@ -1,4 +1,4 @@
-// ==========================================
+﻿// ==========================================
 // 対戦・ターゲット・スマブラ風ローカル選択・2D/3D/こんごう切替・連勝/累計勝利記録・縦UIバッジ・PC150%相当スケール統合管理
 // ==========================================
 let myEngine, myRenderer;
@@ -779,7 +779,6 @@ function beginOnlineJoinFlow() {
     onConfirm: () => joinRoom()
   });
 }
-
 function syncHandicapFromSlider(val) {
   const v = Math.max(1, Math.min(5, parseInt(val, 10) || 3));
   const hidden = document.getElementById('handicap-val');
@@ -2349,7 +2348,6 @@ function startLocalGame() {
   const customSkillEnabled = isLocalCustomSkillRuleOn();
   startGame('local', 3, count, skillEnabled, customSkillEnabled);
 }
-
 // ==========================================
 // シェア対戦（複数回タップ誤爆防止・2D/3D/こんごう対応） & メニューナビゲーション & 勝利統計記録
 // ==========================================
@@ -4564,7 +4562,6 @@ function updateAllPortraitHUDs() {
     );
   });
 }
-
 function refreshBattleSidePanels() {
   const p1Card = document.getElementById('battle-side-p1');
   const p2Card = document.getElementById('battle-side-p2');
@@ -5881,7 +5878,6 @@ function handleKeyboardActionForPlayer(engine, cfgKey, stateObj, code, isRepeat,
   if (handled) e.preventDefault();
   return handled;
 }
-
 function handleLocalMenuKeyInput(code, e) {
   const count = getLocalPlayerCount();
   const cfg0 = playerConfigs[0].key;
@@ -5989,9 +5985,9 @@ function getCanvasCoordsFromPointer(cvs, e, isSelf180Rotated = false) {
 }
 
 function bindBoardTouchInput(cvs, getEngine, getContinuousChecked, isSelf180Rotated, setRowFollowCb, getRenderer = null) {
-  let activePointerId = null, grabbedCol = -1, grabbedRow = -1, grabbedSide = null;
+  let activePointerId = null, grabbedCol = -1, grabbedRow = -1;
   let initialCanvasX = 0, initialCanvasY = 0;
-  let lastCanvasX = 0, dragMode = 'swap', suppressTapOnUp = false;
+  let lastCanvasX = 0, lastSwapCanvasX = 0, dragMode = 'swap', suppressTapOnUp = false, cursorMovedOnDown = false;
   if (setRowFollowCb) setRowFollowCb(() => { if (activePointerId !== null && grabbedRow > 0) grabbedRow--; });
 
   const stepGrabSwap = (dir, isRepeatCall = false) => {
@@ -6003,21 +5999,22 @@ function bindBoardTouchInput(cvs, getEngine, getContinuousChecked, isSelf180Rota
 
     if (engine.is3D) {
       if (dir > 0) {
-        if (grabbedSide === null) grabbedSide = 'right';
-        if (engine.swap(grabbedCol, grabbedRow)) {
+        const swapCol = grabbedCol;
+        if (engine.swap(swapCol, grabbedRow)) {
           SE.play('cursorMove');
           grabbedCol = (grabbedCol + 1) % cols;
-          applyCursorForGrabbedCol(engine, grabbedCol, grabbedSide);
+          engine.cursor.x = swapCol;
+          engine.cursor.y = grabbedRow;
           suppressTapOnUp = true;
           return true;
         }
       } else {
-        if (grabbedSide === null) grabbedSide = 'left';
-        const leftCol = (grabbedCol - 1 + cols) % cols;
-        if (engine.swap(leftCol, grabbedRow)) {
+        const swapCol = (grabbedCol - 1 + cols) % cols;
+        if (engine.swap(swapCol, grabbedRow)) {
           SE.play('cursorMove');
-          grabbedCol = leftCol;
-          applyCursorForGrabbedCol(engine, grabbedCol, grabbedSide);
+          grabbedCol = swapCol;
+          engine.cursor.x = swapCol;
+          engine.cursor.y = grabbedRow;
           suppressTapOnUp = true;
           return true;
         }
@@ -6026,20 +6023,22 @@ function bindBoardTouchInput(cvs, getEngine, getContinuousChecked, isSelf180Rota
     }
 
     if (dir > 0 && grabbedCol < cols - 1) {
-      if (grabbedSide === null) grabbedSide = 'right';
-      if (engine.swap(grabbedCol, grabbedRow)) {
+      const swapCol = grabbedCol;
+      if (engine.swap(swapCol, grabbedRow)) {
         SE.play('cursorMove');
         grabbedCol++;
-        applyCursorForGrabbedCol(engine, grabbedCol, grabbedSide);
+        engine.cursor.x = swapCol;
+        engine.cursor.y = grabbedRow;
         suppressTapOnUp = true;
         return true;
       }
     } else if (dir < 0 && grabbedCol > 0) {
-      if (grabbedSide === null) grabbedSide = 'left';
-      if (engine.swap(grabbedCol - 1, grabbedRow)) {
+      const swapCol = grabbedCol - 1;
+      if (engine.swap(swapCol, grabbedRow)) {
         SE.play('cursorMove');
         grabbedCol--;
-        applyCursorForGrabbedCol(engine, grabbedCol, grabbedSide);
+        engine.cursor.x = swapCol;
+        engine.cursor.y = grabbedRow;
         suppressTapOnUp = true;
         return true;
       }
@@ -6054,13 +6053,16 @@ function bindBoardTouchInput(cvs, getEngine, getContinuousChecked, isSelf180Rota
     if (!engine || (isMatchOver && !isPracticeMode) || activePointerId !== null) return;
     activePointerId = e.pointerId;
     suppressTapOnUp = false;
+    cursorMovedOnDown = false;
     try { cvs.setPointerCapture(e.pointerId); } catch (_) {}
     const pt = getCanvasCoordsFromPointer(cvs, e, isSelf180Rotated);
     initialCanvasX = pt.x; initialCanvasY = pt.y;
     lastCanvasX = pt.x;
+    lastSwapCanvasX = pt.x;
 
     const renderer = typeof getRenderer === 'function' ? getRenderer() : null;
     const cols = engine.cols || COLS;
+    const rows = engine.rows || ROWS;
     if (engine.is3D && renderer && typeof renderer.getCellFromCanvasPoint === 'function') {
       const cell = renderer.getCellFromCanvasPoint(engine, pt.x, pt.y);
       grabbedCol = cell.col;
@@ -6069,16 +6071,25 @@ function bindBoardTouchInput(cvs, getEngine, getContinuousChecked, isSelf180Rota
       const bLeft = engine.grid[grabbedRow] && engine.grid[grabbedRow][(grabbedCol - 1 + cols) % cols];
       const bRight = engine.grid[grabbedRow] && engine.grid[grabbedRow][(grabbedCol + 1) % cols];
       dragMode = (!bHere && !bLeft && !bRight) ? 'rotate' : 'swap';
+      if (dragMode === 'swap' && engine.cursor.y !== grabbedRow) {
+        engine.cursor.y = grabbedRow;
+        cursorMovedOnDown = true;
+      }
     } else {
       grabbedCol = Math.max(0, Math.min(cols - 1, Math.floor(pt.x / CELL_PX)));
-      grabbedRow = Math.max(0, Math.min((engine.rows || ROWS) - 1, Math.floor((pt.y + engine.riseOffset * CELL_PX) / CELL_PX)));
+      grabbedRow = Math.max(0, Math.min(rows - 1, Math.floor((pt.y + engine.riseOffset * CELL_PX) / CELL_PX)));
       dragMode = 'swap';
+      const curRight = engine.cursor.x + 1;
+      if (grabbedCol !== engine.cursor.x && grabbedCol !== curRight) {
+        const nextX = Math.max(0, Math.min(cols - 2, grabbedCol));
+        if (engine.cursor.x !== nextX) cursorMovedOnDown = true;
+        engine.cursor.x = nextX;
+      }
+      if (engine.cursor.y !== grabbedRow) {
+        engine.cursor.y = grabbedRow;
+        cursorMovedOnDown = true;
+      }
     }
-
-    const rightCol = engine.is3D ? (engine.cursor.x + 1) % cols : (engine.cursor.x + 1);
-    if (grabbedCol === engine.cursor.x) grabbedSide = 'left';
-    else if (grabbedCol === rightCol) grabbedSide = 'right';
-    else grabbedSide = null;
   });
 
   cvs.addEventListener('pointermove', (e) => {
@@ -6090,23 +6101,52 @@ function bindBoardTouchInput(cvs, getEngine, getContinuousChecked, isSelf180Rota
 
     if (engine.is3D) {
       const cols = engine.cols || COLS_3D;
-      const stepPx = 28;
-      const diffPx = pt.x - lastCanvasX;
-      if (Math.abs(diffPx) < stepPx) return;
-      const steps = Math.trunc(diffPx / stepPx);
-      lastCanvasX += steps * stepPx;
+      const renderer = typeof getRenderer === 'function' ? getRenderer() : null;
 
       if (dragMode === 'rotate') {
+        const stepPx = 34;
+        const diffPx = pt.x - lastCanvasX;
+        if (Math.abs(diffPx) < stepPx) return;
+        const steps = Math.trunc(diffPx / stepPx);
+        lastCanvasX += steps * stepPx;
         engine.cursor.x = ((engine.cursor.x - steps) % cols + cols) % cols;
         suppressTapOnUp = true;
         SE.play('cursorMove');
         return;
       }
 
+      if (renderer && typeof renderer.getCellFromCanvasPoint === 'function') {
+        const cell = renderer.getCellFromCanvasPoint(engine, pt.x, pt.y);
+        const diff = ((cell.col - grabbedCol + cols * 1.5) % cols) - cols * 0.5;
+        const moveDiff = pt.x - lastSwapCanvasX;
+        if (diff > 0 && moveDiff >= 12) {
+          const steps = Math.min(3, Math.round(diff));
+          for (let s = 0; s < steps; s++) {
+            if (!stepGrabSwap(1, false)) break;
+            lastSwapCanvasX = pt.x;
+            if (!continuous) { activePointerId = null; break; }
+          }
+        } else if (diff < 0 && moveDiff <= -12) {
+          const steps = Math.min(3, Math.round(-diff));
+          for (let s = 0; s < steps; s++) {
+            if (!stepGrabSwap(-1, false)) break;
+            lastSwapCanvasX = pt.x;
+            if (!continuous) { activePointerId = null; break; }
+          }
+        }
+        return;
+      }
+
+      const stepPx = 34;
+      const diffPx = pt.x - lastCanvasX;
+      if (Math.abs(diffPx) < stepPx) return;
+      const steps = Math.trunc(diffPx / stepPx);
+      lastCanvasX += steps * stepPx;
       const dir = steps > 0 ? 1 : -1;
       const count = Math.abs(steps);
       for (let s = 0; s < count; s++) {
         if (!stepGrabSwap(dir, false)) break;
+        lastSwapCanvasX = pt.x;
         if (!continuous) { activePointerId = null; break; }
       }
       return;
@@ -6129,35 +6169,33 @@ function bindBoardTouchInput(cvs, getEngine, getContinuousChecked, isSelf180Rota
     try { cvs.releasePointerCapture(e.pointerId); } catch (_) {}
     const engine = getEngine();
     if (!isTapCandidate || suppressTapOnUp || !engine || (isMatchOver && !isPracticeMode)) {
-      grabbedSide = null;
       return;
     }
     const pt = getCanvasCoordsFromPointer(cvs, e, isSelf180Rotated);
     if (Math.abs(pt.x - initialCanvasX) < CELL_PX * 0.3 && Math.abs(pt.y - initialCanvasY) < CELL_PX * 0.3) {
       const renderer = typeof getRenderer === 'function' ? getRenderer() : null;
       const cols = engine.cols || COLS;
+      const rows = engine.rows || ROWS;
       let c, r;
       if (engine.is3D && renderer && typeof renderer.getCellFromCanvasPoint === 'function') {
         const cell = renderer.getCellFromCanvasPoint(engine, pt.x, pt.y);
         c = cell.col;
         r = cell.row;
       } else {
-        c = Math.floor(pt.x / CELL_PX);
-        if (c >= cols - 1) c = cols - 2;
-        r = grabbedRow;
+        c = Math.max(0, Math.min(cols - 2, Math.floor(pt.x / CELL_PX)));
+        r = Math.max(0, Math.min(rows - 1, Math.floor((pt.y + engine.riseOffset * CELL_PX) / CELL_PX)));
       }
       const rightCol = engine.is3D ? (engine.cursor.x + 1) % cols : (engine.cursor.x + 1);
       const alreadyInCursor = (c === engine.cursor.x || c === rightCol);
       if (alreadyInCursor) {
-        if (engine.cursor.y !== r) SE.play('cursorMove');
+        if (cursorMovedOnDown || engine.cursor.y !== r) SE.play('cursorMove');
         engine.cursor.y = r;
       } else {
-        if (engine.cursor.x !== c || engine.cursor.y !== r) SE.play('cursorMove');
+        if (cursorMovedOnDown || engine.cursor.x !== c || engine.cursor.y !== r) SE.play('cursorMove');
         engine.cursor.x = c;
         engine.cursor.y = r;
       }
     }
-    grabbedSide = null;
   };
   cvs.addEventListener('pointerup', (e) => endPointer(e, true));
   cvs.addEventListener('pointercancel', (e) => endPointer(e, false));
@@ -6686,7 +6724,7 @@ function adjustLayout() {
     bottomBar.style.display = showBottomBar ? 'flex' : 'none';
   }
   if (rotateRow) {
-    rotateRow.style.display = (!isLandscapeLarge && currentMode !== 'local') ? 'flex' : 'none';
+    rotateRow.style.display = (!isLandscapeLarge && currentMode !== 'local' && !!(myEngine && myEngine.is3D)) ? 'flex' : 'none';
   }
 
   refreshBattleSidePanels();

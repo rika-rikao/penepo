@@ -69,9 +69,9 @@ function getEffectiveSelfIs3D() {
 }
 
 function getDimSummaryText(includeSelf = true) {
-  if (selectedDimRule === '3d') return '盤面: 3D円筒';
-  if (selectedDimRule === '2d') return '盤面: 2D';
-  return includeSelf ? `盤面: こんごう(自:${selectedPlayerIs3D ? '3D' : '2D'})` : '盤面: こんごう';
+  if (selectedDimRule === '3d') return '盤面るーる: 3D円筒';
+  if (selectedDimRule === '2d') return '盤面るーる: 2D';
+  return includeSelf ? `盤面るーる: こんごう(自:${selectedPlayerIs3D ? '3D' : '2D'})` : '盤面るーる: こんごう';
 }
 
 function syncDimRuleUI() {
@@ -790,7 +790,6 @@ function syncHandicapFromSlider(val) {
     if (lb) lb.innerText = HANDICAP_LABELS[v] || String(v);
   });
 }
-
 // ==========================================
 // START(ポーズ／退出相当)ボタンによるメニュー一括決定
 // ==========================================
@@ -1653,7 +1652,7 @@ function handleLocalDomNavigation(input, ownerKey) {
   if (isSelect) {
     if (input.confirm) {
       SE.play('select');
-      openSelectPickerModal(activeEl, activeEl.classList.contains('dim-rule-select') ? '盤面形式を選択' : '対戦人数を選択');
+      openSelectPickerModal(activeEl, activeEl.classList.contains('dim-rule-select') ? '盤面るーるを選択' : '対戦人数を選択');
       return true;
     }
   }
@@ -1757,7 +1756,6 @@ function handleLocalDomNavigation(input, ownerKey) {
 
   return false;
 }
-
 function moveLocalTileCursor(slotIdx, dx, dy, ownerKey = 'kb') {
   const slot = localSlotsConfig[slotIdx];
   if (!slot || slot.phase === 'ready') return;
@@ -2064,7 +2062,7 @@ function renderLocalMenuUI() {
         btn.style.borderColor = '#fff';
         if (i === 2) btn.style.color = '#070b14';
       }
-      btn.innerText = `${i + 1}P操作`;
+      btn.innerText = `${i + 1}P`;
       btn.onclick = () => selectLocalActorToEdit(i, 'kb', true);
       actorBar.appendChild(btn);
     }
@@ -3085,7 +3083,6 @@ function saveRankingData(mode, entry) {
   localStorage.setItem('pdw_ranking_' + mode, JSON.stringify(data));
   return data.findIndex(e => e === entry) !== -1;
 }
-
 function selectTarget(index) {
   if (isMatchOver && !isPracticeMode) return;
   if (myTargetIndex === index) myTargetIndex = -1;
@@ -3511,7 +3508,6 @@ function requestRematch() {
     }
   }
 }
-
 function checkRematchCondition() {
   if (myOnlineId !== 'host') return;
   const humanIds = matchPlayersConfig.filter(p => p.type === 'player').map(p => p.id);
@@ -4155,7 +4151,6 @@ function activateShareP2Skill() {
   if (currentMode !== 'share' || !opponents[0]) return;
   activateLocalOpponentSkill(opponents[0]);
 }
-
 function refreshOnlineSplitFrames() {
   const container = document.getElementById('online-split-frames-bg');
   if (!container) return;
@@ -4675,7 +4670,6 @@ function updateBottomStatusBar() {
     }
   }
 }
-
 function startGame(mode, level = 1, totalPlayers = 2, skillEnabled = false, customSkillEnabled = true) {
   if (typeof isAppExiting !== 'undefined') isAppExiting = false;
   cancelLocalAutoStart();
@@ -5189,7 +5183,6 @@ function updateGarbagePreview(engine, containerId) {
     container.appendChild(block);
   });
 }
-
 function beginSurvivalNextEnemyEnter(opp) {
   if (!opp || !opp.engine || opp.waitingEnterVoice) return;
   opp.waitingEnterVoice = true;
@@ -6299,7 +6292,6 @@ function setupShareP2Input() {
     () => (currentMode === 'share' && opponents[0]) ? opponents[0].renderer : null
   );
 }
-
 let inputSetupDone = false;
 function setupInput() {
   if (inputSetupDone) return;
@@ -6587,7 +6579,6 @@ function resetBattleLayoutStyles() {
     handednessWrapper.style.marginTop = '0';
   }
 }
-
 function ensureShareSizerBox(parentZone, sizerId, childEl, orderNum) {
   let sizer = document.getElementById(sizerId);
   if (!sizer) {

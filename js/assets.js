@@ -1,7 +1,7 @@
 // ==========================================
 // キャラクター定義 & ループ型3Dカバーフロー & スキル定義/自作ラボ & カスタムアセット管理
 // ==========================================
-const IMG_EXTS = ['webp', 'png', 'gif', 'jpg', 'jpeg'];
+const IMG_EXTS = ['png', 'webp', 'gif', 'jpg', 'jpeg'];
 
 const CHARACTERS = [
   { id: 'main00', name: 'フレア',   role: 'main',  file: 'assets/img/chara/nomal/フレア.png',   color: '#ff3366' },
@@ -625,8 +625,8 @@ function renderCustomSkillBuilder() {
     }
   }
 }
-
 const AssetCache = new Map();
+const RESOLVED_IMG_STORAGE_KEY = 'pdw_resolved_img_cache_v1';
 const ResolvedCharImgCache = {};
 const ResolvingCharImgMap = {};
 const CustomAssets = { chara: null, bg: null, frame: null };
@@ -635,6 +635,51 @@ let storySelectedCharId = localStorage.getItem('pdw_story_char_id') || (selected
 let playerCustomName = localStorage.getItem('pdw_player_name') || '';
 let hubPortraitMode = localStorage.getItem('pdw_hub_char') || 'random';
 let currentHubRandomCharId = null;
+
+(function restoreResolvedImgCache() {
+  if (location.protocol === 'file:') return;
+  try {
+    const raw = localStorage.getItem(RESOLVED_IMG_STORAGE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') {
+      Object.keys(parsed).forEach((k) => {
+        const v = parsed[k];
+        if (v === null || typeof v === 'string') {
+          ResolvedCharImgCache[k] = v;
+          if (v && k.startsWith('normal::')) {
+            const cName = k.slice(8);
+            const ch = CHARACTERS.find(c => c.name === cName);
+            if (ch) ch.file = v;
+          }
+        }
+      });
+    }
+  } catch (_) {}
+})();
+
+function saveResolvedCharImgCacheEntry(cacheKey, value) {
+  if (location.protocol === 'file:') return;
+  try {
+    const raw = localStorage.getItem(RESOLVED_IMG_STORAGE_KEY);
+    const map = raw ? JSON.parse(raw) : {};
+    if (map && typeof map === 'object') {
+      map[cacheKey] = value;
+      localStorage.setItem(RESOLVED_IMG_STORAGE_KEY, JSON.stringify(map));
+    }
+  } catch (_) {}
+}
+
+async function findCachedCandidateUrl(candidates) {
+  if (location.protocol === 'file:' || typeof caches === 'undefined') return null;
+  try {
+    for (const url of candidates) {
+      const hit = await caches.match(url, { ignoreSearch: true });
+      if (hit && hit.ok) return url;
+    }
+  } catch (_) {}
+  return null;
+}
 
 function toAbsoluteAssetUrl(url) {
   if (!url) return url;
@@ -815,7 +860,15 @@ function resolveCharacterImage(variant, charName) {
   if (!charName) return Promise.resolve(null);
   const cacheKey = `${variant}::${charName}`;
   if (Object.prototype.hasOwnProperty.call(ResolvedCharImgCache, cacheKey)) {
-    return Promise.resolve(ResolvedCharImgCache[cacheKey]);
+    const cachedUrl = ResolvedCharImgCache[cacheKey];
+    if (cachedUrl && !AssetCache.has(cachedUrl)) {
+      return probeCharImageUrl(cachedUrl).then((ok) => {
+        if (ok) return cachedUrl;
+        delete ResolvedCharImgCache[cacheKey];
+        return resolveCharacterImage(variant, charName);
+      });
+    }
+    return Promise.resolve(cachedUrl);
   }
   if (ResolvingCharImgMap[cacheKey]) {
     return ResolvingCharImgMap[cacheKey];
@@ -823,10 +876,25 @@ function resolveCharacterImage(variant, charName) {
 
   const candidates = buildCharImageCandidates(variant, charName);
   const task = (async () => {
+    const swCachedUrl = await findCachedCandidateUrl(candidates);
+    if (swCachedUrl) {
+      const ok = await probeCharImageUrl(swCachedUrl);
+      if (ok) {
+        ResolvedCharImgCache[cacheKey] = swCachedUrl;
+        saveResolvedCharImgCacheEntry(cacheKey, swCachedUrl);
+        if (variant === 'normal') {
+          const ch = CHARACTERS.find(c => c.name === charName);
+          if (ch) ch.file = swCachedUrl;
+        }
+        return swCachedUrl;
+      }
+    }
+
     for (const url of candidates) {
       const ok = await probeCharImageUrl(url);
       if (ok) {
         ResolvedCharImgCache[cacheKey] = url;
+        saveResolvedCharImgCacheEntry(cacheKey, url);
         if (variant === 'normal') {
           const ch = CHARACTERS.find(c => c.name === charName);
           if (ch) ch.file = url;
@@ -835,6 +903,7 @@ function resolveCharacterImage(variant, charName) {
       }
     }
     ResolvedCharImgCache[cacheKey] = null;
+    saveResolvedCharImgCacheEntry(cacheKey, null);
     return null;
   })().finally(() => {
     delete ResolvingCharImgMap[cacheKey];
@@ -847,7 +916,19 @@ function resolveCharacterImage(variant, charName) {
 function resolveSystemMainImage() {
   const cacheKey = 'system::main';
   if (Object.prototype.hasOwnProperty.call(ResolvedCharImgCache, cacheKey)) {
-    return Promise.resolve(ResolvedCharImgCache[cacheKey]);
+    const cachedUrl = ResolvedCharImgCache[cacheKey];
+    if (cachedUrl && !AssetCache.has(cachedUrl)) {
+      return probeCharImageUrl(cachedUrl).then((ok) => {
+        if (ok) {
+          applySystemMainBackground(cachedUrl);
+          return cachedUrl;
+        }
+        delete ResolvedCharImgCache[cacheKey];
+        return resolveSystemMainImage();
+      });
+    }
+    applySystemMainBackground(cachedUrl);
+    return Promise.resolve(cachedUrl);
   }
   if (ResolvingCharImgMap[cacheKey]) {
     return ResolvingCharImgMap[cacheKey];
@@ -855,15 +936,28 @@ function resolveSystemMainImage() {
 
   const candidates = buildSystemMainImageCandidates();
   const task = (async () => {
+    const swCachedUrl = await findCachedCandidateUrl(candidates);
+    if (swCachedUrl) {
+      const ok = await probeCharImageUrl(swCachedUrl);
+      if (ok) {
+        ResolvedCharImgCache[cacheKey] = swCachedUrl;
+        saveResolvedCharImgCacheEntry(cacheKey, swCachedUrl);
+        applySystemMainBackground(swCachedUrl);
+        return swCachedUrl;
+      }
+    }
+
     for (const url of candidates) {
       const ok = await probeCharImageUrl(url);
       if (ok) {
         ResolvedCharImgCache[cacheKey] = url;
+        saveResolvedCharImgCacheEntry(cacheKey, url);
         applySystemMainBackground(url);
         return url;
       }
     }
     ResolvedCharImgCache[cacheKey] = null;
+    saveResolvedCharImgCacheEntry(cacheKey, null);
     applySystemMainBackground(null);
     return null;
   })().finally(() => {
@@ -2517,7 +2611,7 @@ async function initAssetsSystem() {
       ? SceneBgm.readyPromise.catch(() => {})
       : Promise.resolve();
 
-    // ボイスファイルもバックグラウンドで事前解決（win/lose/attack）
+    // ボイスファイルもバックグラウンドで解決（未更新時は解決済みキャッシュから即完了）
     if (typeof VOICE !== 'undefined' && typeof VOICE.preloadForCharacters === 'function') {
       VOICE.preloadForCharacters(CHARACTERS.map(c => c.name)).catch(() => {});
     }

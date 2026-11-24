@@ -330,6 +330,13 @@ function closePwaGuideModal(silent = false) {
   if (!silent && typeof SE !== 'undefined') SE.play('cancel');
 }
 
+function clearResolvedAssetMetaCaches() {
+  try {
+    localStorage.removeItem('pdw_resolved_img_cache_v1');
+    localStorage.removeItem('pdw_resolved_voice_cache_v1');
+  } catch (_) {}
+}
+
 // Service Worker登録 & Webサーバー上の更新確認
 const swRegisterPromise = ('serviceWorker' in navigator && location.protocol !== 'file:')
   ? navigator.serviceWorker.register('sw.js').then((reg) => {
@@ -353,16 +360,17 @@ async function checkServerUpdatesOnBoot() {
   try {
     const reg = await Promise.race([
       swRegisterPromise,
-      new Promise(r => setTimeout(() => r(swRegistration), 1200))
+      new Promise(r => setTimeout(() => r(swRegistration), 1000))
     ]);
     if (!reg) return false;
 
-    try { await Promise.race([reg.update(), new Promise(r => setTimeout(r, 1500))]); } catch (_) {}
+    try { await Promise.race([reg.update(), new Promise(r => setTimeout(r, 1200))]); } catch (_) {}
 
     const targetWorker = reg.waiting || reg.installing || navigator.serviceWorker.controller || reg.active;
     if (!targetWorker) return false;
 
     if (reg.waiting && navigator.serviceWorker.controller) {
+      clearResolvedAssetMetaCaches();
       sessionStorage.setItem('pdw_update_reloaded', '1');
       reg.waiting.postMessage({ type: 'SKIP_WAITING' });
       location.reload();
@@ -373,7 +381,7 @@ async function checkServerUpdatesOnBoot() {
       let settled = false;
       const timer = setTimeout(() => {
         if (!settled) { settled = true; resolve({ updated: false }); }
-      }, 2800);
+      }, 2400);
 
       try {
         const mc = new MessageChannel();
@@ -391,6 +399,7 @@ async function checkServerUpdatesOnBoot() {
     });
 
     if (res && res.updated) {
+      clearResolvedAssetMetaCaches();
       if (typeof AppLoader !== 'undefined') {
         AppLoader.setProgress(70, '新しいバージョンを更新しています...');
       }
@@ -887,10 +896,11 @@ const SE = {
   }
 };
 SE.readyPromise = SE.load();
+// ==========================================
+// VOICE 制御（attack / win / lose 拡張子非依存・解決結果キャッシュによる未更新時Webロード省略対応）
+// ==========================================
+const VOICE_RESOLVED_STORAGE_KEY = 'pdw_resolved_voice_cache_v1';
 
-// ==========================================
-// VOICE 制御（attack / win / lose 拡張子非依存・HTMLAudioフォールバック強化 & カスタムボイス対応）
-// ==========================================
 const VOICE = {
   exts: ['m4a', 'mp3', 'wav', 'ogg', 'aac', 'opus', 'webm'],
   suffixMap: {
@@ -901,11 +911,35 @@ const VOICE = {
   volume: 0.7,
   resolvedCache: {},
   resolvingMap: {},
+  persistedMetaMap: null,
   customBuffers: {},
   customRawMap: {},
   remoteBuffers: {},
   lastPlayedMap: {},
   _activeFallbackAudio: null,
+
+  loadPersistedMetaMap() {
+    if (this.persistedMetaMap !== null) return this.persistedMetaMap;
+    try {
+      const raw = localStorage.getItem(VOICE_RESOLVED_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          this.persistedMetaMap = parsed;
+          return this.persistedMetaMap;
+        }
+      }
+    } catch (_) {}
+    this.persistedMetaMap = {};
+    return this.persistedMetaMap;
+  },
+  savePersistedMeta(cacheKey, value) {
+    try {
+      const map = this.loadPersistedMetaMap();
+      map[cacheKey] = value;
+      localStorage.setItem(VOICE_RESOLVED_STORAGE_KEY, JSON.stringify(map));
+    } catch (_) {}
+  },
 
   async setCustomVoice(category, arrayBuffer, meta = null) {
     if (!this.suffixMap[category]) return false;
@@ -976,51 +1010,84 @@ const VOICE = {
     });
   },
 
+  async resolveSpecificVoiceUrl(urlPath, isFileProto) {
+    if (isFileProto) {
+      const okUrl = await this.probeAudioUrl(urlPath);
+      return okUrl ? { type: 'url', data: okUrl } : null;
+    }
+    try {
+      const res = await fetch(urlPath);
+      if (!res || !res.ok) return null;
+      const buf = await res.arrayBuffer();
+      try {
+        const decoded = await new Promise((resolve, reject) => {
+          audioCtx.decodeAudioData(buf, resolve, reject);
+        });
+        return { type: 'buffer', data: decoded, fallbackUrl: urlPath };
+      } catch (_) {
+        const okUrl = await this.probeAudioUrl(urlPath);
+        if (okUrl) {
+          return { type: 'url', data: okUrl };
+        }
+      }
+    } catch (_) {}
+    return null;
+  },
+
   async resolveCharacterVoice(category, charName) {
     const suffix = this.suffixMap[category];
     if (!suffix || !charName) return { type: 'none' };
     const cacheKey = `${category}::${charName}`;
     if (this.resolvedCache[cacheKey]) return this.resolvedCache[cacheKey];
-    if (this.resolvingMap[cacheKey]) return this.resolvingMap[cacheKey];
 
     const isFileProto = (location.protocol === 'file:');
+    if (!isFileProto) {
+      const persisted = this.loadPersistedMetaMap();
+      if (Object.prototype.hasOwnProperty.call(persisted, cacheKey)) {
+        const saved = persisted[cacheKey];
+        if (saved === 'none') {
+          const noneEntry = { type: 'none' };
+          this.resolvedCache[cacheKey] = noneEntry;
+          return noneEntry;
+        }
+        if (typeof saved === 'string' && saved) {
+          if (this.resolvingMap[cacheKey]) return this.resolvingMap[cacheKey];
+          const fastTask = (async () => {
+            const hit = await this.resolveSpecificVoiceUrl(saved, false);
+            if (hit) {
+              this.resolvedCache[cacheKey] = hit;
+              return hit;
+            }
+            const noneEntry = { type: 'none' };
+            this.resolvedCache[cacheKey] = noneEntry;
+            return noneEntry;
+          })().finally(() => {
+            delete this.resolvingMap[cacheKey];
+          });
+          this.resolvingMap[cacheKey] = fastTask;
+          return fastTask;
+        }
+      }
+    }
+
+    if (this.resolvingMap[cacheKey]) return this.resolvingMap[cacheKey];
+
     const encodedName = encodeURIComponent(charName);
     const task = (async () => {
       for (const ext of this.exts) {
         const rawPath = `assets/voice/${category}/${charName}_${suffix}.${ext}`;
         const urlPath = `assets/voice/${category}/${encodedName}_${suffix}.${ext}`;
-        if (isFileProto) {
-          const okUrl = await this.probeAudioUrl(rawPath);
-          if (okUrl) {
-            const entry = { type: 'url', data: okUrl };
-            this.resolvedCache[cacheKey] = entry;
-            return entry;
-          }
-          continue;
+        const target = isFileProto ? rawPath : urlPath;
+        const entry = await this.resolveSpecificVoiceUrl(target, isFileProto);
+        if (entry) {
+          this.resolvedCache[cacheKey] = entry;
+          if (!isFileProto) this.savePersistedMeta(cacheKey, target);
+          return entry;
         }
-        try {
-          const res = await fetch(urlPath);
-          if (!res || !res.ok) continue;
-          const buf = await res.arrayBuffer();
-          try {
-            const decoded = await new Promise((resolve, reject) => {
-              audioCtx.decodeAudioData(buf, resolve, reject);
-            });
-            const entry = { type: 'buffer', data: decoded, fallbackUrl: urlPath };
-            this.resolvedCache[cacheKey] = entry;
-            return entry;
-          } catch (_) {
-            const okUrl = await this.probeAudioUrl(urlPath);
-            if (okUrl) {
-              const entry = { type: 'url', data: okUrl };
-              this.resolvedCache[cacheKey] = entry;
-              return entry;
-            }
-          }
-        } catch (_) {}
       }
       const noneEntry = { type: 'none' };
       this.resolvedCache[cacheKey] = noneEntry;
+      if (!isFileProto) this.savePersistedMeta(cacheKey, 'none');
       return noneEntry;
     })().finally(() => {
       delete this.resolvingMap[cacheKey];
@@ -2307,7 +2374,7 @@ function openSelectPickerModal(selectEl, titleText = null) {
     else if (!label && selectEl.id === 'online-max-players') label = 'オンライン最大人数を選択';
     else if (!label && selectEl.id === 'settings-pad-slot') label = '使用ゲームパッド番号';
     else if (!label && selectEl.id === 'settings-hub-char') label = 'ホーム立ち絵を選択';
-    else if (!label && selectEl.classList.contains('dim-rule-select')) label = '盤面形式を選択';
+    else if (!label && selectEl.classList.contains('dim-rule-select')) label = '盤面るーるを選択';
     titleEl.innerText = label || '選択してください';
   }
 

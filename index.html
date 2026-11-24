@@ -325,8 +325,7 @@
       <div class="story-next-hint">▼ タップ / 決定で次へ（STARTでスキップ）</div>
     </div>
   </div>
-
-  <div id="settings-overlay">
+<div id="settings-overlay">
     <div class="settings-box">
       <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; flex-shrink:0;">
         <h2 style="color: #4ecca3;">せってい</h2>
@@ -613,7 +612,7 @@
             </div>
             <div class="dim-controls-row">
               <div class="menu-option-group dim-rule-group-wrap">
-                <span class="menu-option-label">盤面形式:</span>
+                <span class="menu-option-label">盤面るーる:</span>
                 <div id="story-dim-buttons" class="pill-btn-group dim-rule-group">
                   <button type="button" class="pill-btn active" data-dim="2d" onclick="selectDimRule('2d')">2D</button>
                   <button type="button" class="pill-btn" data-dim="3d" onclick="selectDimRule('3d')">3D円筒</button>
@@ -626,7 +625,7 @@
                 </select>
               </div>
               <div class="self-dim-row">
-                <span class="self-dim-label">自分の盤面:</span>
+                <span class="self-dim-label">自分のぱずる:</span>
                 <button type="button" id="story-self-dim-toggle" class="dim-self-toggle-btn" onclick="toggleSelectedPlayer3D()">2D (6列)</button>
               </div>
             </div>
@@ -672,7 +671,7 @@
         <div class="mode-right-top">
           <div class="dim-controls-row">
             <div class="menu-option-group dim-rule-group-wrap">
-              <span class="menu-option-label">盤面形式:</span>
+              <span class="menu-option-label">盤面るーる:</span>
               <div id="single-dim-buttons" class="pill-btn-group dim-rule-group">
                 <button type="button" class="pill-btn active" data-dim="2d" onclick="selectDimRule('2d')">2D</button>
                 <button type="button" class="pill-btn" data-dim="3d" onclick="selectDimRule('3d')">3D円筒</button>
@@ -685,7 +684,7 @@
               </select>
             </div>
             <div class="self-dim-row">
-              <span class="self-dim-label">自分の盤面:</span>
+              <span class="self-dim-label">自分のぱずる:</span>
               <button type="button" id="single-self-dim-toggle" class="dim-self-toggle-btn" onclick="toggleSelectedPlayer3D()">2D (6列)</button>
             </div>
           </div>
@@ -747,7 +746,7 @@
         <div class="mode-right-top">
           <div class="dim-controls-row">
             <div class="menu-option-group dim-rule-group-wrap">
-              <span class="menu-option-label">盤面形式:</span>
+              <span class="menu-option-label">盤面るーる:</span>
               <div id="com-dim-buttons" class="pill-btn-group dim-rule-group">
                 <button type="button" class="pill-btn active" data-dim="2d" onclick="selectDimRule('2d')">2D</button>
                 <button type="button" class="pill-btn" data-dim="3d" onclick="selectDimRule('3d')">3D円筒</button>
@@ -760,7 +759,7 @@
               </select>
             </div>
             <div class="self-dim-row">
-              <span class="self-dim-label">自分の盤面:</span>
+              <span class="self-dim-label">自分のぱずる:</span>
               <button type="button" id="com-self-dim-toggle" class="dim-self-toggle-btn" onclick="toggleSelectedPlayer3D()">2D (6列)</button>
             </div>
           </div>
@@ -809,7 +808,7 @@
         <div class="local-top-controls">
           <div class="local-top-row local-top-row-main">
             <button type="button" id="local-share-btn" class="small-btn" onclick="openSharePrepMenu()" style="border-color:#00d4ff; background:linear-gradient(135deg,#0f3460,#1d4ed8);">📱 シェア対戦 (2人縦)</button>
-            <div style="font-size:0.8rem; color:#4ecca3; display:flex; align-items:center; gap:4px;">
+            <div class="local-count-wrap" style="font-size:0.8rem; color:#4ecca3; display:flex; align-items:center; gap:4px;">
               <span>人数:</span>
               <select id="local-player-count" class="input-box" style="width:auto; padding:3px 8px; font-size:0.8rem; border-radius:10px;" onchange="onLocalCountChange()">
                 <option value="2" selected>2人</option>
@@ -823,9 +822,9 @@
               <button type="button" class="pill-btn" data-dim="mixed" onclick="selectDimRule('mixed')">こんごう</button>
             </div>
             <select id="local-dim-select" class="input-box dim-rule-select compact-dim-select" onchange="selectDimRule(this.value)">
-              <option value="2d">盤面: 2D</option>
-              <option value="3d">盤面: 3D円筒</option>
-              <option value="mixed">盤面: こんごう</option>
+              <option value="2d">盤面るーる: 2D</option>
+              <option value="3d">盤面るーる: 3D円筒</option>
+              <option value="mixed">盤面るーる: こんごう</option>
             </select>
           </div>
           <div class="local-top-row local-top-row-sub">
@@ -837,7 +836,7 @@
               <input type="checkbox" id="local-custom-skill-toggle" class="ui-toggle-input text" data-text-off="OFF" data-text-on="ON" checked onchange="onLocalCustomSkillRuleToggle()">
               <span>自作スキル</span>
             </label>
-            <button type="button" class="small-btn" style="border-color:#ffd700; color:#ffd700;" onclick="openCustomSkillModal()">🛠️ 自作</button>
+            <button type="button" id="local-custom-skill-btn" class="small-btn" style="border-color:#ffd700; color:#ffd700;" onclick="openCustomSkillModal()">🛠️ 自作</button>
             <div id="local-touch-actor-bar" class="local-touch-actor-bar"></div>
           </div>
         </div>
@@ -880,7 +879,7 @@
           </div>
           <div class="dim-controls-row">
             <div class="menu-option-group dim-rule-group-wrap">
-              <span class="menu-option-label">盤面形式（ホスト優先）:</span>
+              <span class="menu-option-label">盤面るーる:</span>
               <div id="online-dim-buttons" class="pill-btn-group dim-rule-group">
                 <button type="button" class="pill-btn active" data-dim="2d" onclick="selectDimRule('2d')">2D</button>
                 <button type="button" class="pill-btn" data-dim="3d" onclick="selectDimRule('3d')">3D円筒</button>
@@ -893,7 +892,7 @@
               </select>
             </div>
             <div class="self-dim-row">
-              <span class="self-dim-label">自分の盤面:</span>
+              <span class="self-dim-label">自分のぱずる:</span>
               <button type="button" id="online-self-dim-toggle" class="dim-self-toggle-btn" onclick="toggleSelectedPlayer3D()">2D (6列)</button>
             </div>
           </div>

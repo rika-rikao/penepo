@@ -1,6 +1,6 @@
 const CACHE_NAME = 'pdw-cache-v8';
 
-// 更新チェック対象となるコアファイル（サーバー更新検知時に差分DL＆キャッシュ置換）
+// 更新チェック対象となるコアファイル（更新検知時のみ差分DL＆旧キャッシュ削除・置換）
 const CORE_FILES = [
   './',
   './index.html',
@@ -20,6 +20,7 @@ const CORE_FILES = [
 // オフラインでも遊べるよう事前キャッシュするファイル一覧
 const PRECACHE_URLS = [
   ...CORE_FILES,
+  './assets/font/LightNovelPOPv2.otf',
   './assets/se/cursor_move.m4a',
   './assets/se/select.m4a',
   './assets/se/cancel.m4a',
@@ -79,23 +80,102 @@ const PRECACHE_URLS = [
   './icon-512.png'
 ];
 
+function getNormalizedPrecachePathnameSet() {
+  const set = new Set();
+  PRECACHE_URLS.forEach((u) => {
+    try {
+      set.add(new URL(u, self.location.href).pathname);
+    } catch (_) {}
+  });
+  return set;
+}
+
+async function migrateFromOldCachesIfNeeded(targetCache) {
+  try {
+    const names = await caches.keys();
+    const oldNames = names.filter((n) => n !== CACHE_NAME);
+    if (oldNames.length === 0) return;
+
+    for (const oldName of oldNames) {
+      const oldCache = await caches.open(oldName);
+      await Promise.allSettled(
+        PRECACHE_URLS.map(async (url) => {
+          try {
+            const existing = await targetCache.match(url, { ignoreSearch: true });
+            if (existing) return;
+            const oldRes = await oldCache.match(url, { ignoreSearch: true });
+            if (oldRes && oldRes.ok) {
+              await targetCache.put(url, oldRes.clone());
+            }
+          } catch (_) {}
+        })
+      );
+    }
+  } catch (_) {}
+}
+
+async function cleanupObsoleteEntries(cache) {
+  try {
+    const validPaths = getNormalizedPrecachePathnameSet();
+    const keys = await cache.keys();
+    await Promise.allSettled(
+      keys.map(async (req) => {
+        try {
+          const u = new URL(req.url);
+          if (u.origin === self.location.origin && !validPaths.has(u.pathname)) {
+            await cache.delete(req);
+          }
+        } catch (_) {}
+      })
+    );
+  } catch (_) {}
+}
+
+async function replaceCachedEntry(cache, url, response) {
+  try {
+    await cache.delete(url, { ignoreSearch: true });
+  } catch (_) {}
+  await cache.put(url, response);
+}
+
 async function precacheMissingOrAll(cache, urls, forceNetwork = false) {
   await Promise.allSettled(
     urls.map(async (url) => {
       try {
         if (!forceNetwork) {
-          const existing = await cache.match(url);
+          const existing = await cache.match(url, { ignoreSearch: true });
           if (existing) return;
         }
         const response = await fetch(new Request(url, { cache: 'no-store' }));
         if (response && response.ok) {
-          await cache.put(url, response);
+          await replaceCachedEntry(cache, url, response);
         }
       } catch (err) {
         console.warn('[SW] Precache skipped:', url, err);
       }
     })
   );
+}
+
+function headHeadersMatch(cachedRes, headRes) {
+  try {
+    const etagA = cachedRes.headers.get('ETag');
+    const etagB = headRes.headers.get('ETag');
+    if (etagA && etagB) return etagA === etagB;
+
+    const lmA = cachedRes.headers.get('Last-Modified');
+    const lmB = headRes.headers.get('Last-Modified');
+    const lenA = cachedRes.headers.get('Content-Length');
+    const lenB = headRes.headers.get('Content-Length');
+    if (lmA && lmB) {
+      if (lmA !== lmB) return false;
+      if (lenA && lenB && lenA !== lenB) return false;
+      return true;
+    }
+    return null;
+  } catch (_) {
+    return null;
+  }
 }
 
 async function responsesAreDifferent(resA, resB) {
@@ -124,11 +204,29 @@ async function checkAndUpdateCoreFiles() {
   await Promise.allSettled(
     CORE_FILES.map(async (url) => {
       try {
-        const cached = await cache.match(url);
+        const cached = await cache.match(url, { ignoreSearch: true });
         if (cached) hadAnyCachedCore = true;
 
+        // 既存キャッシュがある場合はまず軽量なHEADで更新有無を確認し、未更新なら本体DLを飛ばす
+        if (cached) {
+          const headCtrl = new AbortController();
+          const headTimer = setTimeout(() => headCtrl.abort(), 2000);
+          try {
+            const headRes = await fetch(new Request(url, { method: 'HEAD', cache: 'no-store' }), {
+              signal: headCtrl.signal
+            });
+            clearTimeout(headTimer);
+            if (headRes && headRes.ok) {
+              const matched = headHeadersMatch(cached, headRes);
+              if (matched === true) return;
+            }
+          } catch (_) {
+            clearTimeout(headTimer);
+          }
+        }
+
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 3500);
+        const timer = setTimeout(() => controller.abort(), 3000);
         const netRes = await fetch(new Request(url, { cache: 'no-store' }), {
           signal: controller.signal
         });
@@ -137,14 +235,14 @@ async function checkAndUpdateCoreFiles() {
         if (!netRes || !netRes.ok) return;
 
         if (!cached) {
-          await cache.put(url, netRes);
+          await replaceCachedEntry(cache, url, netRes);
           return;
         }
 
         const diff = await responsesAreDifferent(cached, netRes);
         if (diff) {
           hasUpdate = true;
-          await cache.put(url, netRes);
+          await replaceCachedEntry(cache, url, netRes);
         }
       } catch (_) {
         // オフラインやタイムアウト時は既存キャッシュのまま起動させる
@@ -152,9 +250,11 @@ async function checkAndUpdateCoreFiles() {
     })
   );
 
-  // 未キャッシュのメディアもバックグラウンドで補完
-  if (hasUpdate || !hadAnyCachedCore) {
-    await precacheMissingOrAll(cache, PRECACHE_URLS, false);
+  // 未キャッシュのリソースのみ補完（既存キャッシュは再DLしない）
+  await precacheMissingOrAll(cache, PRECACHE_URLS, false);
+
+  if (hasUpdate) {
+    await cleanupObsoleteEntries(cache);
   }
 
   return { updated: hasUpdate && hadAnyCachedCore };
@@ -163,7 +263,11 @@ async function checkAndUpdateCoreFiles() {
 self.addEventListener('install', (event) => {
   self.skipWaiting();
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => precacheMissingOrAll(cache, PRECACHE_URLS, true))
+    caches.open(CACHE_NAME).then(async (cache) => {
+      await migrateFromOldCachesIfNeeded(cache);
+      await precacheMissingOrAll(cache, PRECACHE_URLS, false);
+      await cleanupObsoleteEntries(cache);
+    })
   );
 });
 
@@ -208,15 +312,17 @@ self.addEventListener('fetch', (event) => {
     (async () => {
       const cache = await caches.open(CACHE_NAME);
 
-      // 1. ストレージ上のキャッシュを優先（更新は起動時チェックで反映済み）
-      const cachedResponse = await cache.match(event.request, { ignoreSearch: false });
+      // 1. ストレージ上のキャッシュを優先（更新は起動時チェックで差分置換済み）
+      const cachedResponse = await cache.match(event.request, { ignoreSearch: false })
+        || await cache.match(event.request, { ignoreSearch: true });
       if (cachedResponse) {
         return cachedResponse;
       }
 
       // ナビゲーション時はクエリ違いでも index.html / ./ キャッシュを利用
       if (event.request.mode === 'navigate') {
-        const navCached = await cache.match('./index.html') || await cache.match('./');
+        const navCached = await cache.match('./index.html', { ignoreSearch: true })
+          || await cache.match('./', { ignoreSearch: true });
         if (navCached) return navCached;
       }
 
@@ -224,12 +330,13 @@ self.addEventListener('fetch', (event) => {
       try {
         const networkResponse = await fetch(event.request);
         if (networkResponse && networkResponse.status === 200) {
-          await cache.put(event.request, networkResponse.clone());
+          await replaceCachedEntry(cache, event.request, networkResponse.clone());
         }
         return networkResponse;
       } catch (error) {
         if (event.request.mode === 'navigate') {
-          const fallbackPage = await cache.match('./index.html') || await cache.match('./');
+          const fallbackPage = await cache.match('./index.html', { ignoreSearch: true })
+            || await cache.match('./', { ignoreSearch: true });
           if (fallbackPage) return fallbackPage;
         }
         return new Response('Offline', {

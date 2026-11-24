@@ -1,3 +1,11 @@
+@font-face {
+  font-family: 'LightNovelPOPv2';
+  src: url('../assets/font/LightNovelPOPv2.otf') format('opentype');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   --bg-color: #0b1020;
   --surface-1: rgba(15, 23, 42, 0.86);
@@ -33,7 +41,7 @@
 body {
   background-color: var(--bg-color);
   color: #f8fafc;
-  font-family: 'Hiragino Kaku Gothic ProN', 'Yu Gothic UI', 'Segoe UI', Tahoma, sans-serif;
+  font-family: 'LightNovelPOPv2', 'Hiragino Kaku Gothic ProN', 'Yu Gothic UI', 'Segoe UI', Tahoma, sans-serif;
   overflow: hidden;
   width: 100vw;
   height: 100vh;
@@ -43,6 +51,13 @@ body {
   align-items: center;
   justify-content: center;
   touch-action: none;
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
 }
 
 /* パッド・キーボード操作時のフォーカス視認性 */
@@ -101,6 +116,14 @@ body {
   background-size: cover, 32px 32px, 100% 100%;
   background-position: center, center, center;
   background-repeat: no-repeat, repeat, no-repeat;
+}
+
+/* 各メニューページタイトル：現在のサイズ感を維持したまま色縁取り・中白 */
+#menu-overlay h2 {
+  -webkit-text-stroke: 3.5px currentColor;
+  -webkit-text-fill-color: #ffffff;
+  paint-order: stroke fill;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.85);
 }
 
 /* 戻るボタン表示中は上部に安全スペースを確保し重なりを防止 */

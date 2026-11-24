@@ -222,7 +222,7 @@
   box-shadow: 0 0 8px rgba(56, 189, 248, 0.5);
 }
 
-/* 縦UI：盤面ルール(プルダウン)＋自分の盤面を横並び1行に収約＆練習モードボタン1段ストレッチ */
+/* 縦UI：盤面るーる(プルダウン)＋自分のぱずるを横並び1行に収約＆練習モードボタン1段ストレッチ */
 @media (orientation: portrait) {
   .dim-controls-row {
     flex-direction: row;
@@ -1261,6 +1261,113 @@ body.settings-has-vnav #settings-overlay {
   flex-wrap: wrap;
   width: 100%;
 }
+
+/* 横UI時：「シェア対戦」「人数」「2D/3D円筒/こんごう」「スキル・自作スキルトグル」「自作」「1P/2P...」を高さ揃えて1段に配置 */
+@media (orientation: landscape) {
+  #local-menu .local-top-controls {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+  }
+  #local-menu .local-top-row-main,
+  #local-menu .local-top-row-sub {
+    display: contents;
+  }
+  #local-menu #local-share-btn,
+  #local-menu .local-count-wrap,
+  #local-menu #local-player-count,
+  #local-menu #local-dim-buttons .pill-btn,
+  #local-menu #local-skill-label,
+  #local-menu #local-custom-skill-label,
+  #local-menu #local-custom-skill-btn,
+  #local-menu .local-actor-btn {
+    height: 30px !important;
+    min-height: 30px;
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    line-height: 1;
+    margin: 0;
+  }
+  #local-menu #local-share-btn {
+    padding: 0 9px;
+    font-size: 0.74rem;
+    border-radius: 12px;
+  }
+  #local-menu .local-count-wrap {
+    font-size: 0.74rem !important;
+    gap: 4px !important;
+    white-space: nowrap;
+  }
+  #local-menu #local-player-count {
+    padding: 0 7px !important;
+    font-size: 0.74rem !important;
+    border-radius: 10px !important;
+  }
+  #local-menu #local-dim-buttons {
+    display: inline-flex !important;
+    width: auto !important;
+    flex-wrap: nowrap;
+    gap: 3px;
+    align-items: center;
+  }
+  #local-menu #local-dim-buttons .pill-btn {
+    padding: 0 9px;
+    font-size: 0.72rem;
+    border-radius: 12px;
+  }
+  #local-menu #local-dim-select {
+    display: none !important;
+  }
+  #local-menu #local-skill-label,
+  #local-menu #local-custom-skill-label {
+    padding: 0 8px !important;
+    font-size: 0.72rem !important;
+    gap: 5px;
+    border-radius: 12px;
+    white-space: nowrap;
+  }
+  #local-menu #local-skill-label input[type="checkbox"].ui-toggle-input,
+  #local-menu #local-custom-skill-label input[type="checkbox"].ui-toggle-input {
+    width: 44px;
+    height: 20px;
+  }
+  #local-menu #local-skill-label input[type="checkbox"].ui-toggle-input::before,
+  #local-menu #local-custom-skill-label input[type="checkbox"].ui-toggle-input::before {
+    width: 14px;
+    height: 14px;
+    top: 1.5px;
+    left: 2px;
+  }
+  #local-menu #local-skill-label input[type="checkbox"].ui-toggle-input:checked::before,
+  #local-menu #local-custom-skill-label input[type="checkbox"].ui-toggle-input:checked::before {
+    transform: translateX(22px);
+  }
+  #local-menu #local-skill-label input[type="checkbox"].ui-toggle-input::after,
+  #local-menu #local-custom-skill-label input[type="checkbox"].ui-toggle-input::after {
+    font-size: 8px;
+  }
+  #local-menu #local-custom-skill-btn {
+    padding: 0 9px;
+    font-size: 0.72rem;
+    border-radius: 12px;
+  }
+  #local-menu #local-touch-actor-bar {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: nowrap;
+  }
+  #local-menu .local-actor-btn {
+    padding: 0 9px;
+    font-size: 0.72rem;
+    border-radius: 10px;
+  }
+}
+
 .local-gamepad-hint {
   font-size: 0.7rem;
   color: #94a3b8;
@@ -1611,6 +1718,7 @@ input[type="range"].slider-adjusting {
   .local-slot-portrait { height: 46px; }
   .local-slot-slider-head { font-size: 0.56rem; }
 }
+
 /* ==========================================
    ループ型 CSS 3D カバーフローUI
    ========================================== */

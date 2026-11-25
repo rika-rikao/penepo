@@ -1,6 +1,6 @@
 ﻿// ==========================================
 // ゲームエンジン（全段パズル可能化 / 凹凸共通初期盤面 / 3D円筒18列正面投影 / 新お邪魔パネル計算ルール＆混合対戦ルール対応）
-// [Part 1 / 2]
+// [Part 1 / 3]
 // ==========================================
 function createSeededRng(seed) {
   let s = seed >>> 0;
@@ -1744,7 +1744,7 @@ class PonEngine {
   }
 }
 // ==========================================
-// [Part 2 / 2] GB風ブロック識別・描画エンジン（2D & 3D円筒）・COM AI
+// [Part 2 / 3] ブロック事前スプライトキャッシュ & GB風描画 & 3D円筒高速描画・変形枠エンジン
 // ==========================================
 const GB_BLOCK_PALETTE = {
   1: { bg: '#101010', text: '#ffffff', textStroke: '#000000', stroke: '#ffffff', accent: '#ffffff', pattern: 'solid_dark' },
@@ -1801,7 +1801,264 @@ function traceQuadPath(ctx, p0, p1, p2, p3) {
   ctx.closePath();
 }
 
-// --- 描画エンジン（2D & 3D円筒18列正面投影：横端0.3・1×6・0.3ぴっちり＋背面透過） ---
+// ==========================================
+// ① ブロック・お邪魔事前スプライト（オフスクリーンCanvas）キャッシュ
+// ==========================================
+const LIT_PRESETS = [
+  { sat: 1.00, val: 1.00, isNext: false }, // 0: 2D通常 / 3D正面中央
+  { sat: 0.92, val: 0.87, isNext: false }, // 1: 3D正面中間
+  { sat: 0.83, val: 0.72, isNext: false }, // 2: 3D正面端
+  { sat: 0.16, val: 0.45, isNext: true  }, // 3: 2D nextRow / 3D nextRow中央
+  { sat: 0.14, val: 0.34, isNext: true  }  // 4: 3D nextRow端
+];
+
+const PanelSpriteCache = new Map();
+const GarbageBaseSpriteCache = new Map();
+const CylinderStaticCache = new Map();
+const CylinderOutlineCache = new Map();
+
+function getLightingBucket(cosT, isNextRow) {
+  if (isNextRow) return cosT >= 0.78 ? 3 : 4;
+  if (cosT >= 0.86) return 0;
+  if (cosT >= 0.56) return 1;
+  return 2;
+}
+
+function drawGbPatternOnSprite(ctx, bx, by, bw, bh, radius, gbStyle, valScale) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.roundRect(bx + 1, by + 1, bw - 2, bh - 2, Math.max(4, radius - 1));
+  ctx.clip();
+
+  const accentCol = dimHexColor(gbStyle.accent, 0, valScale);
+  if (gbStyle.pattern === 'inner_white_box') {
+    ctx.strokeStyle = accentCol;
+    ctx.lineWidth = 2.2;
+    ctx.strokeRect(bx + 4, by + 4, bw - 8, bh - 8);
+  } else if (gbStyle.pattern === 'top_bottom_bars') {
+    ctx.fillStyle = accentCol;
+    ctx.fillRect(bx, by, bw, 4.5);
+    ctx.fillRect(bx, by + bh - 4.5, bw, 4.5);
+  } else if (gbStyle.pattern === 'white_circle_center') {
+    ctx.fillStyle = accentCol;
+    ctx.beginPath();
+    ctx.arc(bx + bw / 2, by + bh / 2, Math.min(bw, bh) * 0.37, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (gbStyle.pattern === 'corner_triangles') {
+    ctx.fillStyle = accentCol;
+    const cSize = 8;
+    ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(bx + cSize, by); ctx.lineTo(bx, by + cSize); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(bx + bw, by); ctx.lineTo(bx + bw - cSize, by); ctx.lineTo(bx + bw, by + cSize); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(bx, by + bh); ctx.lineTo(bx + cSize, by + bh); ctx.lineTo(bx, by + bh - cSize); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(bx + bw, by + bh); ctx.lineTo(bx + bw - cSize, by + bh); ctx.lineTo(bx + bw, by + bh - cSize); ctx.closePath(); ctx.fill();
+  } else if (gbStyle.pattern === 'special_frame') {
+    ctx.strokeStyle = accentCol;
+    ctx.lineWidth = 2.4;
+    ctx.strokeRect(bx + 4, by + 4, bw - 8, bh - 8);
+  }
+  ctx.restore();
+}
+
+function getPanelSprite(conf, gb, litIdx, isFlashing, withSymbol = true) {
+  const idPart = isFlashing ? (withSymbol ? `f_${conf.id}` : 'f') : String(conf.id);
+  const key = `${idPart}|${gb ? 1 : 0}|${litIdx}|${withSymbol ? 1 : 0}`;
+  const cached = PanelSpriteCache.get(key);
+  if (cached) return cached;
+
+  const S = CELL_PX;
+  const cvs = document.createElement('canvas');
+  cvs.width = S;
+  cvs.height = S;
+  const ctx = cvs.getContext('2d');
+
+  const pad = 2;
+  const bx = pad;
+  const by = pad;
+  const bw = S - pad * 2;
+  const bh = S - pad * 2;
+  const radius = 7;
+
+  const preset = LIT_PRESETS[litIdx] || LIT_PRESETS[0];
+  const satScale = preset.sat;
+  const valScale = preset.val;
+  const isNextRow = preset.isNext;
+  const gbStyle = gb ? (GB_BLOCK_PALETTE[conf.id] || GB_BLOCK_PALETTE[3]) : null;
+
+  if (gb) {
+    ctx.fillStyle = isFlashing
+      ? dimHexColor('#ffffff', 0, Math.min(1, valScale + 0.1))
+      : dimHexColor(gbStyle.bg, 0, valScale);
+    ctx.beginPath();
+    ctx.roundRect(bx, by, bw, bh, radius);
+    ctx.fill();
+
+    if (!isFlashing) {
+      drawGbPatternOnSprite(ctx, bx, by, bw, bh, radius, gbStyle, valScale);
+      ctx.strokeStyle = dimHexColor(gbStyle.stroke, 0, valScale);
+      ctx.lineWidth = 2.0;
+      ctx.beginPath();
+      ctx.roundRect(bx + 0.8, by + 0.8, bw - 1.6, bh - 1.6, Math.max(4, radius - 1));
+      ctx.stroke();
+    } else {
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 2.4;
+      ctx.beginPath();
+      ctx.roundRect(bx + 1, by + 1, bw - 2, bh - 2, radius);
+      ctx.stroke();
+    }
+  } else {
+    ctx.fillStyle = isFlashing
+      ? dimHexColor('#94a3b8', satScale, valScale)
+      : dimHexColor(conf.bg, satScale, valScale);
+    ctx.beginPath();
+    ctx.roundRect(bx, by, bw, bh, radius);
+    ctx.fill();
+
+    if (!isFlashing) {
+      const topGrad = ctx.createLinearGradient(bx, by, bx, by + bh);
+      if (isNextRow) {
+        topGrad.addColorStop(0, 'rgba(255, 255, 255, 0.10)');
+        topGrad.addColorStop(0.5, 'rgba(0, 0, 0, 0.08)');
+        topGrad.addColorStop(1, 'rgba(0, 0, 0, 0.42)');
+      } else {
+        topGrad.addColorStop(0, 'rgba(255, 255, 255, 0.42)');
+        topGrad.addColorStop(0.42, 'rgba(255, 255, 255, 0.08)');
+        topGrad.addColorStop(0.55, 'rgba(0, 0, 0, 0.0)');
+        topGrad.addColorStop(1, 'rgba(0, 0, 0, 0.34)');
+      }
+      ctx.fillStyle = topGrad;
+      ctx.beginPath();
+      ctx.roundRect(bx, by, bw, bh, radius);
+      ctx.fill();
+
+      ctx.strokeStyle = isNextRow
+        ? 'rgba(255, 255, 255, 0.16)'
+        : (conf.isSpecial ? 'rgba(0, 0, 0, 0.25)' : 'rgba(255, 255, 255, 0.36)');
+      ctx.lineWidth = 1.25;
+      ctx.beginPath();
+      ctx.roundRect(bx + 1.5, by + 1.5, bw - 3, bh - 3, Math.max(4, radius - 2));
+      ctx.stroke();
+    } else {
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.roundRect(bx + 1, by + 1, bw - 2, bh - 2, radius);
+      ctx.stroke();
+    }
+  }
+
+  if (withSymbol) {
+    const cx = S / 2;
+    const cy = S / 2;
+    ctx.font = gb ? '900 18px sans-serif' : 'bold 16px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    if (gb) {
+      if (!isFlashing) {
+        const textVal = isNextRow ? Math.min(1, valScale + 0.07) : valScale;
+        if (gbStyle.pattern === 'inner_white_box') {
+          ctx.lineJoin = 'round';
+          ctx.lineWidth = 3.2;
+          ctx.strokeStyle = dimHexColor(gbStyle.textStroke, 0, textVal);
+          ctx.strokeText(conf.symbol, cx, cy);
+        }
+        ctx.fillStyle = dimHexColor(gbStyle.text, 0, textVal);
+        ctx.fillText(conf.symbol, cx, cy);
+      } else {
+        ctx.fillStyle = '#000000';
+        ctx.fillText(conf.symbol, cx, cy);
+      }
+    } else {
+      if (!isFlashing && !conf.isSpecial) {
+        ctx.fillStyle = isNextRow ? 'rgba(0, 0, 0, 0.25)' : 'rgba(0, 0, 0, 0.45)';
+        ctx.fillText(conf.symbol, cx, cy + 1.5);
+      }
+      const textVal = isNextRow ? Math.min(1, valScale + 0.11) : Math.min(1, valScale + 0.06);
+      ctx.fillStyle = isFlashing
+        ? '#ffffff'
+        : dimHexColor(conf.textColor || '#ffffff', satScale, textVal);
+      ctx.fillText(conf.symbol, cx, cy);
+    }
+  }
+
+  PanelSpriteCache.set(key, cvs);
+  return cvs;
+}
+
+function getGarbageBaseSprite(isHard, gb, litIdx, isFlashing) {
+  const key = `${isHard ? 1 : 0}|${gb ? 1 : 0}|${litIdx}|${isFlashing ? 1 : 0}`;
+  const cached = GarbageBaseSpriteCache.get(key);
+  if (cached) return cached;
+
+  const S = CELL_PX;
+  const cvs = document.createElement('canvas');
+  cvs.width = S;
+  cvs.height = S;
+  const ctx = cvs.getContext('2d');
+
+  const preset = LIT_PRESETS[litIdx] || LIT_PRESETS[0];
+  const satScale = preset.sat;
+  const valScale = preset.val;
+  const isNextRow = preset.isNext;
+
+  const rawFill = isFlashing
+    ? '#ffffff'
+    : (gb ? (isHard ? '#c8c8c8' : '#585858') : (isHard ? '#a8b2bd' : '#5c636a'));
+  ctx.fillStyle = dimHexColor(rawFill, isFlashing ? 0 : satScale, isFlashing ? Math.min(1, valScale + 0.1) : valScale);
+  ctx.fillRect(0, 0, S, S);
+
+  if (!isFlashing) {
+    if (gb) {
+      ctx.fillStyle = isHard ? 'rgba(0, 0, 0, 0.16)' : 'rgba(255, 255, 255, 0.16)';
+      for (let py = 3; py < S - 2; py += 4) {
+        const sh = ((py / 4) % 2) * 2;
+        for (let px = 3 + sh; px < S - 2; px += 4) {
+          ctx.fillRect(px, py, 1.5, 1.5);
+        }
+      }
+    } else {
+      const gGrad = ctx.createLinearGradient(0, 0, 0, S);
+      gGrad.addColorStop(0, isNextRow ? 'rgba(255, 255, 255, 0.06)' : 'rgba(255, 255, 255, 0.18)');
+      gGrad.addColorStop(0.5, 'rgba(255, 255, 255, 0.0)');
+      gGrad.addColorStop(1, 'rgba(0, 0, 0, 0.28)');
+      ctx.fillStyle = gGrad;
+      ctx.fillRect(0, 0, S, S);
+    }
+  }
+
+  if (isHard) {
+    ctx.strokeStyle = gb ? dimHexColor('#111111', 0, valScale) : 'rgba(15, 15, 15, 0.45)';
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.moveTo(S * 0.25, S * 0.25);
+    ctx.lineTo(S * 0.75, S * 0.75);
+    ctx.moveTo(S * 0.75, S * 0.25);
+    ctx.lineTo(S * 0.25, S * 0.75);
+    ctx.stroke();
+
+    ctx.strokeStyle = gb
+      ? dimHexColor('#ffffff', 0, Math.min(1, valScale + 0.07))
+      : (isNextRow ? 'rgba(255, 255, 255, 0.25)' : 'rgba(255, 255, 255, 0.5)');
+    ctx.lineWidth = 2.4;
+    ctx.beginPath();
+    ctx.moveTo(S * 0.25, S * 0.25);
+    ctx.lineTo(S * 0.75, S * 0.75);
+    ctx.moveTo(S * 0.75, S * 0.25);
+    ctx.lineTo(S * 0.25, S * 0.75);
+    ctx.stroke();
+  } else if (!gb) {
+    ctx.fillStyle = isNextRow ? 'rgba(255, 255, 255, 0.04)' : 'rgba(255, 255, 255, 0.1)';
+    ctx.beginPath();
+    ctx.arc(S / 2, S / 2, S / 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  GarbageBaseSpriteCache.set(key, cvs);
+  return cvs;
+}
+
+// --- 描画エンジン（2D & 3D円筒18列正面投影：スプライトキャッシュ・背面カリング＆簡略化・変形枠） ---
 class BoardRenderer {
   constructor(canvasId) {
     this.canvas = document.getElementById(canvasId);
@@ -1810,6 +2067,7 @@ class BoardRenderer {
     this.canvas.height = ROWS * CELL_PX;
     this.theme = null;
     this.viewCol = null;
+    this._lastIs3D = null;
   }
 
   isGbActive() {
@@ -1823,7 +2081,6 @@ class BoardRenderer {
     const dTheta = (Math.PI * 2) / N;
     const kSin = 0.24;
     const kLin = 0.76;
-    // 左右それぞれ3.3列（合計6.6列＝0.3, 1, 1, 1, 1, 1, 1, 0.3）を盤面横端までぴったり詰める
     const thetaEdge = 3.31 * dTheta;
     const normEdge = kSin * Math.sin(thetaEdge) + kLin * thetaEdge;
     return { N, W, H, dTheta, kSin, kLin, thetaEdge, normEdge };
@@ -1840,7 +2097,6 @@ class BoardRenderer {
     const rawX = kSin * Math.sin(phi) + kLin * phi;
     const x = W * 0.5 + (W * 0.5) * (rawX / normEdge);
 
-    // 正面視点（見下ろし無し）：奥行きに応じた縦スケールのみ適用し、上下対称な円筒カーブを描く
     const persp = cosT >= 0 ? (0.84 + 0.16 * cosT) : (0.84 + 0.14 * cosT);
     const y = H * 0.5 + (rowY - H * 0.5) * persp;
 
@@ -1850,6 +2106,171 @@ class BoardRenderer {
       z: cosT,
       persp
     };
+  }
+
+  getCylinderOutlinePoints(metrics, inset = 2.0) {
+    const { W, H, N, thetaEdge } = metrics;
+    const key = `${W}x${H}|${N}|${inset}`;
+    const cached = CylinderOutlineCache.get(key);
+    if (cached) return cached;
+
+    const steps = 28;
+    const scaleX = (W - inset * 2) / W;
+    const scaleY = (H - inset * 2) / H;
+    const cx = W * 0.5;
+    const cy = H * 0.5;
+    const topPts = [];
+    const botPts = [];
+
+    for (let i = 0; i <= steps; i++) {
+      const t = ((i / steps) * 2 - 1) * thetaEdge;
+      const pt = this.project3DPoint(metrics, t, 0);
+      const pb = this.project3DPoint(metrics, t, H);
+      topPts.push({ x: cx + (pt.x - cx) * scaleX, y: cy + (pt.y - cy) * scaleY });
+      botPts.push({ x: cx + (pb.x - cx) * scaleX, y: cy + (pb.y - cy) * scaleY });
+    }
+    const result = { topPts, botPts };
+    CylinderOutlineCache.set(key, result);
+    return result;
+  }
+
+  traceCylinderOutlinePath(ctx, metrics, inset = 2.0) {
+    const { topPts, botPts } = this.getCylinderOutlinePoints(metrics, inset);
+    ctx.beginPath();
+    for (let i = 0; i < topPts.length; i++) {
+      if (i === 0) ctx.moveTo(topPts[i].x, topPts[i].y);
+      else ctx.lineTo(topPts[i].x, topPts[i].y);
+    }
+    for (let i = botPts.length - 1; i >= 0; i--) {
+      ctx.lineTo(botPts[i].x, botPts[i].y);
+    }
+    ctx.closePath();
+  }
+
+  getCylinderStaticLayers(metrics, gb) {
+    const { W, H, N, thetaEdge } = metrics;
+    const key = `${W}x${H}|${N}|${gb ? 1 : 0}`;
+    const cached = CylinderStaticCache.get(key);
+    if (cached) return cached;
+
+    const steps = 28;
+
+    // 1. 背面用：円筒背景陰影 + 背面上下ワイヤーリング
+    const backCvs = document.createElement('canvas');
+    backCvs.width = W;
+    backCvs.height = H;
+    const bCtx = backCvs.getContext('2d');
+
+    const cylGrad = bCtx.createLinearGradient(0, 0, W, 0);
+    cylGrad.addColorStop(0, 'rgba(0, 0, 0, 0.34)');
+    cylGrad.addColorStop(0.2, 'rgba(0, 0, 0, 0.06)');
+    cylGrad.addColorStop(0.5, 'rgba(255, 255, 255, 0.03)');
+    cylGrad.addColorStop(0.8, 'rgba(0, 0, 0, 0.06)');
+    cylGrad.addColorStop(1, 'rgba(0, 0, 0, 0.34)');
+    bCtx.fillStyle = cylGrad;
+    bCtx.fillRect(0, 0, W, H);
+
+    bCtx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+    bCtx.lineWidth = 1.0;
+    [0, H].forEach(yPos => {
+      bCtx.beginPath();
+      for (let i = 0; i <= steps; i++) {
+        const frac = (i / steps) * 2 - 1;
+        const theta = frac >= 0 ? Math.PI - frac * thetaEdge : -Math.PI - frac * thetaEdge;
+        const pt = this.project3DPoint(metrics, theta, yPos);
+        if (i === 0) bCtx.moveTo(pt.x, pt.y);
+        else bCtx.lineTo(pt.x, pt.y);
+      }
+      bCtx.stroke();
+    });
+
+    // 2. 中間用：円筒内部ベール + 前面上下ワイヤーリング
+    const midCvs = document.createElement('canvas');
+    midCvs.width = W;
+    midCvs.height = H;
+    const mCtx = midCvs.getContext('2d');
+
+    mCtx.save();
+    this.traceCylinderOutlinePath(mCtx, metrics, 0);
+    const veilGrad = mCtx.createLinearGradient(0, 0, W, 0);
+    veilGrad.addColorStop(0, 'rgba(6, 10, 22, 0.44)');
+    veilGrad.addColorStop(0.22, 'rgba(6, 10, 22, 0.24)');
+    veilGrad.addColorStop(0.5, 'rgba(10, 16, 32, 0.16)');
+    veilGrad.addColorStop(0.78, 'rgba(6, 10, 22, 0.24)');
+    veilGrad.addColorStop(1, 'rgba(6, 10, 22, 0.44)');
+    mCtx.fillStyle = veilGrad;
+    mCtx.fill();
+    mCtx.restore();
+
+    mCtx.strokeStyle = 'rgba(255, 255, 255, 0.22)';
+    mCtx.lineWidth = 1.4;
+    [0, H].forEach(yPos => {
+      mCtx.beginPath();
+      for (let i = 0; i <= steps; i++) {
+        const frac = (i / steps) * 2 - 1;
+        const theta = frac * thetaEdge;
+        const pt = this.project3DPoint(metrics, theta, yPos);
+        if (i === 0) mCtx.moveTo(pt.x, pt.y);
+        else mCtx.lineTo(pt.x, pt.y);
+      }
+      mCtx.stroke();
+    });
+
+    const entry = { back: backCvs, mid: midCvs };
+    CylinderStaticCache.set(key, entry);
+    return entry;
+  }
+
+  getBoardFrameStyle(engine) {
+    const gb = this.isGbActive();
+    const wrapper = this.canvas.closest ? this.canvas.closest('.board-wrapper') : null;
+    if (wrapper) {
+      if (wrapper.classList.contains('targeted')) {
+        return gb
+          ? { stroke: '#ffffff', glow: 'rgba(255, 255, 255, 0.85)' }
+          : { stroke: '#ff007f', glow: 'rgba(255, 0, 127, 0.78)' };
+      }
+      if (wrapper.classList.contains('sacrifice-aura')) {
+        return gb
+          ? { stroke: '#f5f5f5', glow: 'rgba(255, 255, 255, 0.72)' }
+          : { stroke: '#dc2626', glow: 'rgba(220, 38, 38, 0.85)' };
+      }
+      if (wrapper.classList.contains('share-p2-board')) {
+        return gb
+          ? { stroke: '#d4d4d4', glow: 'rgba(255, 255, 255, 0.55)' }
+          : { stroke: '#ff4081', glow: 'rgba(255, 64, 129, 0.7)' };
+      }
+      if (wrapper.classList.contains('my-board')) {
+        return gb
+          ? { stroke: '#ffffff', glow: 'rgba(255, 255, 255, 0.65)' }
+          : { stroke: '#10b981', glow: 'rgba(16, 185, 129, 0.65)' };
+      }
+      if (wrapper.classList.contains('com-board')) {
+        return gb
+          ? { stroke: '#b3b3b3', glow: 'rgba(255, 255, 255, 0.35)' }
+          : { stroke: '#64748b', glow: 'rgba(100, 116, 139, 0.45)' };
+      }
+    }
+    return gb
+      ? { stroke: '#d4d4d4', glow: 'rgba(255, 255, 255, 0.4)' }
+      : { stroke: '#3282b8', glow: 'rgba(50, 130, 184, 0.55)' };
+  }
+
+  drawCylinderFrameBorder(ctx, metrics, engine) {
+    const style = this.getBoardFrameStyle(engine);
+    ctx.save();
+    ctx.lineJoin = 'round';
+    this.traceCylinderOutlinePath(ctx, metrics, 2.0);
+    ctx.strokeStyle = style.glow;
+    ctx.lineWidth = 5.4;
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.85)';
+    ctx.lineWidth = 3.8;
+    ctx.stroke();
+    ctx.strokeStyle = style.stroke;
+    ctx.lineWidth = 2.4;
+    ctx.stroke();
+    ctx.restore();
   }
 
   getBlockLighting(theta) {
@@ -2002,159 +2423,61 @@ class BoardRenderer {
     ctx.restore();
   }
 
-  drawGbDotPattern(ctx, bx, by, bw, bh, radius, gbStyle, valScale = 1.0) {
-    ctx.save();
-    ctx.beginPath();
-    ctx.roundRect(bx + 1, by + 1, bw - 2, bh - 2, Math.max(4, radius - 1));
-    ctx.clip();
-
-    const accentCol = dimHexColor(gbStyle.accent, 0, valScale);
-
-    if (gbStyle.pattern === 'solid_dark' || gbStyle.pattern === 'solid_light') {
-      // 中央クリーンベタ
-    } else if (gbStyle.pattern === 'inner_white_box') {
-      ctx.strokeStyle = accentCol;
-      ctx.lineWidth = 2.2;
-      ctx.strokeRect(bx + 4, by + 4, bw - 8, bh - 8);
-    } else if (gbStyle.pattern === 'top_bottom_bars') {
-      ctx.fillStyle = accentCol;
-      ctx.fillRect(bx, by, bw, 4.5);
-      ctx.fillRect(bx, by + bh - 4.5, bw, 4.5);
-    } else if (gbStyle.pattern === 'white_circle_center') {
-      ctx.fillStyle = accentCol;
-      ctx.beginPath();
-      ctx.arc(bx + bw / 2, by + bh / 2, Math.min(bw, bh) * 0.37, 0, Math.PI * 2);
-      ctx.fill();
-    } else if (gbStyle.pattern === 'corner_triangles') {
-      ctx.fillStyle = accentCol;
-      const cSize = 8;
-      ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(bx + cSize, by); ctx.lineTo(bx, by + cSize); ctx.closePath(); ctx.fill();
-      ctx.beginPath(); ctx.moveTo(bx + bw, by); ctx.lineTo(bx + bw - cSize, by); ctx.lineTo(bx + bw, by + cSize); ctx.closePath(); ctx.fill();
-      ctx.beginPath(); ctx.moveTo(bx, by + bh); ctx.lineTo(bx + cSize, by + bh); ctx.lineTo(bx, by + bh - cSize); ctx.closePath(); ctx.fill();
-      ctx.beginPath(); ctx.moveTo(bx + bw, by + bh); ctx.lineTo(bx + bw - cSize, by + bh); ctx.lineTo(bx + bw, by + bh - cSize); ctx.closePath(); ctx.fill();
-    } else if (gbStyle.pattern === 'special_frame') {
-      ctx.strokeStyle = accentCol;
-      ctx.lineWidth = 2.4;
-      ctx.strokeRect(bx + 4, by + 4, bw - 8, bh - 8);
-    }
-    ctx.restore();
-  }
-
+  // ① スプライトキャッシュを活用した2D通常ブロック描画
   drawPanelBlock(ctx, x, y, conf, isFlashing, bounceY = 0, isNextRow = false, matchTimer = 0) {
-    const pad = 2;
-    const bx = x + pad;
-    const by = y + pad;
-    const bw = CELL_PX - pad * 2;
-    const bh = CELL_PX - pad * 2;
-    const radius = 7;
     const gb = this.isGbActive();
-    const gbStyle = gb ? (GB_BLOCK_PALETTE[conf.id] || GB_BLOCK_PALETTE[3]) : null;
-    const nextSat = 0.16;
-    const nextVal = 0.44;
+    const litIdx = isNextRow ? 3 : 0;
+    const hasBounce = !isNextRow && Math.abs(bounceY) > 0.15;
+    const sprite = getPanelSprite(conf, gb, litIdx, isFlashing, !hasBounce);
 
-    ctx.save();
+    const S = CELL_PX;
+    let dx = x;
+    let dy = y;
+    let dw = S;
+    let dh = S;
+
     if (matchTimer > 0 && matchTimer <= 12) {
       const scale = 1.0 + (12 - matchTimer) * 0.014;
-      ctx.translate(x + CELL_PX / 2, y + CELL_PX / 2);
-      ctx.scale(scale, scale);
-      ctx.translate(-(x + CELL_PX / 2), -(y + CELL_PX / 2));
+      dw = S * scale;
+      dh = S * scale;
+      dx = x - (dw - S) * 0.5;
+      dy = y - (dh - S) * 0.5;
     }
 
-    if (gb) {
-      const valScale = isNextRow ? nextVal : 1.0;
-      ctx.fillStyle = isFlashing ? '#ffffff' : dimHexColor(gbStyle.bg, 0, valScale);
-      ctx.beginPath();
-      ctx.roundRect(bx, by, bw, bh, radius);
-      ctx.fill();
+    ctx.drawImage(sprite, 0, 0, S, S, dx, dy, dw, dh);
 
-      if (!isFlashing) {
-        this.drawGbDotPattern(ctx, bx, by, bw, bh, radius, gbStyle, valScale);
-        ctx.strokeStyle = dimHexColor(gbStyle.stroke, 0, valScale);
-        ctx.lineWidth = 2.0;
-        ctx.beginPath();
-        ctx.roundRect(bx + 0.8, by + 0.8, bw - 1.6, bh - 1.6, Math.max(4, radius - 1));
-        ctx.stroke();
-      } else {
-        ctx.strokeStyle = '#000000';
-        ctx.lineWidth = 2.4;
-        ctx.beginPath();
-        ctx.roundRect(bx + 1, by + 1, bw - 2, bh - 2, radius);
-        ctx.stroke();
-      }
-    } else {
-      ctx.fillStyle = isFlashing
-        ? '#94a3b8'
-        : (isNextRow ? dimHexColor(conf.bg, nextSat, nextVal) : conf.bg);
-      ctx.beginPath();
-      ctx.roundRect(bx, by, bw, bh, radius);
-      ctx.fill();
-
-      if (!isFlashing) {
-        const topGrad = ctx.createLinearGradient(bx, by, bx, by + bh);
-        if (isNextRow) {
-          topGrad.addColorStop(0, 'rgba(255, 255, 255, 0.10)');
-          topGrad.addColorStop(0.5, 'rgba(0, 0, 0, 0.08)');
-          topGrad.addColorStop(1, 'rgba(0, 0, 0, 0.42)');
+    if (hasBounce) {
+      const cx = x + S / 2;
+      const cy = y + S / 2 + bounceY;
+      ctx.save();
+      ctx.font = gb ? '900 18px sans-serif' : 'bold 16px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      if (gb) {
+        const gbStyle = GB_BLOCK_PALETTE[conf.id] || GB_BLOCK_PALETTE[3];
+        if (!isFlashing) {
+          if (gbStyle.pattern === 'inner_white_box') {
+            ctx.lineJoin = 'round';
+            ctx.lineWidth = 3.2;
+            ctx.strokeStyle = gbStyle.textStroke;
+            ctx.strokeText(conf.symbol, cx, cy);
+          }
+          ctx.fillStyle = gbStyle.text;
+          ctx.fillText(conf.symbol, cx, cy);
         } else {
-          topGrad.addColorStop(0, 'rgba(255, 255, 255, 0.42)');
-          topGrad.addColorStop(0.42, 'rgba(255, 255, 255, 0.08)');
-          topGrad.addColorStop(0.55, 'rgba(0, 0, 0, 0.0)');
-          topGrad.addColorStop(1, 'rgba(0, 0, 0, 0.34)');
+          ctx.fillStyle = '#000000';
+          ctx.fillText(conf.symbol, cx, cy);
         }
-        ctx.fillStyle = topGrad;
-        ctx.beginPath();
-        ctx.roundRect(bx, by, bw, bh, radius);
-        ctx.fill();
-
-        ctx.strokeStyle = isNextRow
-          ? 'rgba(255, 255, 255, 0.16)'
-          : (conf.isSpecial ? 'rgba(0, 0, 0, 0.25)' : 'rgba(255, 255, 255, 0.36)');
-        ctx.lineWidth = 1.25;
-        ctx.beginPath();
-        ctx.roundRect(bx + 1.5, by + 1.5, bw - 3, bh - 3, Math.max(4, radius - 2));
-        ctx.stroke();
       } else {
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.roundRect(bx + 1, by + 1, bw - 2, bh - 2, radius);
-        ctx.stroke();
-      }
-    }
-
-    const cx = x + CELL_PX / 2;
-    const cy = y + CELL_PX / 2 + bounceY;
-    ctx.font = gb ? '900 18px sans-serif' : 'bold 16px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-
-    if (gb) {
-      if (!isFlashing) {
-        const valScale = isNextRow ? 0.52 : 1.0;
-        if (gbStyle.pattern === 'inner_white_box') {
-          ctx.lineJoin = 'round';
-          ctx.lineWidth = 3.2;
-          ctx.strokeStyle = dimHexColor(gbStyle.textStroke, 0, valScale);
-          ctx.strokeText(conf.symbol, cx, cy);
+        if (!isFlashing && !conf.isSpecial) {
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+          ctx.fillText(conf.symbol, cx, cy + 1.5);
         }
-        ctx.fillStyle = dimHexColor(gbStyle.text, 0, valScale);
-        ctx.fillText(conf.symbol, cx, cy);
-      } else {
-        ctx.fillStyle = '#000000';
+        ctx.fillStyle = isFlashing ? '#ffffff' : (conf.textColor || '#ffffff');
         ctx.fillText(conf.symbol, cx, cy);
       }
-    } else {
-      if (!isFlashing && !conf.isSpecial) {
-        ctx.fillStyle = isNextRow ? 'rgba(0, 0, 0, 0.25)' : 'rgba(0, 0, 0, 0.45)';
-        ctx.fillText(conf.symbol, cx, cy + 1.5);
-      }
-      ctx.fillStyle = isFlashing
-        ? '#ffffff'
-        : (isNextRow ? dimHexColor(conf.textColor || '#ffffff', nextSat, 0.56) : (conf.textColor || '#ffffff'));
-      ctx.fillText(conf.symbol, cx, cy);
+      ctx.restore();
     }
-
-    ctx.restore();
   }
 
   drawMatchParticles2D(ctx, engine, offsetY) {
@@ -2200,39 +2523,17 @@ class BoardRenderer {
     }
   }
 
+  // ① スプライトキャッシュを活用した2Dお邪魔ブロック描画
   drawGarbageCell(ctx, x, y, b, sameTop, sameBottom, sameLeft, sameRight, isNextRow = false) {
     const isFlashing = (b.state === 'match' && Math.floor(b.timer / 4) % 2 === 0);
     const gb = this.isGbActive();
-    const nextSat = isNextRow ? 0.14 : 1.0;
-    const nextVal = isNextRow ? 0.46 : 1.0;
+    const litIdx = isNextRow ? 3 : 0;
+    const baseSprite = getGarbageBaseSprite(!!b.isHard, gb, litIdx, isFlashing);
 
-    const rawFill = isFlashing
-      ? '#ffffff'
-      : (gb ? (b.isHard ? '#c8c8c8' : '#585858') : (b.isHard ? '#a8b2bd' : '#5c636a'));
-    ctx.fillStyle = isNextRow && !isFlashing ? dimHexColor(rawFill, nextSat, nextVal) : rawFill;
-    ctx.fillRect(x, y, CELL_PX, CELL_PX);
-
-    if (!isFlashing) {
-      if (gb) {
-        ctx.fillStyle = b.isHard ? 'rgba(0, 0, 0, 0.16)' : 'rgba(255, 255, 255, 0.16)';
-        for (let py = y + 3; py < y + CELL_PX - 2; py += 4) {
-          const sh = (((py - y) / 4) % 2) * 2;
-          for (let px = x + 3 + sh; px < x + CELL_PX - 2; px += 4) {
-            ctx.fillRect(px, py, 1.5, 1.5);
-          }
-        }
-      } else {
-        const gGrad = ctx.createLinearGradient(x, y, x, y + CELL_PX);
-        gGrad.addColorStop(0, isNextRow ? 'rgba(255, 255, 255, 0.06)' : 'rgba(255, 255, 255, 0.18)');
-        gGrad.addColorStop(0.5, 'rgba(255, 255, 255, 0.0)');
-        gGrad.addColorStop(1, 'rgba(0, 0, 0, 0.28)');
-        ctx.fillStyle = gGrad;
-        ctx.fillRect(x, y, CELL_PX, CELL_PX);
-      }
-    }
+    ctx.drawImage(baseSprite, x, y);
 
     const rawBorder = gb ? (b.isHard ? '#111111' : '#f0f0f0') : '#dee2e6';
-    ctx.strokeStyle = isNextRow ? dimHexColor(rawBorder, nextSat, 0.52) : rawBorder;
+    ctx.strokeStyle = isNextRow ? dimHexColor(rawBorder, 0.14, 0.52) : rawBorder;
     ctx.lineWidth = gb ? 2.4 : 2;
     ctx.beginPath();
     if (!sameTop) { ctx.moveTo(x, y + 1); ctx.lineTo(x + CELL_PX, y + 1); }
@@ -2249,38 +2550,9 @@ class BoardRenderer {
       if (!sameBottom && !sameRight) { ctx.beginPath(); ctx.arc(x + CELL_PX - 5, y + CELL_PX - 5, 1.8, 0, Math.PI * 2); ctx.fill(); }
     }
 
-    if (b.isHard) {
-      ctx.strokeStyle = gb ? (isNextRow ? dimHexColor('#111111', 0, nextVal) : '#111111') : 'rgba(15, 15, 15, 0.45)';
-      ctx.lineWidth = 5;
-      ctx.beginPath();
-      ctx.moveTo(x + CELL_PX * 0.25, y + CELL_PX * 0.25);
-      ctx.lineTo(x + CELL_PX * 0.75, y + CELL_PX * 0.75);
-      ctx.moveTo(x + CELL_PX * 0.75, y + CELL_PX * 0.25);
-      ctx.lineTo(x + CELL_PX * 0.25, y + CELL_PX * 0.75);
-      ctx.stroke();
-
-      ctx.strokeStyle = gb
-        ? (isNextRow ? dimHexColor('#ffffff', 0, 0.52) : '#ffffff')
-        : (isNextRow ? 'rgba(255, 255, 255, 0.25)' : 'rgba(255, 255, 255, 0.5)');
-      ctx.lineWidth = 2.4;
-      ctx.beginPath();
-      ctx.moveTo(x + CELL_PX * 0.25, y + CELL_PX * 0.25);
-      ctx.lineTo(x + CELL_PX * 0.75, y + CELL_PX * 0.75);
-      ctx.moveTo(x + CELL_PX * 0.75, y + CELL_PX * 0.25);
-      ctx.lineTo(x + CELL_PX * 0.25, y + CELL_PX * 0.75);
-      ctx.stroke();
-    } else if (!gb) {
-      ctx.fillStyle = isNextRow ? 'rgba(255, 255, 255, 0.04)' : 'rgba(255, 255, 255, 0.1)';
-      ctx.beginPath();
-      ctx.arc(x + CELL_PX / 2, y + CELL_PX / 2, CELL_PX / 4, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    if (b.state === 'transforming') {
-      if (b.transformDelay < 13) {
-        ctx.fillStyle = `rgba(255, 255, 255, ${(13 - b.transformDelay) / 13})`;
-        ctx.fillRect(x, y, CELL_PX, CELL_PX);
-      }
+    if (b.state === 'transforming' && b.transformDelay < 13) {
+      ctx.fillStyle = `rgba(255, 255, 255, ${(13 - b.transformDelay) / 13})`;
+      ctx.fillRect(x, y, CELL_PX, CELL_PX);
     }
 
     if (b.particleTimer > 0) {
@@ -2328,388 +2600,361 @@ class BoardRenderer {
   }
 
   // ==========================================
-  // 3D円筒用：台形パース＋角度付きブロック描画（前面・後面共通）
+  // ①・④ 3D前面ブロック描画：事前スプライトのアフィン変換drawImage（clip()不要）
   // ==========================================
-  drawPanelBlock3D(ctx, pLT, pRT, pRB, pLB, conf, lighting, isFlashing, bounceY = 0, matchTimer = 0, isNextRow = false) {
-    const gb = this.isGbActive();
-    const gbStyle = gb ? (GB_BLOCK_PALETTE[conf.id] || GB_BLOCK_PALETTE[3]) : null;
-    const { satScale, valScale, isBack, alpha } = lighting;
+  drawSpriteQuad3D(ctx, sprite, pLT, pRT, pRB, pLB, visRatio = 1.0, matchTimer = 0) {
+    const S = CELL_PX;
+    const dx = pRT.x - pLT.x;
+    if (dx <= 0.4) return;
 
-    let qLT = bilerpQuad(pLT, pRT, pRB, pLB, 0.055, 0.055);
-    let qRT = bilerpQuad(pLT, pRT, pRB, pLB, 0.945, 0.055);
-    let qRB = bilerpQuad(pLT, pRT, pRB, pLB, 0.945, 0.945);
-    let qLB = bilerpQuad(pLT, pRT, pRB, pLB, 0.055, 0.945);
+    const hL = pLB.y - pLT.y;
+    const hR = pRB.y - pRT.y;
+    const yL_mid = (pLT.y + pLB.y) * 0.5;
+    const yR_mid = (pRT.y + pRB.y) * 0.5;
+    const hAvg = (hL + hR) * 0.5;
+    if (hAvg <= 0.4) return;
 
-    if (matchTimer > 0 && matchTimer <= 12) {
-      const expand = (12 - matchTimer) * 0.008;
-      qLT = bilerpQuad(pLT, pRT, pRB, pLB, 0.055 - expand, 0.055 - expand);
-      qRT = bilerpQuad(pLT, pRT, pRB, pLB, 0.945 + expand, 0.055 - expand);
-      qRB = bilerpQuad(pLT, pRT, pRB, pLB, 0.945 + expand, 0.945 + expand);
-      qLB = bilerpQuad(pLT, pRT, pRB, pLB, 0.055 - expand, 0.945 + expand);
-    }
+    const yTopL = yL_mid - hAvg * 0.5;
+    const srcH = visRatio >= 0.999 ? S : Math.max(1, Math.min(S, S * visRatio));
 
     ctx.save();
-    ctx.globalAlpha *= alpha;
-
-    if (gb) {
-      const baseHex = isFlashing ? '#ffffff' : gbStyle.bg;
-      const strokeHex = isFlashing ? '#000000' : gbStyle.stroke;
-      const accentHex = gbStyle.accent;
-      ctx.fillStyle = dimHexColor(baseHex, 0, valScale);
-      traceQuadPath(ctx, qLT, qRT, qRB, qLB);
-      ctx.fill();
-
-      if (!isFlashing) {
-        const accCol = dimHexColor(accentHex, 0, valScale);
-        if (gbStyle.pattern === 'inner_white_box' || gbStyle.pattern === 'special_frame') {
-          const i0 = bilerpQuad(qLT, qRT, qRB, qLB, 0.14, 0.14);
-          const i1 = bilerpQuad(qLT, qRT, qRB, qLB, 0.86, 0.14);
-          const i2 = bilerpQuad(qLT, qRT, qRB, qLB, 0.86, 0.86);
-          const i3 = bilerpQuad(qLT, qRT, qRB, qLB, 0.14, 0.86);
-          ctx.strokeStyle = accCol;
-          ctx.lineWidth = isBack ? 1.4 : 2.0;
-          traceQuadPath(ctx, i0, i1, i2, i3);
-          ctx.stroke();
-        } else if (gbStyle.pattern === 'top_bottom_bars') {
-          const t2 = bilerpQuad(qLT, qRT, qRB, qLB, 1, 0.16);
-          const t3 = bilerpQuad(qLT, qRT, qRB, qLB, 0, 0.16);
-          const b0 = bilerpQuad(qLT, qRT, qRB, qLB, 0, 0.84);
-          const b1 = bilerpQuad(qLT, qRT, qRB, qLB, 1, 0.84);
-          ctx.fillStyle = accCol;
-          traceQuadPath(ctx, qLT, qRT, t2, t3);
-          ctx.fill();
-          traceQuadPath(ctx, b0, b1, qRB, qLB);
-          ctx.fill();
-        } else if (gbStyle.pattern === 'corner_triangles') {
-          ctx.fillStyle = accCol;
-          const tri = (pA, pB, pC) => {
-            ctx.beginPath();
-            ctx.moveTo(pA.x, pA.y);
-            ctx.lineTo(pB.x, pB.y);
-            ctx.lineTo(pC.x, pC.y);
-            ctx.closePath();
-            ctx.fill();
-          };
-          tri(qLT, bilerpQuad(qLT, qRT, qRB, qLB, 0.25, 0), bilerpQuad(qLT, qRT, qRB, qLB, 0, 0.25));
-          tri(qRT, bilerpQuad(qLT, qRT, qRB, qLB, 0.75, 0), bilerpQuad(qLT, qRT, qRB, qLB, 1, 0.25));
-          tri(qLB, bilerpQuad(qLT, qRT, qRB, qLB, 0.25, 1), bilerpQuad(qLT, qRT, qRB, qLB, 0, 0.75));
-          tri(qRB, bilerpQuad(qLT, qRT, qRB, qLB, 0.75, 1), bilerpQuad(qLT, qRT, qRB, qLB, 1, 0.75));
-        }
-      }
-
-      ctx.strokeStyle = dimHexColor(strokeHex, 0, isBack ? valScale * 0.9 : Math.min(1, valScale + (isNextRow ? 0.04 : 0.15)));
-      ctx.lineWidth = isBack ? 1.2 : 1.8;
-      traceQuadPath(ctx, qLT, qRT, qRB, qLB);
-      ctx.stroke();
+    ctx.transform(dx / S, (yR_mid - yL_mid) / S, 0, hAvg / S, pLT.x, yTopL);
+    if (matchTimer > 0 && matchTimer <= 12) {
+      const expand = (12 - matchTimer) * 0.014;
+      const off = S * expand * 0.5;
+      ctx.drawImage(sprite, 0, 0, S, srcH, -off, -off, S + off * 2, srcH + off * 2);
     } else {
-      const baseColor = isFlashing
-        ? dimHexColor('#94a3b8', satScale, valScale)
-        : dimHexColor(conf.bg, satScale, valScale);
-      ctx.fillStyle = baseColor;
-      traceQuadPath(ctx, qLT, qRT, qRB, qLB);
-      ctx.fill();
-
-      if (!isFlashing) {
-        const midTop = bilerpQuad(qLT, qRT, qRB, qLB, 0.5, 0);
-        const midBot = bilerpQuad(qLT, qRT, qRB, qLB, 0.5, 1);
-        const grad = ctx.createLinearGradient(midTop.x, midTop.y, midBot.x, midBot.y);
-        if (isBack || isNextRow) {
-          grad.addColorStop(0, 'rgba(255, 255, 255, 0.08)');
-          grad.addColorStop(1, 'rgba(0, 0, 0, 0.38)');
-        } else {
-          grad.addColorStop(0, 'rgba(255, 255, 255, 0.42)');
-          grad.addColorStop(0.42, 'rgba(255, 255, 255, 0.07)');
-          grad.addColorStop(0.56, 'rgba(0, 0, 0, 0.0)');
-          grad.addColorStop(1, 'rgba(0, 0, 0, 0.34)');
-        }
-        ctx.fillStyle = grad;
-        traceQuadPath(ctx, qLT, qRT, qRB, qLB);
-        ctx.fill();
-
-        const b0 = bilerpQuad(qLT, qRT, qRB, qLB, 0.04, 0.04);
-        const b1 = bilerpQuad(qLT, qRT, qRB, qLB, 0.96, 0.04);
-        const b2 = bilerpQuad(qLT, qRT, qRB, qLB, 0.96, 0.96);
-        const b3 = bilerpQuad(qLT, qRT, qRB, qLB, 0.04, 0.96);
-        ctx.strokeStyle = (isBack || isNextRow)
-          ? 'rgba(200, 210, 225, 0.16)'
-          : (conf.isSpecial ? 'rgba(0, 0, 0, 0.28)' : 'rgba(255, 255, 255, 0.38)');
-        ctx.lineWidth = (isBack || isNextRow) ? 0.9 : 1.25;
-        traceQuadPath(ctx, b0, b1, b2, b3);
-        ctx.stroke();
-      } else {
-        ctx.strokeStyle = isBack ? 'rgba(220, 220, 220, 0.45)' : 'rgba(255, 255, 255, 0.85)';
-        ctx.lineWidth = 1.4;
-        traceQuadPath(ctx, qLT, qRT, qRB, qLB);
-        ctx.stroke();
-      }
+      ctx.drawImage(sprite, 0, 0, S, srcH, 0, 0, S, srcH);
     }
-
-    const pcX = (qLT.x + qRT.x + qRB.x + qLB.x) * 0.25;
-    const pcY = (qLT.y + qRT.y + qRB.y + qLB.y) * 0.25;
-    const Ux = ((qRT.x - qLT.x) + (qRB.x - qLB.x)) * 0.5;
-    const Uy = ((qRT.y - qLT.y) + (qRB.y - qLB.y)) * 0.5;
-    const Vx = ((qLB.x - qLT.x) + (qRB.x - qRT.x)) * 0.5;
-    const Vy = ((qLB.y - qLT.y) + (qRB.y - qRT.y)) * 0.5;
-    const horizLen = Math.hypot(Ux, Uy);
-
-    if (horizLen >= 2.2) {
-      ctx.save();
-      ctx.transform(Ux / CELL_PX, Uy / CELL_PX, Vx / CELL_PX, Vy / CELL_PX, pcX, pcY);
-
-      if (gb && !isFlashing && gbStyle.pattern === 'white_circle_center') {
-        ctx.fillStyle = dimHexColor(gbStyle.accent, 0, valScale);
-        ctx.beginPath();
-        ctx.arc(0, 0, CELL_PX * 0.34, 0, Math.PI * 2);
-        ctx.fill();
-      }
-
-      ctx.font = gb ? '900 18px sans-serif' : 'bold 16px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-
-      if (gb) {
-        if (!isFlashing) {
-          if (gbStyle.pattern === 'inner_white_box') {
-            ctx.lineJoin = 'round';
-            ctx.lineWidth = 3.2;
-            ctx.strokeStyle = dimHexColor(gbStyle.textStroke, 0, valScale);
-            ctx.strokeText(conf.symbol, 0, bounceY);
-          }
-          ctx.fillStyle = dimHexColor(gbStyle.text, 0, valScale);
-          ctx.fillText(conf.symbol, 0, bounceY);
-        } else {
-          ctx.fillStyle = dimHexColor('#000000', 0, valScale);
-          ctx.fillText(conf.symbol, 0, bounceY);
-        }
-      } else {
-        if (!isFlashing && !conf.isSpecial && !isBack && !isNextRow) {
-          ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
-          ctx.fillText(conf.symbol, 0, bounceY + 1.5);
-        }
-        const symCol = isFlashing
-          ? dimHexColor('#ffffff', satScale, Math.min(1, valScale + 0.12))
-          : dimHexColor(conf.textColor || '#ffffff', satScale, (isBack || isNextRow) ? Math.min(0.68, valScale + 0.16) : Math.min(1, valScale + 0.08));
-        ctx.fillStyle = symCol;
-        ctx.fillText(conf.symbol, 0, bounceY);
-      }
-
-      ctx.restore();
-    }
-
     ctx.restore();
   }
 
-  drawGarbageCell3D(ctx, pLT, pRT, pRB, pLB, b, lighting, sameTop, sameBottom, sameLeft, sameRight, isNextRow = false) {
+  drawPanelBlock3DFront(ctx, pLT, pRT, pRB, pLB, conf, cosT, isFlashing, bounceY = 0, matchTimer = 0, grayOut = false, visRatio = 1.0) {
+    const gb = this.isGbActive();
+    const litIdx = getLightingBucket(cosT, grayOut);
+    const hasBounce = !grayOut && visRatio >= 0.999 && Math.abs(bounceY) > 0.15;
+    const sprite = getPanelSprite(conf, gb, litIdx, isFlashing, !hasBounce);
+
+    this.drawSpriteQuad3D(ctx, sprite, pLT, pRT, pRB, pLB, visRatio, matchTimer);
+
+    if (hasBounce) {
+      const S = CELL_PX;
+      const dx = pRT.x - pLT.x;
+      const hAvg = ((pLB.y - pLT.y) + (pRB.y - pRT.y)) * 0.5;
+      if (dx >= 2.2) {
+        const yL_mid = (pLT.y + pLB.y) * 0.5;
+        const yR_mid = (pRT.y + pRB.y) * 0.5;
+        const preset = LIT_PRESETS[litIdx] || LIT_PRESETS[0];
+        ctx.save();
+        ctx.transform(dx / S, (yR_mid - yL_mid) / S, 0, hAvg / S, pLT.x, yL_mid - hAvg * 0.5);
+        ctx.font = gb ? '900 18px sans-serif' : 'bold 16px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        const cx = S * 0.5;
+        const cy = S * 0.5 + bounceY;
+        if (gb) {
+          const gbStyle = GB_BLOCK_PALETTE[conf.id] || GB_BLOCK_PALETTE[3];
+          if (!isFlashing) {
+            if (gbStyle.pattern === 'inner_white_box') {
+              ctx.lineJoin = 'round';
+              ctx.lineWidth = 3.2;
+              ctx.strokeStyle = dimHexColor(gbStyle.textStroke, 0, preset.val);
+              ctx.strokeText(conf.symbol, cx, cy);
+            }
+            ctx.fillStyle = dimHexColor(gbStyle.text, 0, preset.val);
+            ctx.fillText(conf.symbol, cx, cy);
+          } else {
+            ctx.fillStyle = '#000000';
+            ctx.fillText(conf.symbol, cx, cy);
+          }
+        } else {
+          if (!isFlashing && !conf.isSpecial) {
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+            ctx.fillText(conf.symbol, cx, cy + 1.5);
+          }
+          ctx.fillStyle = isFlashing
+            ? '#ffffff'
+            : dimHexColor(conf.textColor || '#ffffff', preset.sat, Math.min(1, preset.val + 0.06));
+          ctx.fillText(conf.symbol, cx, cy);
+        }
+        ctx.restore();
+      }
+    }
+  }
+
+  drawGarbageCell3DFront(ctx, pLT, pRT, pRB, pLB, fRB, fLB, b, cosT, sameTop, sameBottom, sameLeft, sameRight, grayOut = false, visRatio = 1.0, isNextRow = false) {
     const isFlashing = (b.state === 'match' && Math.floor(b.timer / 4) % 2 === 0);
     const gb = this.isGbActive();
-    const { satScale, valScale, isBack, alpha } = lighting;
+    const litIdx = getLightingBucket(cosT, grayOut);
+    const sprite = getGarbageBaseSprite(!!b.isHard, gb, litIdx, isFlashing);
 
-    ctx.save();
-    ctx.globalAlpha *= alpha;
-
-    const rawFill = isFlashing
-      ? '#ffffff'
-      : (gb ? (b.isHard ? '#c8c8c8' : '#585858') : (b.isHard ? '#a8b2bd' : '#5c636a'));
-    ctx.fillStyle = dimHexColor(rawFill, satScale, valScale);
-    traceQuadPath(ctx, pLT, pRT, pRB, pLB);
-    ctx.fill();
-
-    if (!isFlashing) {
-      const midTop = bilerpQuad(pLT, pRT, pRB, pLB, 0.5, 0);
-      const midBot = bilerpQuad(pLT, pRT, pRB, pLB, 0.5, 1);
-      const gGrad = ctx.createLinearGradient(midTop.x, midTop.y, midBot.x, midBot.y);
-      gGrad.addColorStop(0, (isBack || isNextRow) ? 'rgba(255, 255, 255, 0.06)' : 'rgba(255, 255, 255, 0.18)');
-      gGrad.addColorStop(0.5, 'rgba(255, 255, 255, 0.0)');
-      gGrad.addColorStop(1, 'rgba(0, 0, 0, 0.28)');
-      ctx.fillStyle = gGrad;
-      traceQuadPath(ctx, pLT, pRT, pRB, pLB);
-      ctx.fill();
+    if (isNextRow) {
+      this.drawSpriteQuad3D(ctx, sprite, pLT, pRT, fRB, fLB, visRatio, 0);
+    } else {
+      this.drawSpriteQuad3D(ctx, sprite, pLT, pRT, pRB, pLB, 1.0, 0);
     }
 
+    const preset = LIT_PRESETS[litIdx] || LIT_PRESETS[0];
     const rawBorder = gb ? (b.isHard ? '#111111' : '#f0f0f0') : '#dee2e6';
-    ctx.strokeStyle = dimHexColor(rawBorder, satScale, (isBack || isNextRow) ? valScale * 0.9 : Math.min(1, valScale + 0.15));
-    ctx.lineWidth = isBack ? 1.2 : (gb ? 2.2 : 1.8);
+    ctx.strokeStyle = dimHexColor(rawBorder, preset.sat, grayOut ? preset.val * 0.9 : Math.min(1, preset.val + 0.15));
+    ctx.lineWidth = gb ? 2.2 : 1.8;
     ctx.beginPath();
     if (!sameTop) { ctx.moveTo(pLT.x, pLT.y); ctx.lineTo(pRT.x, pRT.y); }
-    if (!sameBottom) { ctx.moveTo(pLB.x, pLB.y); ctx.lineTo(pRB.x, pRB.y); }
+    if (!sameBottom && !isNextRow) { ctx.moveTo(pLB.x, pLB.y); ctx.lineTo(pRB.x, pRB.y); }
     if (!sameLeft) { ctx.moveTo(pLT.x, pLT.y); ctx.lineTo(pLB.x, pLB.y); }
     if (!sameRight) { ctx.moveTo(pRT.x, pRT.y); ctx.lineTo(pRB.x, pRB.y); }
     ctx.stroke();
 
-    if (b.isHard) {
-      const d0 = bilerpQuad(pLT, pRT, pRB, pLB, 0.25, 0.25);
-      const d1 = bilerpQuad(pLT, pRT, pRB, pLB, 0.75, 0.25);
-      const d2 = bilerpQuad(pLT, pRT, pRB, pLB, 0.75, 0.75);
-      const d3 = bilerpQuad(pLT, pRT, pRB, pLB, 0.25, 0.75);
-
-      ctx.strokeStyle = gb ? dimHexColor('#111111', 0, valScale) : 'rgba(15, 15, 15, 0.45)';
-      ctx.lineWidth = isBack ? 2.5 : 4.2;
-      ctx.beginPath();
-      ctx.moveTo(d0.x, d0.y); ctx.lineTo(d2.x, d2.y);
-      ctx.moveTo(d1.x, d1.y); ctx.lineTo(d3.x, d3.y);
-      ctx.stroke();
-
-      ctx.strokeStyle = gb
-        ? dimHexColor('#ffffff', 0, valScale)
-        : ((isBack || isNextRow) ? 'rgba(220, 220, 220, 0.28)' : 'rgba(255, 255, 255, 0.5)');
-      ctx.lineWidth = isBack ? 1.2 : 2.1;
-      ctx.beginPath();
-      ctx.moveTo(d0.x, d0.y); ctx.lineTo(d2.x, d2.y);
-      ctx.moveTo(d1.x, d1.y); ctx.lineTo(d3.x, d3.y);
-      ctx.stroke();
-    }
-
     if (b.state === 'transforming' && b.transformDelay < 13) {
-      ctx.fillStyle = `rgba(255, 255, 255, ${((13 - b.transformDelay) / 13) * (isBack ? 0.45 : 1)})`;
+      ctx.fillStyle = `rgba(255, 255, 255, ${(13 - b.transformDelay) / 13})`;
       traceQuadPath(ctx, pLT, pRT, pRB, pLB);
       ctx.fill();
     }
     if (b.particleTimer > 0) {
-      ctx.fillStyle = `rgba(255, 255, 255, ${(b.particleTimer / 35) * (isBack ? 0.45 : 1)})`;
+      ctx.fillStyle = `rgba(255, 255, 255, ${b.particleTimer / 35})`;
       traceQuadPath(ctx, pLT, pRT, pRB, pLB);
       ctx.fill();
     }
-
-    ctx.restore();
   }
 
-  drawCell3D(ctx, engine, r, c, b, pLT, pRT, pRB, pLB, lighting, isEnginePanic, highestCols, time, isNextRow = false) {
-    const N = engine.cols;
-    if (b.type === 'garbage') {
-      if (b.state === 'purify_anim') {
-        const pMax = b.purifyMax || 46;
-        const remRatio = Math.max(0, (b.purifyTimer || 0) / pMax);
-        const progress = 1 - remRatio;
-        const isFlash = Math.floor((b.purifyTimer || 0) / 3) % 2 === 0;
-        const s = progress * 0.24;
-        const q0 = bilerpQuad(pLT, pRT, pRB, pLB, s, s);
-        const q1 = bilerpQuad(pLT, pRT, pRB, pLB, 1 - s, s);
-        const q2 = bilerpQuad(pLT, pRT, pRB, pLB, 1 - s, 1 - s);
-        const q3 = bilerpQuad(pLT, pRT, pRB, pLB, s, 1 - s);
+  // ==========================================
+  // ② 3D背面ブロック（cosT < 0）超軽量簡略ポリゴン描画（文字・ツヤ・細部省略）
+  // ==========================================
+  drawCell3DBackSimple(ctx, engine, r, c, b, pLT, pRT, pRB, pLB, lighting, isNextRow = false) {
+    const gb = this.isGbActive();
+    const { satScale, valScale, alpha } = lighting;
+    const effVal = isNextRow ? valScale * 0.72 : valScale;
+    const effSat = isNextRow ? satScale * 0.3 : satScale;
 
-        ctx.save();
-        ctx.globalAlpha *= Math.max(0.12, remRatio) * lighting.alpha;
-        const rawCol = isFlash ? '#ffffff' : (this.isGbActive() ? '#a3a3a3' : '#4ecca3');
-        ctx.fillStyle = dimHexColor(rawCol, lighting.satScale, lighting.valScale);
-        traceQuadPath(ctx, q0, q1, q2, q3);
-        ctx.fill();
-        ctx.strokeStyle = dimHexColor(this.isGbActive() ? '#ffffff' : '#ffd700', lighting.satScale, lighting.valScale);
-        ctx.lineWidth = lighting.isBack ? 1.2 : 1.8;
-        traceQuadPath(ctx, q0, q1, q2, q3);
+    ctx.save();
+    ctx.globalAlpha *= alpha;
+
+    if (b.type === 'garbage') {
+      const isFlashing = (b.state === 'match' && Math.floor(b.timer / 4) % 2 === 0);
+      const rawFill = b.state === 'purify_anim'
+        ? (gb ? '#a3a3a3' : '#4ecca3')
+        : (isFlashing ? '#ffffff' : (gb ? (b.isHard ? '#c8c8c8' : '#585858') : (b.isHard ? '#a8b2bd' : '#5c636a')));
+      ctx.fillStyle = dimHexColor(rawFill, effSat, effVal);
+      traceQuadPath(ctx, pLT, pRT, pRB, pLB);
+      ctx.fill();
+
+      const N = engine.cols;
+      const cLeft = (c - 1 + N) % N;
+      const cRight = (c + 1) % N;
+      const rowArr = isNextRow ? engine.nextRow : engine.grid[r];
+      const sameTop = !isNextRow && b.groupId && r > 0 && engine.grid[r - 1][c] && engine.grid[r - 1][c].groupId === b.groupId;
+      const sameBottom = !isNextRow && b.groupId && r < engine.rows - 1 && engine.grid[r + 1][c] && engine.grid[r + 1][c].groupId === b.groupId;
+      const sameLeft = !!(b.groupId && rowArr && rowArr[cLeft] && rowArr[cLeft].groupId === b.groupId);
+      const sameRight = !!(b.groupId && rowArr && rowArr[cRight] && rowArr[cRight].groupId === b.groupId);
+      if (!sameTop || (!sameBottom && !isNextRow) || !sameLeft || !sameRight) {
+        const rawBorder = gb ? (b.isHard ? '#111111' : '#f0f0f0') : '#dee2e6';
+        ctx.strokeStyle = dimHexColor(rawBorder, effSat, effVal * 0.9);
+        ctx.lineWidth = 1.0;
+        ctx.beginPath();
+        if (!sameTop) { ctx.moveTo(pLT.x, pLT.y); ctx.lineTo(pRT.x, pRT.y); }
+        if (!sameBottom && !isNextRow) { ctx.moveTo(pLB.x, pLB.y); ctx.lineTo(pRB.x, pRB.y); }
+        if (!sameLeft) { ctx.moveTo(pLT.x, pLT.y); ctx.lineTo(pLB.x, pLB.y); }
+        if (!sameRight) { ctx.moveTo(pRT.x, pRT.y); ctx.lineTo(pRB.x, pRB.y); }
         ctx.stroke();
-        ctx.restore();
-      } else {
-        const cLeft = (c - 1 + N) % N;
-        const cRight = (c + 1) % N;
-        const rowArr = isNextRow ? engine.nextRow : engine.grid[r];
-        const sameTop = !isNextRow && b.groupId && r > 0 && engine.grid[r - 1][c] && engine.grid[r - 1][c].groupId === b.groupId;
-        const sameBottom = !isNextRow && b.groupId && r < engine.rows - 1 && engine.grid[r + 1][c] && engine.grid[r + 1][c].groupId === b.groupId;
-        const sameLeft = !!(b.groupId && rowArr && rowArr[cLeft] && rowArr[cLeft].groupId === b.groupId);
-        const sameRight = !!(b.groupId && rowArr && rowArr[cRight] && rowArr[cRight].groupId === b.groupId);
-        this.drawGarbageCell3D(ctx, pLT, pRT, pRB, pLB, b, lighting, sameTop, sameBottom, sameLeft, sameRight, isNextRow);
       }
     } else {
       const conf = COLORS.find(item => item.id === b.type);
       if (conf) {
         const isFlashing = (b.state === 'match' && Math.floor(b.timer / 4) % 2 === 0);
-        const isHighestCol = !isNextRow && isEnginePanic && highestCols.has(c);
-        const bounceY = isHighestCol ? Math.sin(time / 60 + c) * 3 : 0;
-        const matchTimer = (b.state === 'match') ? b.timer : 0;
-        this.drawPanelBlock3D(ctx, pLT, pRT, pRB, pLB, conf, lighting, isFlashing, bounceY, matchTimer, isNextRow);
+        let rawColor;
+        if (gb) {
+          const gbStyle = GB_BLOCK_PALETTE[conf.id] || GB_BLOCK_PALETTE[3];
+          rawColor = isFlashing ? '#ffffff' : gbStyle.bg;
+        } else {
+          rawColor = isFlashing ? '#94a3b8' : conf.bg;
+        }
+        ctx.fillStyle = dimHexColor(rawColor, effSat, effVal);
+        traceQuadPath(ctx, pLT, pRT, pRB, pLB);
+        ctx.fill();
+
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.38)';
+        ctx.lineWidth = 0.8;
+        ctx.stroke();
       }
     }
+    ctx.restore();
   }
 
-  drawCylinderWireRings(ctx, metrics, vCol, isFrontHalf) {
-    const { N, dTheta, thetaEdge } = metrics;
-    const totalH = ROWS * CELL_PX;
-    const steps = 28;
-    ctx.save();
-    ctx.strokeStyle = isFrontHalf ? 'rgba(255, 255, 255, 0.22)' : 'rgba(255, 255, 255, 0.08)';
-    ctx.lineWidth = isFrontHalf ? 1.4 : 1.0;
+  // ② 前面ブロックによる背面カリング用：各前面列の結合済み不透明Y区間を構築
+  buildFrontCoverColumns(engine, metrics, vCol, offsetY) {
+    const { N, W, H, dTheta } = metrics;
+    const colsInfo = [];
+    const isOpaque = (b) => !!(b && b.state !== 'match' && b.state !== 'purify_anim' && Math.abs(b.fallY) < 0.02 && !b.swapAnim && !b.transformGroupId);
 
-    [0, totalH].forEach(yPos => {
-      ctx.beginPath();
-      for (let i = 0; i <= steps; i++) {
-        const frac = (i / steps) * 2 - 1;
-        const theta = isFrontHalf
-          ? (frac * thetaEdge)
-          : (frac >= 0 ? Math.PI - frac * thetaEdge : -Math.PI - frac * thetaEdge);
-        const pt = this.project3DPoint(metrics, theta, yPos);
-        if (i === 0) ctx.moveTo(pt.x, pt.y);
-        else ctx.lineTo(pt.x, pt.y);
+    for (let c = 0; c < N; c++) {
+      const delta = ((c + 0.5 - vCol + N * 1.5) % N) - N * 0.5;
+      const thetaC = delta * dTheta;
+      if (Math.cos(thetaC) < 0) continue;
+
+      const thetaL = thetaC - dTheta * 0.5;
+      const thetaR = thetaC + dTheta * 0.5;
+      const cosL = Math.cos(thetaL);
+      const cosR = Math.cos(thetaR);
+      if ((cosL < 0 && cosR > 0) || (cosL > 0 && cosR < 0)) continue;
+
+      const pL0 = this.project3DPoint(metrics, thetaL, 0);
+      const pR0 = this.project3DPoint(metrics, thetaR, 0);
+      const xL = Math.max(0, Math.min(pL0.x, pR0.x));
+      const xR = Math.min(W, Math.max(pL0.x, pR0.x));
+      if (xR - xL < 0.8) continue;
+
+      const minPersp = Math.min(pL0.persp, pR0.persp);
+      const intervals = [];
+      let curTop = null;
+      let curBot = null;
+
+      for (let r = 0; r < engine.rows; r++) {
+        const b = engine.grid[r][c];
+        if (isOpaque(b)) {
+          const yT = H * 0.5 + (r * CELL_PX - offsetY - H * 0.5) * minPersp;
+          const yB = H * 0.5 + ((r + 1) * CELL_PX - offsetY - H * 0.5) * minPersp;
+          if (curTop === null) {
+            curTop = yT + 2.5;
+            curBot = yB - 2.5;
+          } else {
+            curBot = yB - 2.5;
+          }
+        } else if (curTop !== null) {
+          if (curBot > curTop) intervals.push([curTop, curBot]);
+          curTop = null;
+          curBot = null;
+        }
       }
-      ctx.stroke();
-    });
 
+      if (offsetY > 0.5 && engine.nextRow && isOpaque(engine.nextRow[c])) {
+        const yT = H * 0.5 + (engine.rows * CELL_PX - offsetY - H * 0.5) * minPersp;
+        const yB = H * 0.5 + (engine.rows * CELL_PX - H * 0.5) * minPersp;
+        if (curTop === null) {
+          curTop = yT + 2.5;
+          curBot = yB;
+        } else {
+          curBot = yB;
+        }
+      }
+
+      if (curTop !== null && curBot > curTop) {
+        intervals.push([curTop, curBot]);
+      }
+
+      if (intervals.length > 0) {
+        colsInfo.push({ xL, xR, intervals });
+      }
+    }
+    return colsInfo;
+  }
+
+  isBackQuadOccluded(frontCols, bxL, bxR, byTop, byBot) {
+    if (!frontCols || frontCols.length === 0) return false;
+    const testL = Math.max(0, bxL + 1.0);
+    const testR = Math.min(this.canvas.width, bxR - 1.0);
+    if (testR <= testL) return true;
+
+    let coveredRight = testL;
+    for (let i = 0; i < frontCols.length; i++) {
+      const fc = frontCols[i];
+      if (fc.xR <= testL || fc.xL >= testR) continue;
+      let yCovered = false;
+      for (let j = 0; j < fc.intervals.length; j++) {
+        const iv = fc.intervals[j];
+        if (iv[0] <= byTop + 1.2 && iv[1] >= byBot - 1.2) {
+          yCovered = true;
+          break;
+        }
+      }
+      if (!yCovered) return false;
+      if (fc.xL <= coveredRight + 1.2 && fc.xR > coveredRight) {
+        coveredRight = fc.xR;
+      }
+    }
+    return coveredRight >= testR - 1.2;
+  }
+
+  drawCylinderVerticalWires(ctx, metrics, vCol, isFrontHalf) {
+    const { N, W, H, dTheta } = metrics;
+    ctx.save();
     ctx.strokeStyle = isFrontHalf ? 'rgba(255, 255, 255, 0.09)' : 'rgba(255, 255, 255, 0.04)';
     ctx.lineWidth = 1;
+    ctx.beginPath();
     for (let c = 0; c < N; c++) {
       const delta = ((c - vCol + N * 1.5) % N) - N * 0.5;
       const theta = delta * dTheta;
       const cosT = Math.cos(theta);
       if (isFrontHalf ? (cosT < 0) : (cosT >= 0)) continue;
       const pTop = this.project3DPoint(metrics, theta, 0);
-      const pBot = this.project3DPoint(metrics, theta, totalH);
-      if (pTop.x < -2 || pTop.x > metrics.W + 2) continue;
-      ctx.beginPath();
+      const pBot = this.project3DPoint(metrics, theta, H);
+      if (pTop.x < -2 || pTop.x > W + 2) continue;
       ctx.moveTo(pTop.x, pTop.y);
       ctx.lineTo(pBot.x, pBot.y);
-      ctx.stroke();
     }
+    ctx.stroke();
     ctx.restore();
   }
 
-  drawCylinderInteriorVeil(ctx, metrics) {
-    const { W, H, thetaEdge } = metrics;
-    const steps = 28;
-    const topRing = [];
-    const botRing = [];
-    for (let i = 0; i <= steps; i++) {
-      const t = ((i / steps) * 2 - 1) * thetaEdge;
-      topRing.push(this.project3DPoint(metrics, t, 0));
-      botRing.push(this.project3DPoint(metrics, t, H));
-    }
-
+  drawCylinderHeightBar(ctx, metrics, engine, vCol, gb) {
+    const { N, W, dTheta } = metrics;
+    const barH = 5;
     ctx.save();
-    ctx.beginPath();
-    topRing.forEach((p, idx) => {
-      if (idx === 0) ctx.moveTo(p.x, p.y);
-      else ctx.lineTo(p.x, p.y);
-    });
-    for (let i = botRing.length - 1; i >= 0; i--) {
-      ctx.lineTo(botRing[i].x, botRing[i].y);
-    }
-    ctx.closePath();
+    for (let c = 0; c < N; c++) {
+      const delta = ((c + 0.5 - vCol + N * 1.5) % N) - N * 0.5;
+      const thetaC = delta * dTheta;
+      if (Math.cos(thetaC) < 0) continue;
+      const thetaL = thetaC - dTheta * 0.5;
+      const thetaR = thetaC + dTheta * 0.5;
 
-    const veilGrad = ctx.createLinearGradient(0, 0, W, 0);
-    veilGrad.addColorStop(0, 'rgba(6, 10, 22, 0.44)');
-    veilGrad.addColorStop(0.22, 'rgba(6, 10, 22, 0.24)');
-    veilGrad.addColorStop(0.5, 'rgba(10, 16, 32, 0.16)');
-    veilGrad.addColorStop(0.78, 'rgba(6, 10, 22, 0.24)');
-    veilGrad.addColorStop(1, 'rgba(6, 10, 22, 0.44)');
-    ctx.fillStyle = veilGrad;
-    ctx.fill();
+      const pLT = this.project3DPoint(metrics, thetaL, 2);
+      const pRT = this.project3DPoint(metrics, thetaR, 2);
+      if (pRT.x <= 0 || pLT.x >= W) continue;
+
+      let topR = engine.rows;
+      let hasGarbage = false;
+      for (let r = 0; r < engine.rows; r++) {
+        const blk = engine.grid[r][c];
+        if (blk !== null) {
+          if (topR === engine.rows) topR = r;
+          if (blk.type === 'garbage') hasGarbage = true;
+        }
+      }
+
+      const hRatio = (engine.rows - topR) / engine.rows;
+      if (hRatio > 0) {
+        const bh = Math.max(2, hRatio * barH);
+        const pLB = this.project3DPoint(metrics, thetaL, 2 + bh);
+        const pRB = this.project3DPoint(metrics, thetaR, 2 + bh);
+        ctx.fillStyle = topR <= Math.floor(engine.rows * 0.3)
+          ? (gb ? '#ffffff' : '#ff3366')
+          : (hasGarbage ? '#94a3b8' : (gb ? '#a3a3a3' : '#4ecca3'));
+        ctx.globalAlpha = 0.92;
+        traceQuadPath(ctx, pLT, pRT, pRB, pLB);
+        ctx.fill();
+      }
+      if (c === engine.cursor.x || c === (engine.cursor.x + 1) % N) {
+        const pLB = this.project3DPoint(metrics, thetaL, 2 + barH + 1.5);
+        const pRB = this.project3DPoint(metrics, thetaR, 2 + barH + 1.5);
+        const pLTc = this.project3DPoint(metrics, thetaL, 2 + barH);
+        const pRTc = this.project3DPoint(metrics, thetaR, 2 + barH);
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = '#ffd700';
+        traceQuadPath(ctx, pLTc, pRTc, pRB, pLB);
+        ctx.fill();
+      }
+    }
     ctx.restore();
   }
 
-  draw3DCylinder(ctx, engine, offsetY, isEnginePanic, highestCols, time) {
-    const metrics = this.getCylinderMetrics(engine);
+  draw3DCylinderContent(ctx, engine, metrics, offsetY, isEnginePanic, highestCols, time) {
     const { N, W, dTheta } = metrics;
     const vCol = this.syncViewCol(engine);
     const gb = this.isGbActive();
     const grayOutNextRow = !engine.endAnim;
+    const staticLayers = this.getCylinderStaticLayers(metrics, gb);
 
-    const cylGrad = ctx.createLinearGradient(0, 0, W, 0);
-    cylGrad.addColorStop(0, 'rgba(0, 0, 0, 0.34)');
-    cylGrad.addColorStop(0.2, 'rgba(0, 0, 0, 0.06)');
-    cylGrad.addColorStop(0.5, 'rgba(255, 255, 255, 0.03)');
-    cylGrad.addColorStop(0.8, 'rgba(0, 0, 0, 0.06)');
-    cylGrad.addColorStop(1, 'rgba(0, 0, 0, 0.34)');
-    ctx.fillStyle = cylGrad;
-    ctx.fillRect(0, 0, W, this.canvas.height);
-
-    this.drawCylinderWireRings(ctx, metrics, vCol, false);
+    ctx.drawImage(staticLayers.back, 0, 0);
+    this.drawCylinderVerticalWires(ctx, metrics, vCol, false);
 
     const backItems = [];
     const frontItems = [];
@@ -2753,71 +2998,114 @@ class BoardRenderer {
     backItems.sort(sortPainterOrder);
     frontItems.sort(sortPainterOrder);
 
-    const renderCellList = (items) => {
-      for (let i = 0; i < items.length; i++) {
-        const { r, c, b, thetaC, isNextRow } = items[i];
-        const thetaL = thetaC - dTheta * 0.5;
-        const thetaR = thetaC + dTheta * 0.5;
+    // ② 前面ブロックによる背面カリング＆簡略ポリゴン描画
+    const frontCoverCols = this.buildFrontCoverColumns(engine, metrics, vCol, offsetY);
+    for (let i = 0; i < backItems.length; i++) {
+      const { r, c, b, thetaC, isNextRow } = backItems[i];
+      const thetaL = thetaC - dTheta * 0.5;
+      const thetaR = thetaC + dTheta * 0.5;
+      const cosL = Math.cos(thetaL);
+      const cosR = Math.cos(thetaR);
+      if ((cosL < 0 && cosR > 0) || (cosL > 0 && cosR < 0)) continue;
 
-        const cosL = Math.cos(thetaL);
-        const cosR = Math.cos(thetaR);
-        if ((cosL < 0 && cosR > 0) || (cosL > 0 && cosR < 0)) {
-          continue;
-        }
+      const rowYTop = isNextRow ? (engine.rows * CELL_PX - offsetY) : (r * CELL_PX - offsetY + (b.fallY * CELL_PX));
+      const rowYBot = isNextRow ? (engine.rows * CELL_PX) : (rowYTop + CELL_PX);
 
-        let lighting = this.getBlockLighting(thetaC);
-        if (isNextRow && grayOutNextRow) {
-          lighting = {
-            ...lighting,
-            satScale: lighting.satScale * 0.16,
-            valScale: lighting.valScale * 0.45
-          };
-        }
+      const pLT = this.project3DPoint(metrics, thetaL, rowYTop);
+      const pRT = this.project3DPoint(metrics, thetaR, rowYTop);
+      const bxL = Math.min(pLT.x, pRT.x);
+      const bxR = Math.max(pLT.x, pRT.x);
+      if (bxR <= -2 || bxL >= W + 2) continue;
 
-        if (isNextRow) {
-          const rowYTop = engine.rows * CELL_PX - offsetY;
-          const rowYBotClip = engine.rows * CELL_PX;
-          const rowYBotFull = rowYTop + CELL_PX;
+      const pRB = this.project3DPoint(metrics, thetaR, rowYBot);
+      const pLB = this.project3DPoint(metrics, thetaL, rowYBot);
+      const byTop = Math.min(pLT.y, pRT.y);
+      const byBot = Math.max(pLB.y, pRB.y);
 
-          const cLT = this.project3DPoint(metrics, thetaL, rowYTop);
-          const cRT = this.project3DPoint(metrics, thetaR, rowYTop);
-          const cRB = this.project3DPoint(metrics, thetaR, rowYBotClip);
-          const cLB = this.project3DPoint(metrics, thetaL, rowYBotClip);
+      if (this.isBackQuadOccluded(frontCoverCols, bxL, bxR, byTop, byBot)) continue;
 
-          if (Math.max(cLT.x, cRT.x) <= -2 || Math.min(cLT.x, cRT.x) >= W + 2) continue;
+      const lighting = this.getBlockLighting(thetaC);
+      this.drawCell3DBackSimple(ctx, engine, r, c, b, pLT, pRT, pRB, pLB, lighting, isNextRow && grayOutNextRow);
+    }
 
-          const fLB = this.project3DPoint(metrics, thetaL, rowYBotFull);
-          const fRB = this.project3DPoint(metrics, thetaR, rowYBotFull);
+    // ③ キャッシュされた内部ベール＋前面上下リング＋動的縦線
+    ctx.drawImage(staticLayers.mid, 0, 0);
+    this.drawCylinderVerticalWires(ctx, metrics, vCol, true);
 
+    // ①・④ 前面ブロック描画（通常ブロックは1.0、nextRowのみvisRatioで切り抜き）
+    const nextRowVisRatio = Math.max(0.01, Math.min(1, offsetY / CELL_PX));
+    for (let i = 0; i < frontItems.length; i++) {
+      const { r, c, b, thetaC, cosT, isNextRow } = frontItems[i];
+      const thetaL = thetaC - dTheta * 0.5;
+      const thetaR = thetaC + dTheta * 0.5;
+      const cosL = Math.cos(thetaL);
+      const cosR = Math.cos(thetaR);
+      if ((cosL < 0 && cosR > 0) || (cosL > 0 && cosR < 0)) continue;
+
+      const rowYTop = isNextRow ? (engine.rows * CELL_PX - offsetY) : (r * CELL_PX - offsetY + (b.fallY * CELL_PX));
+      const rowYBotClip = isNextRow ? (engine.rows * CELL_PX) : (rowYTop + CELL_PX);
+      const pLT = this.project3DPoint(metrics, thetaL, rowYTop);
+      const pRT = this.project3DPoint(metrics, thetaR, rowYTop);
+      if (Math.max(pLT.x, pRT.x) <= -2 || Math.min(pLT.x, pRT.x) >= W + 2) continue;
+
+      const pRB = this.project3DPoint(metrics, thetaR, rowYBotClip);
+      const pLB = this.project3DPoint(metrics, thetaL, rowYBotClip);
+
+      let fRB = pRB;
+      let fLB = pLB;
+      if (isNextRow) {
+        const rowYBotFull = rowYTop + CELL_PX;
+        fRB = this.project3DPoint(metrics, thetaR, rowYBotFull);
+        fLB = this.project3DPoint(metrics, thetaL, rowYBotFull);
+      }
+
+      const cellVisRatio = isNextRow ? nextRowVisRatio : 1.0;
+      const effNext = isNextRow && grayOutNextRow;
+      if (b.type === 'garbage') {
+        if (b.state === 'purify_anim') {
+          const pMax = b.purifyMax || 46;
+          const remRatio = Math.max(0, (b.purifyTimer || 0) / pMax);
+          const s = (1 - remRatio) * 0.24;
+          const q0 = bilerpQuad(pLT, pRT, pRB, pLB, s, s);
+          const q1 = bilerpQuad(pLT, pRT, pRB, pLB, 1 - s, s);
+          const q2 = bilerpQuad(pLT, pRT, pRB, pLB, 1 - s, 1 - s);
+          const q3 = bilerpQuad(pLT, pRT, pRB, pLB, s, 1 - s);
+          const isFlash = Math.floor((b.purifyTimer || 0) / 3) % 2 === 0;
           ctx.save();
-          traceQuadPath(ctx, cLT, cRT, cRB, cLB);
-          ctx.clip();
-          this.drawCell3D(ctx, engine, r, c, b, cLT, cRT, fRB, fLB, lighting, isEnginePanic, highestCols, time, grayOutNextRow);
+          ctx.globalAlpha *= Math.max(0.12, remRatio);
+          ctx.fillStyle = isFlash ? '#ffffff' : (gb ? '#a3a3a3' : '#4ecca3');
+          traceQuadPath(ctx, q0, q1, q2, q3);
+          ctx.fill();
+          ctx.strokeStyle = gb ? '#ffffff' : '#ffd700';
+          ctx.lineWidth = 1.8;
+          ctx.stroke();
           ctx.restore();
         } else {
-          const rowYTop = r * CELL_PX - offsetY + (b.fallY * CELL_PX);
-          const rowYBot = rowYTop + CELL_PX;
-
-          const pLT = this.project3DPoint(metrics, thetaL, rowYTop);
-          const pRT = this.project3DPoint(metrics, thetaR, rowYTop);
-          const pRB = this.project3DPoint(metrics, thetaR, rowYBot);
-          const pLB = this.project3DPoint(metrics, thetaL, rowYBot);
-
-          if (Math.max(pLT.x, pRT.x) <= -2 || Math.min(pLT.x, pRT.x) >= W + 2) continue;
-
-          this.drawCell3D(ctx, engine, r, c, b, pLT, pRT, pRB, pLB, lighting, isEnginePanic, highestCols, time, false);
+          const cLeft = (c - 1 + N) % N;
+          const cRight = (c + 1) % N;
+          const rowArr = isNextRow ? engine.nextRow : engine.grid[r];
+          const sameTop = !isNextRow && b.groupId && r > 0 && engine.grid[r - 1][c] && engine.grid[r - 1][c].groupId === b.groupId;
+          const sameBottom = !isNextRow && b.groupId && r < engine.rows - 1 && engine.grid[r + 1][c] && engine.grid[r + 1][c].groupId === b.groupId;
+          const sameLeft = !!(b.groupId && rowArr && rowArr[cLeft] && rowArr[cLeft].groupId === b.groupId);
+          const sameRight = !!(b.groupId && rowArr && rowArr[cRight] && rowArr[cRight].groupId === b.groupId);
+          this.drawGarbageCell3DFront(ctx, pLT, pRT, pRB, pLB, fRB, fLB, b, cosT, sameTop, sameBottom, sameLeft, sameRight, effNext, cellVisRatio, isNextRow);
+        }
+      } else {
+        const conf = COLORS.find(item => item.id === b.type);
+        if (conf) {
+          const isFlashing = (b.state === 'match' && Math.floor(b.timer / 4) % 2 === 0);
+          const isHighestCol = !isNextRow && isEnginePanic && highestCols.has(c);
+          const bounceY = isHighestCol ? Math.sin(time / 60 + c) * 3 : 0;
+          const matchTimer = (b.state === 'match') ? b.timer : 0;
+          this.drawPanelBlock3DFront(ctx, pLT, pRT, fRB, fLB, conf, cosT, isFlashing, bounceY, matchTimer, effNext, cellVisRatio);
         }
       }
-    };
-
-    renderCellList(backItems);
-    this.drawCylinderInteriorVeil(ctx, metrics);
-    this.drawCylinderWireRings(ctx, metrics, vCol, true);
-    renderCellList(frontItems);
+    }
 
     const dirs = [[-1, -1], [1, -1], [-1, 1], [1, 1]];
     for (let i = 0; i < matchParticles.length; i++) {
       const { r, b, thetaC, cosT } = matchParticles[i];
+      if (cosT < 0) continue;
       const p = (16 - b.timer) / 16;
       const rowMidY = r * CELL_PX - offsetY + (b.fallY * CELL_PX) + CELL_PX * 0.5;
       const center = this.project3DPoint(metrics, thetaC, rowMidY);
@@ -2830,7 +3118,7 @@ class BoardRenderer {
       const pScale = center.persp;
       const dist = (CELL_PX * 0.34 + p * (CELL_PX * 0.40)) * pScale;
       const size = Math.max(1.8, (1 - p * 0.55) * 5.8 * pScale);
-      const alpha = Math.max(0, 1 - p * 0.92) * (cosT < 0 ? 0.55 : 1.0);
+      const alpha = Math.max(0, 1 - p * 0.92);
 
       ctx.save();
       ctx.globalAlpha = alpha;
@@ -2850,127 +3138,105 @@ class BoardRenderer {
     }
 
     if (!engine.endAnim) {
-      const isGrabActive = !!(engine.touchGrab && engine.touchGrab.active);
-      if (isGrabActive) {
-        const gCol = engine.touchGrab.col;
-        const gRow = engine.touchGrab.row;
-        const gDelta = ((gCol + 0.5 - vCol + N * 1.5) % N) - N * 0.5;
-        const gThetaL = (gDelta - 0.5) * dTheta;
-        const gThetaR = (gDelta + 0.5) * dTheta;
-        const gyTop = gRow * CELL_PX - offsetY;
-        const gyBot = gyTop + CELL_PX;
-        const g0 = this.project3DPoint(metrics, gThetaL, gyTop);
-        const g1 = this.project3DPoint(metrics, gThetaR, gyTop);
-        const g2 = this.project3DPoint(metrics, gThetaR, gyBot);
-        const g3 = this.project3DPoint(metrics, gThetaL, gyBot);
+      this.drawCylinderHeightBar(ctx, metrics, engine, vCol, gb);
+    }
+  }
 
-        ctx.save();
-        traceQuadPath(ctx, g0, g1, g2, g3);
-        ctx.fillStyle = gb ? 'rgba(255, 255, 255, 0.24)' : 'rgba(255, 215, 0, 0.26)';
-        ctx.fill();
-        ctx.strokeStyle = gb ? '#ffffff' : '#ffd700';
-        ctx.lineWidth = 3;
-        ctx.stroke();
-        ctx.restore();
-      }
+  draw3DCursorOverlay(ctx, engine, metrics, offsetY) {
+    if (engine.endAnim) return;
+    const { N, dTheta } = metrics;
+    const vCol = (this.viewCol !== null && !Number.isNaN(this.viewCol))
+      ? this.viewCol
+      : ((engine.cursor.x + 1.0) % N);
+    const gb = this.isGbActive();
+    const isGrabActive = !!(engine.touchGrab && engine.touchGrab.active);
 
-      const c1 = engine.cursor.x;
-      const delta1 = ((c1 + 0.5 - vCol + N * 1.5) % N) - N * 0.5;
-      const theta1L = (delta1 - 0.5) * dTheta;
-      const thetaMid = (delta1 + 0.5) * dTheta;
-      const theta2R = (delta1 + 1.5) * dTheta;
-
-      const yTop = engine.cursor.y * CELL_PX - offsetY;
-      const yBot = yTop + CELL_PX;
-
-      const t0 = this.project3DPoint(metrics, theta1L, yTop);
-      const t1 = this.project3DPoint(metrics, thetaMid, yTop);
-      const t2 = this.project3DPoint(metrics, theta2R, yTop);
-      const b2 = this.project3DPoint(metrics, theta2R, yBot);
-      const b1 = this.project3DPoint(metrics, thetaMid, yBot);
-      const b0 = this.project3DPoint(metrics, theta1L, yBot);
+    if (isGrabActive) {
+      const gCol = engine.touchGrab.col;
+      const gRow = engine.touchGrab.row;
+      const gDelta = ((gCol + 0.5 - vCol + N * 1.5) % N) - N * 0.5;
+      const gThetaL = (gDelta - 0.5) * dTheta;
+      const gThetaR = (gDelta + 0.5) * dTheta;
+      const gyTop = gRow * CELL_PX - offsetY;
+      const gyBot = gyTop + CELL_PX;
+      const g0 = this.project3DPoint(metrics, gThetaL, gyTop);
+      const g1 = this.project3DPoint(metrics, gThetaR, gyTop);
+      const g2 = this.project3DPoint(metrics, gThetaR, gyBot);
+      const g3 = this.project3DPoint(metrics, gThetaL, gyBot);
 
       ctx.save();
-      ctx.lineJoin = 'round';
-      ctx.beginPath();
-      ctx.moveTo(t0.x, t0.y);
-      ctx.lineTo(t1.x, t1.y);
-      ctx.lineTo(t2.x, t2.y);
-      ctx.lineTo(b2.x, b2.y);
-      ctx.lineTo(b1.x, b1.y);
-      ctx.lineTo(b0.x, b0.y);
-      ctx.closePath();
-
-      ctx.strokeStyle = 'rgba(0, 0, 0, 0.85)';
-      ctx.lineWidth = isGrabActive ? 6 : 5;
-      ctx.stroke();
-      ctx.strokeStyle = isGrabActive ? (gb ? '#ffffff' : '#00d4ff') : '#ffffff';
-      ctx.lineWidth = isGrabActive ? 3.2 : 2.5;
-      ctx.stroke();
-
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.45)';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(t1.x, t1.y);
-      ctx.lineTo(b1.x, b1.y);
+      traceQuadPath(ctx, g0, g1, g2, g3);
+      ctx.fillStyle = gb ? 'rgba(255, 255, 255, 0.24)' : 'rgba(255, 215, 0, 0.26)';
+      ctx.fill();
+      ctx.strokeStyle = gb ? '#ffffff' : '#ffd700';
+      ctx.lineWidth = 3;
       ctx.stroke();
       ctx.restore();
     }
 
-    if (!engine.endAnim) {
-      const barH = 5;
-      const segW = W / N;
-      ctx.save();
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
-      ctx.fillRect(0, 0, W, barH + 1);
-      for (let c = 0; c < N; c++) {
-        let topR = engine.rows;
-        let hasGarbage = false;
-        for (let r = 0; r < engine.rows; r++) {
-          const blk = engine.grid[r][c];
-          if (blk !== null) {
-            if (topR === engine.rows) topR = r;
-            if (blk.type === 'garbage') hasGarbage = true;
-          }
-        }
-        const hRatio = (engine.rows - topR) / engine.rows;
-        const delta = ((c + 0.5 - vCol + N * 1.5) % N) - N * 0.5;
-        const isFront = Math.cos(delta * dTheta) >= 0;
-        if (hRatio > 0) {
-          ctx.fillStyle = topR <= Math.floor(engine.rows * 0.3)
-            ? (gb ? '#ffffff' : '#ff3366')
-            : (hasGarbage ? '#94a3b8' : (gb ? '#a3a3a3' : '#4ecca3'));
-          ctx.globalAlpha = isFront ? 0.95 : 0.42;
-          ctx.fillRect(c * segW + 0.5, 1, Math.max(1, segW - 1), Math.max(1.5, hRatio * barH));
-        }
-        if (c === engine.cursor.x || c === (engine.cursor.x + 1) % N) {
-          ctx.globalAlpha = 1;
-          ctx.fillStyle = '#ffd700';
-          ctx.fillRect(c * segW, barH, segW, 1.5);
-        }
-      }
-      ctx.restore();
-    }
+    const c1 = engine.cursor.x;
+    const delta1 = ((c1 + 0.5 - vCol + N * 1.5) % N) - N * 0.5;
+    const theta1L = (delta1 - 0.5) * dTheta;
+    const thetaMid = (delta1 + 0.5) * dTheta;
+    const theta2R = (delta1 + 1.5) * dTheta;
+
+    const yTop = engine.cursor.y * CELL_PX - offsetY;
+    const yBot = yTop + CELL_PX;
+
+    const t0 = this.project3DPoint(metrics, theta1L, yTop);
+    const t1 = this.project3DPoint(metrics, thetaMid, yTop);
+    const t2 = this.project3DPoint(metrics, theta2R, yTop);
+    const b2 = this.project3DPoint(metrics, theta2R, yBot);
+    const b1 = this.project3DPoint(metrics, thetaMid, yBot);
+    const b0 = this.project3DPoint(metrics, theta1L, yBot);
+
+    ctx.save();
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(t0.x, t0.y);
+    ctx.lineTo(t1.x, t1.y);
+    ctx.lineTo(t2.x, t2.y);
+    ctx.lineTo(b2.x, b2.y);
+    ctx.lineTo(b1.x, b1.y);
+    ctx.lineTo(b0.x, b0.y);
+    ctx.closePath();
+
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.85)';
+    ctx.lineWidth = isGrabActive ? 6 : 5;
+    ctx.stroke();
+    ctx.strokeStyle = isGrabActive ? (gb ? '#ffffff' : '#00d4ff') : '#ffffff';
+    ctx.lineWidth = isGrabActive ? 3.2 : 2.5;
+    ctx.stroke();
+
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.45)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(t1.x, t1.y);
+    ctx.lineTo(b1.x, b1.y);
+    ctx.stroke();
+    ctx.restore();
   }
 
   draw(engine) {
     const ctx = this.ctx;
     const gb = this.isGbActive();
-    ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-    if (typeof drawBoardBgAddon === 'function') drawBoardBgAddon(ctx, this.canvas, engine, this);
-    this.drawSacrificeAura(ctx, engine);
+    const is3DFlag = !!engine.is3D;
 
-    const isGameOverSettled = engine.gameOver && !engine.isPractice && (!engine.endAnim || engine.endAnim.done);
-
-    ctx.save();
-    if (engine.shakeTimer > 0 && !isGameOverSettled) {
-      const shakeOffsetX = (Math.random() - 0.5) * 8;
-      const shakeOffsetY = (Math.random() - 0.5) * 8;
-      ctx.translate(shakeOffsetX, shakeOffsetY);
+    if (this._lastIs3D !== is3DFlag) {
+      this._lastIs3D = is3DFlag;
+      const containerEl = this.canvas.parentElement;
+      if (containerEl) containerEl.classList.toggle('is-3d-board', is3DFlag);
+      const wrapperEl = this.canvas.closest ? this.canvas.closest('.board-wrapper') : null;
+      if (wrapperEl) wrapperEl.classList.toggle('is-3d-board', is3DFlag);
     }
 
-    const offsetY = engine.riseOffset * CELL_PX;
+    ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
 
+    const isGameOverSettled = engine.gameOver && !engine.isPractice && (!engine.endAnim || engine.endAnim.done);
+    const isEndAnimRunning = engine.endAnim && !engine.endAnim.done;
+    const isVictoryAnim = engine.endAnim && engine.endAnim.type === 'victory_clear';
+
+    const offsetY = engine.riseOffset * CELL_PX;
     let highestR = engine.rows;
     for (let c = 0; c < engine.cols; c++) {
       for (let r = 0; r < engine.rows; r++) {
@@ -2982,7 +3248,6 @@ class BoardRenderer {
     }
     let highestCols = new Set();
     let isEnginePanic = !engine.endAnim && (highestR - engine.riseOffset) <= (engine.rows * 0.3);
-
     if (isEnginePanic) {
       for (let c = 0; c < engine.cols; c++) {
         for (let r = 0; r < engine.rows; r++) {
@@ -2993,20 +3258,67 @@ class BoardRenderer {
         }
       }
     }
-
-    if (isEnginePanic) {
-      const warnAlpha = 0.14 + Math.sin(Date.now() / 140) * 0.08;
-      const warnGrad = ctx.createLinearGradient(0, 0, 0, CELL_PX * 2.5);
-      warnGrad.addColorStop(0, gb ? `rgba(255, 255, 255, ${warnAlpha + 0.08})` : `rgba(255, 0, 85, ${warnAlpha})`);
-      warnGrad.addColorStop(1, gb ? 'rgba(255, 255, 255, 0)' : 'rgba(255, 0, 85, 0)');
-      ctx.fillStyle = warnGrad;
-      ctx.fillRect(0, 0, this.canvas.width, CELL_PX * 2.5);
-    }
-
     const nowMs = Date.now();
-    if (engine.is3D) {
-      this.draw3DCylinder(ctx, engine, offsetY, isEnginePanic, highestCols, nowMs);
+
+    if (is3DFlag) {
+      const metrics = this.getCylinderMetrics(engine);
+
+      ctx.save();
+      if (engine.shakeTimer > 0 && !isGameOverSettled) {
+        ctx.translate((Math.random() - 0.5) * 8, (Math.random() - 0.5) * 8);
+      }
+
+      // ＜追加事項＞ パズル盤面ブロック配置（円筒外形）に合わせてクリッピングし隙間をゼロに
+      ctx.save();
+      this.traceCylinderOutlinePath(ctx, metrics, 2.0);
+      ctx.clip();
+
+      ctx.fillStyle = '#070b14';
+      ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+      if (typeof drawBoardBgAddon === 'function') drawBoardBgAddon(ctx, this.canvas, engine, this);
+      this.drawSacrificeAura(ctx, engine);
+
+      if (isEnginePanic) {
+        const warnAlpha = 0.14 + Math.sin(nowMs / 140) * 0.08;
+        const warnGrad = ctx.createLinearGradient(0, 0, 0, CELL_PX * 2.5);
+        warnGrad.addColorStop(0, gb ? `rgba(255, 255, 255, ${warnAlpha + 0.08})` : `rgba(255, 0, 85, ${warnAlpha})`);
+        warnGrad.addColorStop(1, gb ? 'rgba(255, 255, 255, 0)' : 'rgba(255, 0, 85, 0)');
+        ctx.fillStyle = warnGrad;
+        ctx.fillRect(0, 0, this.canvas.width, CELL_PX * 2.5);
+      }
+
+      this.draw3DCylinderContent(ctx, engine, metrics, offsetY, isEnginePanic, highestCols, nowMs);
+
+      if (engine.gameOver && !engine.isPractice && !isEndAnimRunning && !isVictoryAnim) {
+        ctx.fillStyle = 'rgba(0,0,0,0.6)';
+        ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+      }
+
+      ctx.restore(); // 円筒クリップ解除
+
+      // 円筒外形に沿った変形パズル枠線を描画
+      this.drawCylinderFrameBorder(ctx, metrics, engine);
+
+      // カーソルは枠境界でも視認できるよう枠線の上に描画
+      this.draw3DCursorOverlay(ctx, engine, metrics, offsetY);
     } else {
+      if (typeof drawBoardBgAddon === 'function') drawBoardBgAddon(ctx, this.canvas, engine, this);
+      this.drawSacrificeAura(ctx, engine);
+
+      ctx.save();
+      if (engine.shakeTimer > 0 && !isGameOverSettled) {
+        ctx.translate((Math.random() - 0.5) * 8, (Math.random() - 0.5) * 8);
+      }
+
+      if (isEnginePanic) {
+        const warnAlpha = 0.14 + Math.sin(nowMs / 140) * 0.08;
+        const warnGrad = ctx.createLinearGradient(0, 0, 0, CELL_PX * 2.5);
+        warnGrad.addColorStop(0, gb ? `rgba(255, 255, 255, ${warnAlpha + 0.08})` : `rgba(255, 0, 85, ${warnAlpha})`);
+        warnGrad.addColorStop(1, gb ? 'rgba(255, 255, 255, 0)' : 'rgba(255, 0, 85, 0)');
+        ctx.fillStyle = warnGrad;
+        ctx.fillRect(0, 0, this.canvas.width, CELL_PX * 2.5);
+      }
+
       for (let r = 0; r < engine.rows; r++) {
         for (let c = 0; c < engine.cols; c++) {
           const b = engine.grid[r][c];
@@ -3083,10 +3395,11 @@ class BoardRenderer {
 
     if (typeof drawBoardFgAddon === 'function') drawBoardFgAddon(ctx, this.canvas, engine, this);
 
-    const isEndAnimRunning = engine.endAnim && !engine.endAnim.done;
-    const isVictoryAnim = engine.endAnim && engine.endAnim.type === 'victory_clear';
     if (engine.gameOver && !engine.isPractice && !isEndAnimRunning && !isVictoryAnim) {
-      ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+      if (!is3DFlag) {
+        ctx.fillStyle = 'rgba(0,0,0,0.6)';
+        ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+      }
       ctx.fillStyle = gb ? '#ffffff' : '#ff3366';
       ctx.font = 'bold 22px sans-serif';
       ctx.textAlign = 'center';
@@ -3096,8 +3409,9 @@ class BoardRenderer {
     ctx.restore();
   }
 }
-
-// --- COM(AI) エンジン（2D / 3D円筒対応・軽量タイムキャップ探索） ---
+// ==========================================
+// [Part 3 / 3] COM(AI) エンジン（2D / 3D円筒対応・軽量タイムキャップ探索）
+// ==========================================
 class ComAI {
   constructor(engine, level, id) {
     this.engine = engine;

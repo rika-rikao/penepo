@@ -1,5 +1,6 @@
 // ==========================================
 // キャラクター定義 & ループ型3Dカバーフロー & スキル定義/自作ラボ & カスタムアセット管理
+// [Part 1 / 2]
 // ==========================================
 const IMG_EXTS = ['png', 'webp', 'gif', 'jpg', 'jpeg'];
 
@@ -1084,7 +1085,10 @@ function getCachedImage(src) {
     return entry.loaded ? entry.img : null;
   }
   const entry = { img: new Image(), loaded: false, error: false };
-  entry.img.onload = () => { entry.loaded = true; };
+  entry.img.onload = () => {
+    entry.loaded = true;
+    if (typeof clearBoardBgCache === 'function') clearBoardBgCache();
+  };
   entry.img.onerror = () => { entry.error = true; };
   entry.img.src = src;
   AssetCache.set(src, entry);
@@ -1104,7 +1108,10 @@ function getThemeNormalImage(theme) {
       return null;
     }
     resolveCharacterImage('normal', theme.voiceName).then((url) => {
-      if (url) theme.charSrc = url;
+      if (url) {
+        theme.charSrc = url;
+        if (typeof clearBoardBgCache === 'function') clearBoardBgCache();
+      }
     });
     return null;
   }
@@ -1161,7 +1168,7 @@ async function preloadDefaultCharImages(onProgress = null) {
 }
 // ==========================================
 // 汎用・ループ型 CSS 3D カバーフローエンジン
-// （directHorizontal: true 指定時は決定での選択モード入り不要で直接左右切替可能）
+// [Part 2 / 2]
 // ==========================================
 function createCoverFlow(container, config) {
   const items = config.items || [];
@@ -1765,6 +1772,7 @@ async function loadAllCustomAssets() {
       }
     }
     applyGlobalFrameTheme(CustomAssets.frame ? CustomAssets.frame.dataUrl : null);
+    clearBoardBgCache();
   } catch (e) {
     console.warn('CustomAssets load skip:', e);
   }
@@ -1863,6 +1871,7 @@ async function handleCustomAssetUpload(kind, inputEl) {
     CustomAssets[kind] = record;
     AssetCache.delete(record.dataUrl);
     ToneImageCache.delete(record.dataUrl);
+    clearBoardBgCache();
     getCachedImage(record.dataUrl);
     await saveCustomAssetDB(kind, record);
     if (kind === 'chara') {
@@ -1886,6 +1895,7 @@ async function handleCustomAssetUpload(kind, inputEl) {
 
 async function clearCustomAsset(kind) {
   CustomAssets[kind] = null;
+  clearBoardBgCache();
   await deleteCustomAssetDB(kind).catch(() => {});
   if (kind === 'chara') {
     if (selectedCharId === 'custom') selectedCharId = 'main00';
@@ -2154,6 +2164,7 @@ async function handleCustomZipUpload(inputEl) {
           CustomAssets[kind] = record;
           AssetCache.delete(record.dataUrl);
           ToneImageCache.delete(record.dataUrl);
+          clearBoardBgCache();
           getCachedImage(record.dataUrl);
           await saveCustomAssetDB(kind, record);
           if (kind === 'chara') {
@@ -2322,10 +2333,15 @@ function applyGlobalFrameTheme(frameSrc) {
 }
 
 // ==========================================
-// GB風モード用：スクリーントーン（網点＋4階調ディザ）変換＆キャッシュ
+// GB風モード用：スクリーントーン（網点＋4階調ディザ）変換＆キャッシュ & 盤面背景オフスクリーンキャッシュ
 // ==========================================
 const ToneImageCache = new Map();
+const BoardBgCache = new Map();
 let cachedScreenTonePatternCanvas = null;
+
+function clearBoardBgCache() {
+  BoardBgCache.clear();
+}
 
 function getScreenTonePatternCanvas() {
   if (cachedScreenTonePatternCanvas) return cachedScreenTonePatternCanvas;
@@ -2458,49 +2474,72 @@ function drawBoardBgAddon(ctx, canvas, engine, renderer) {
       resolveCharacterImage('pazzle_back', theme.voiceName).then((url) => {
         if (url) {
           theme.bgSrc = url;
+          clearBoardBgCache();
         } else {
           resolveCharacterImage('frame', theme.voiceName).then((fUrl) => {
-            if (fUrl && !theme.bgSrc) theme.bgSrc = fUrl;
+            if (fUrl && !theme.bgSrc) {
+              theme.bgSrc = fUrl;
+              clearBoardBgCache();
+            }
           });
         }
       });
     }
   }
 
-  ctx.save();
-  if (theme.bgSrc) {
-    const bgImg = getCachedImage(theme.bgSrc);
+  const bgImg = theme.bgSrc ? getCachedImage(theme.bgSrc) : null;
+  const charImg = getThemeNormalImage(theme);
+  const bgKey = bgImg ? (bgImg.src || 'bg') : '0';
+  const charKey = charImg ? (charImg.src || 'ch') : '0';
+  const cacheKey = `${W}x${H}|${gb ? 1 : 0}|${bgKey}|${charKey}`;
+
+  let offCanvas = BoardBgCache.get(cacheKey);
+  if (!offCanvas) {
+    offCanvas = document.createElement('canvas');
+    offCanvas.width = W;
+    offCanvas.height = H;
+    const oCtx = offCanvas.getContext('2d');
+
+    oCtx.fillStyle = '#070b14';
+    oCtx.fillRect(0, 0, W, H);
+
     if (bgImg) {
       const drawBg = gb ? (getToneCanvasForImage(bgImg) || bgImg) : bgImg;
-      drawImageFitHeight(ctx, drawBg, 0, 0, W, H);
+      drawImageFitHeight(oCtx, drawBg, 0, 0, W, H);
     }
+
+    if (charImg) {
+      oCtx.save();
+      oCtx.globalAlpha = gb ? (theme.bgSrc ? 0.44 : 0.56) : (theme.bgSrc ? 0.65 : 0.75);
+      const drawCh = gb ? (getToneCanvasForImage(charImg) || charImg) : charImg;
+      drawImageCover(oCtx, drawCh, 0, 0, W, H);
+      oCtx.restore();
+    }
+
+    if (gb) {
+      const pat = oCtx.createPattern(getScreenTonePatternCanvas(), 'repeat');
+      if (pat) {
+        oCtx.save();
+        oCtx.globalAlpha = 0.55;
+        oCtx.fillStyle = pat;
+        oCtx.fillRect(0, 0, W, H);
+        oCtx.restore();
+      }
+      oCtx.fillStyle = 'rgba(0, 0, 0, 0.34)';
+      oCtx.fillRect(0, 0, W, H);
+    } else if (theme.bgSrc || charImg) {
+      oCtx.fillStyle = 'rgba(0, 0, 0, 0.16)';
+      oCtx.fillRect(0, 0, W, H);
+    }
+
+    if (BoardBgCache.size >= 24) {
+      const firstKey = BoardBgCache.keys().next().value;
+      if (firstKey !== undefined) BoardBgCache.delete(firstKey);
+    }
+    BoardBgCache.set(cacheKey, offCanvas);
   }
 
-  const charImg = getThemeNormalImage(theme);
-  if (charImg) {
-    ctx.save();
-    ctx.globalAlpha = gb ? (theme.bgSrc ? 0.44 : 0.56) : (theme.bgSrc ? 0.65 : 0.75);
-    const drawCh = gb ? (getToneCanvasForImage(charImg) || charImg) : charImg;
-    drawImageCover(ctx, drawCh, 0, 0, W, H);
-    ctx.restore();
-  }
-  ctx.restore();
-
-  if (gb) {
-    const pat = ctx.createPattern(getScreenTonePatternCanvas(), 'repeat');
-    if (pat) {
-      ctx.save();
-      ctx.globalAlpha = 0.55;
-      ctx.fillStyle = pat;
-      ctx.fillRect(0, 0, W, H);
-      ctx.restore();
-    }
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.34)';
-    ctx.fillRect(0, 0, W, H);
-  } else if (theme.bgSrc || charImg) {
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.16)';
-    ctx.fillRect(0, 0, W, H);
-  }
+  ctx.drawImage(offCanvas, 0, 0);
 }
 
 function drawBoardFgAddon(ctx, canvas, engine, renderer) {

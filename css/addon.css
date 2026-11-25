@@ -1211,7 +1211,7 @@ body.settings-has-vnav #settings-overlay {
   justify-content: flex-end;
 }
 /* ==========================================
-   [Part 2 / 2] ローカル対戦・3Dカバーフロー・縦UIボタン間隔・シェア・GB風・OPアニメーション
+   [Part 2 / 2] ローカル対戦・3Dカバーフロー・縦UIボタン間隔・シェア・GB風・OPアニメーション・3D変形枠対応
    ========================================== */
 .local-smash-panel {
   width: 100%;
@@ -2569,6 +2569,19 @@ input[type="range"].slider-adjusting {
 .carousel-dot.active { background: #ffd700; box-shadow: 0 0 6px rgba(255, 215, 0, 0.8); }
 
 .canvas-container canvas { display: block; }
+/* 3D円筒モード時：外寸(border:3px分)を保ったまま矩形の枠線・背景・影を透明化し、Canvas側の変形円筒枠を表示 */
+#game-area .board-wrapper.is-3d-board .canvas-container.is-3d-board,
+#game-area .share-p2-zone .board-wrapper.is-3d-board .canvas-container.is-3d-board,
+#game-area .board-wrapper.rival-board.targeted.is-3d-board .canvas-container.is-3d-board,
+#game-area .board-wrapper.sacrifice-aura.is-3d-board .canvas-container.is-3d-board,
+body.gb-mode #game-area .board-wrapper.is-3d-board .canvas-container.is-3d-board,
+body.gb-mode #game-area .board-wrapper.my-board.is-3d-board .canvas-container.is-3d-board,
+body.gb-mode #game-area .board-wrapper.rival-board.targeted.is-3d-board .canvas-container.is-3d-board {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  animation: none !important;
+}
 .board-wrapper > .garbage-preview-box,
 .board-wrapper > .board-header,
 .board-wrapper > .canvas-container,

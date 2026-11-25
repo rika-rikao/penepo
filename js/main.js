@@ -447,9 +447,15 @@ function openExitConfirmModal() {
   if (typeof stopAllVibration === 'function') stopAllVibration();
   clearKeyboardHoldStates();
   stopRotateTouchHold();
-  if (myEngine) myEngine.isRisingManualBtn = myEngine.isRisingManualKey = myEngine.isRisingManualPad = false;
+  if (myEngine) {
+    myEngine.isRisingManualBtn = myEngine.isRisingManualKey = myEngine.isRisingManualPad = false;
+    myEngine.touchGrab = null;
+  }
   opponents.forEach(opp => {
-    if (opp.engine) opp.engine.isRisingManualBtn = opp.engine.isRisingManualKey = opp.engine.isRisingManualPad = false;
+    if (opp.engine) {
+      opp.engine.isRisingManualBtn = opp.engine.isRisingManualKey = opp.engine.isRisingManualPad = false;
+      opp.engine.touchGrab = null;
+    }
   });
   modal.style.display = 'flex';
   SE.play('select', { skipVibrate: true });
@@ -3171,8 +3177,8 @@ function scaleAttackPanelsByRatio(panels, ratio) {
     const p = panels[i];
     if (p.h > 1) {
       const exactH = p.h * ratio;
-      const wholeH = Math.floor(exactH);
-      const frac = exactH - wholeH;
+      const wholeH = Math.floor(exactH + 1e-6);
+      const frac = Math.max(0, exactH - wholeH);
       if (wholeH >= 1) {
         result.push({ w: p.w, h: wholeH, isHard: !!p.isHard });
       }
@@ -3183,7 +3189,7 @@ function scaleAttackPanelsByRatio(panels, ratio) {
     } else {
       const exactW = p.w * ratio + accum;
       const wInt = Math.floor(exactW + 1e-6);
-      accum = exactW - wInt;
+      accum = Math.max(0, exactW - wInt);
       if (wInt >= 1) {
         result.push({ w: wInt, h: 1, isHard: !!p.isHard });
       }
@@ -3227,7 +3233,13 @@ function distributeGarbage(senderId, totalBlocks, isHard, attackSpec = null) {
     }
     const count = Math.floor(totalBlocks * ratio);
     const oppSpec = attackSpec ? { ...attackSpec, shareRatio: ratio } : null;
-    if (count > 0 || (oppSpec && ratio > 0)) {
+    let willSend = count > 0;
+    if (oppSpec && typeof resolveAttackSpecToPanels === 'function') {
+      const oppCols = (opp.engine && opp.engine.cols) ? opp.engine.cols : COLS;
+      const scaledPreview = scaleAttackPanelsByRatio(resolveAttackSpecToPanels(oppSpec, oppCols), ratio);
+      willSend = scaledPreview.length > 0;
+    }
+    if (willSend) {
       sentAny = true;
       playGarbageSendAnimation(senderId, opp.id, isHard);
       sendBlocksToOpponent(opp, count, isHard, oppSpec);
@@ -3262,7 +3274,13 @@ function distributeGarbageOnline(senderId, totalBlocks, isHard, attackSpec = nul
     }
     const count = Math.floor(totalBlocks * ratio);
     const oppSpec = attackSpec ? { ...attackSpec, shareRatio: ratio } : null;
-    if (count > 0 || oppSpec) {
+    let willSend = count > 0;
+    if (oppSpec && typeof resolveAttackSpecToPanels === 'function') {
+      const oppCols = (opp.engine && opp.engine.cols) ? opp.engine.cols : COLS;
+      const scaledPreview = scaleAttackPanelsByRatio(resolveAttackSpecToPanels(oppSpec, oppCols), ratio);
+      willSend = scaledPreview.length > 0;
+    }
+    if (willSend) {
       targetsDict[opp.id] = count;
       targetSpecs[opp.id] = { count, attackSpec: oppSpec };
     }
@@ -3309,7 +3327,7 @@ function sendBlocksToOpponent(opp, count, isHard, attackSpec = null) {
       let pw = Math.max(1, Math.min(oppCols, p.w));
       let ph = Math.max(1, p.h);
       if (incMult > 1.0) {
-        if (ph === 1 && pw < oppCols) {
+        if (ph === 1 && pw < oppCols && !(p.isHard && pw === 1)) {
           pw = Math.min(oppCols, Math.ceil(pw * incMult));
         } else {
           ph = Math.ceil(ph * incMult);
@@ -3334,6 +3352,9 @@ function sendBlocksToOpponent(opp, count, isHard, attackSpec = null) {
     opp.engine.addGarbage(remainder, 1, isHard, true);
   }
 }
+// ==========================================
+// [Part 2 / 2] 勝敗演出・ゲーム進行・3D長押しつかみ対応タッチ入力・縦UIゆとり配置・初期化
+// ==========================================
 let battleEndState = { active: false, canDismissAt: 0, onContinue: null, prevAnyPadPressed: false };
 
 function buildBattleEndPortraitDom(wrapEl, theme, isWin, scoreInfo = null) {
@@ -3699,11 +3720,13 @@ function stopAllEngines() {
   stopRotateTouchHold();
   if (myEngine) {
     myEngine.isRisingManualBtn = myEngine.isRisingManualKey = myEngine.isRisingManualPad = false;
+    myEngine.touchGrab = null;
     myEngine.riseSpeed = 0;
   }
   opponents.forEach(opp => {
     if (opp.engine) {
       opp.engine.isRisingManualBtn = opp.engine.isRisingManualKey = opp.engine.isRisingManualPad = false;
+      opp.engine.touchGrab = null;
       opp.engine.riseSpeed = 0;
     }
     if (opp.ai) opp.ai.target = null;
@@ -5238,6 +5261,7 @@ function beginSurvivalNextEnemyEnter(opp) {
   opp.engine.riseOffset = 0;
   opp.engine.stopTimer = 0;
   opp.engine.cursor = { x: 2, y: 6 };
+  opp.engine.touchGrab = null;
   opp.engine.grid = Array.from({ length: opp.engine.rows }, () => Array(opp.engine.cols).fill(null));
   opp.engine.nextRow = [];
   opp.ai = null;
@@ -5256,6 +5280,7 @@ function beginSurvivalNextEnemyEnter(opp) {
     opp.engine.riseOffset = 0;
     opp.engine.stopTimer = 0;
     opp.engine.cursor = { x: 2, y: 6 };
+    opp.engine.touchGrab = null;
     opp.engine.initSeed = Math.floor(Math.random() * 0xFFFFFFFF) >>> 0;
     opp.engine.grid = Array.from({ length: opp.engine.rows }, () => Array(opp.engine.cols).fill(null));
     opp.engine.initGrid();
@@ -5978,14 +6003,66 @@ function getCanvasCoordsFromPointer(cvs, e, isSelf180Rotated = false) {
 }
 
 function bindBoardTouchInput(cvs, getEngine, getContinuousChecked, isSelf180Rotated, setRowFollowCb, getRenderer = null) {
+  const LONG_PRESS_MS = 180;
+  const DRAG_THRESHOLD_PX = 10;
+
   let activePointerId = null, grabbedCol = -1, grabbedRow = -1;
   let initialCanvasX = 0, initialCanvasY = 0;
   let lastCanvasX = 0, lastSwapCanvasX = 0, dragMode = 'swap', suppressTapOnUp = false, cursorMovedOnDown = false;
-  if (setRowFollowCb) setRowFollowCb(() => { if (activePointerId !== null && grabbedRow > 0) grabbedRow--; });
+  let longPressTimer = null;
+  let downCol = -1, downRow = -1, startedInCursor = false, downHasBlock = false, grabConsumed = false;
+
+  const clearLongPressTimer = () => {
+    if (longPressTimer) {
+      clearTimeout(longPressTimer);
+      longPressTimer = null;
+    }
+  };
+
+  const clearGrabMode = () => {
+    clearLongPressTimer();
+    grabConsumed = false;
+    const engine = getEngine();
+    if (engine && engine.touchGrab) {
+      engine.touchGrab = null;
+    }
+  };
+
+  const enter3DGrabMode = (engine) => {
+    clearLongPressTimer();
+    if (!engine || !engine.is3D || (isMatchOver && !isPracticeMode)) return;
+    const cols = engine.cols || COLS_3D;
+    dragMode = 'swap';
+    suppressTapOnUp = true;
+    grabConsumed = false;
+    engine.cursor.y = grabbedRow;
+    const rightCol = (engine.cursor.x + 1) % cols;
+    if (grabbedCol !== engine.cursor.x && grabbedCol !== rightCol) {
+      engine.cursor.x = grabbedCol;
+    }
+    engine.touchGrab = { active: true, col: grabbedCol, row: grabbedRow };
+    SE.play('cursorMove');
+    if (typeof triggerSwapVibration === 'function' && typeof getMainPlayerPadSlot === 'function') {
+      triggerSwapVibration(false, getMainPlayerPadSlot());
+    }
+  };
+
+  if (setRowFollowCb) {
+    setRowFollowCb(() => {
+      if (activePointerId !== null && grabbedRow > 0) {
+        grabbedRow--;
+        const engine = getEngine();
+        if (engine && engine.touchGrab && engine.touchGrab.active) {
+          engine.touchGrab.row = grabbedRow;
+        }
+      }
+    });
+  }
 
   const stepGrabSwap = (dir, isRepeatCall = false) => {
     const engine = getEngine();
     if (!engine || (isMatchOver && !isPracticeMode) || activePointerId === null || dragMode !== 'swap') return false;
+    if (grabConsumed) return false;
     const cols = engine.cols || COLS;
     const continuous = getContinuousChecked();
     if (isRepeatCall && !continuous) return false;
@@ -5998,7 +6075,11 @@ function bindBoardTouchInput(cvs, getEngine, getContinuousChecked, isSelf180Rota
           grabbedCol = (grabbedCol + 1) % cols;
           engine.cursor.x = swapCol;
           engine.cursor.y = grabbedRow;
+          if (engine.touchGrab && engine.touchGrab.active) {
+            engine.touchGrab = { active: true, col: grabbedCol, row: grabbedRow };
+          }
           suppressTapOnUp = true;
+          if (!continuous) grabConsumed = true;
           return true;
         }
       } else {
@@ -6008,7 +6089,11 @@ function bindBoardTouchInput(cvs, getEngine, getContinuousChecked, isSelf180Rota
           grabbedCol = swapCol;
           engine.cursor.x = swapCol;
           engine.cursor.y = grabbedRow;
+          if (engine.touchGrab && engine.touchGrab.active) {
+            engine.touchGrab = { active: true, col: grabbedCol, row: grabbedRow };
+          }
           suppressTapOnUp = true;
+          if (!continuous) grabConsumed = true;
           return true;
         }
       }
@@ -6047,6 +6132,8 @@ function bindBoardTouchInput(cvs, getEngine, getContinuousChecked, isSelf180Rota
     activePointerId = e.pointerId;
     suppressTapOnUp = false;
     cursorMovedOnDown = false;
+    grabConsumed = false;
+    clearLongPressTimer();
     try { cvs.setPointerCapture(e.pointerId); } catch (_) {}
     const pt = getCanvasCoordsFromPointer(cvs, e, isSelf180Rotated);
     initialCanvasX = pt.x; initialCanvasY = pt.y;
@@ -6056,32 +6143,49 @@ function bindBoardTouchInput(cvs, getEngine, getContinuousChecked, isSelf180Rota
     const renderer = typeof getRenderer === 'function' ? getRenderer() : null;
     const cols = engine.cols || COLS;
     const rows = engine.rows || ROWS;
-    if (engine.is3D && renderer && typeof renderer.getCellFromCanvasPoint === 'function') {
-      const cell = renderer.getCellFromCanvasPoint(engine, pt.x, pt.y);
-      grabbedCol = cell.col;
-      grabbedRow = cell.row;
-      const bHere = engine.grid[grabbedRow] && engine.grid[grabbedRow][grabbedCol];
-      const bLeft = engine.grid[grabbedRow] && engine.grid[grabbedRow][(grabbedCol - 1 + cols) % cols];
-      const bRight = engine.grid[grabbedRow] && engine.grid[grabbedRow][(grabbedCol + 1) % cols];
-      dragMode = (!bHere && !bLeft && !bRight) ? 'rotate' : 'swap';
-      if (dragMode === 'swap' && engine.cursor.y !== grabbedRow) {
-        engine.cursor.y = grabbedRow;
-        cursorMovedOnDown = true;
+
+    if (engine.is3D) {
+      if (renderer && typeof renderer.getCellFromCanvasPoint === 'function') {
+        const cell = renderer.getCellFromCanvasPoint(engine, pt.x, pt.y);
+        downCol = cell.col;
+        downRow = cell.row;
+      } else {
+        downCol = Math.max(0, Math.min(cols - 1, Math.floor(pt.x / CELL_PX)));
+        downRow = Math.max(0, Math.min(rows - 1, Math.floor((pt.y + engine.riseOffset * CELL_PX) / CELL_PX)));
       }
-    } else {
-      grabbedCol = Math.max(0, Math.min(cols - 1, Math.floor(pt.x / CELL_PX)));
-      grabbedRow = Math.max(0, Math.min(rows - 1, Math.floor((pt.y + engine.riseOffset * CELL_PX) / CELL_PX)));
-      dragMode = 'swap';
-      const curRight = engine.cursor.x + 1;
-      if (grabbedCol !== engine.cursor.x && grabbedCol !== curRight) {
-        const nextX = Math.max(0, Math.min(cols - 2, grabbedCol));
-        if (engine.cursor.x !== nextX) cursorMovedOnDown = true;
-        engine.cursor.x = nextX;
+      grabbedCol = downCol;
+      grabbedRow = downRow;
+      const rightCol = (engine.cursor.x + 1) % cols;
+      startedInCursor = (downRow === engine.cursor.y && (downCol === engine.cursor.x || downCol === rightCol));
+      const bHere = engine.grid[downRow] && engine.grid[downRow][downCol];
+      downHasBlock = !!(bHere && bHere.type !== 'garbage');
+
+      if (downHasBlock) {
+        dragMode = 'pending_block';
+        const capturedPid = e.pointerId;
+        longPressTimer = setTimeout(() => {
+          longPressTimer = null;
+          if (activePointerId !== capturedPid || dragMode !== 'pending_block') return;
+          enter3DGrabMode(getEngine());
+        }, LONG_PRESS_MS);
+      } else {
+        dragMode = 'rotate';
       }
-      if (engine.cursor.y !== grabbedRow) {
-        engine.cursor.y = grabbedRow;
-        cursorMovedOnDown = true;
-      }
+      return;
+    }
+
+    grabbedCol = Math.max(0, Math.min(cols - 1, Math.floor(pt.x / CELL_PX)));
+    grabbedRow = Math.max(0, Math.min(rows - 1, Math.floor((pt.y + engine.riseOffset * CELL_PX) / CELL_PX)));
+    dragMode = 'swap';
+    const curRight = engine.cursor.x + 1;
+    if (grabbedCol !== engine.cursor.x && grabbedCol !== curRight) {
+      const nextX = Math.max(0, Math.min(cols - 2, grabbedCol));
+      if (engine.cursor.x !== nextX) cursorMovedOnDown = true;
+      engine.cursor.x = nextX;
+    }
+    if (engine.cursor.y !== grabbedRow) {
+      engine.cursor.y = grabbedRow;
+      cursorMovedOnDown = true;
     }
   });
 
@@ -6096,7 +6200,25 @@ function bindBoardTouchInput(cvs, getEngine, getContinuousChecked, isSelf180Rota
       const cols = engine.cols || COLS_3D;
       const renderer = typeof getRenderer === 'function' ? getRenderer() : null;
 
+      if (dragMode === 'pending_block') {
+        const dxStart = pt.x - initialCanvasX;
+        const dyStart = pt.y - initialCanvasY;
+        if (Math.abs(dxStart) >= DRAG_THRESHOLD_PX) {
+          enter3DGrabMode(engine);
+          lastSwapCanvasX = initialCanvasX;
+        } else if (Math.abs(dyStart) >= 22) {
+          clearLongPressTimer();
+          suppressTapOnUp = true;
+          return;
+        } else {
+          return;
+        }
+      }
+
       if (dragMode === 'rotate') {
+        if (!suppressTapOnUp && Math.abs(pt.x - initialCanvasX) < DRAG_THRESHOLD_PX) {
+          return;
+        }
         const stepPx = 34;
         const diffPx = pt.x - lastCanvasX;
         if (Math.abs(diffPx) < stepPx) return;
@@ -6108,39 +6230,42 @@ function bindBoardTouchInput(cvs, getEngine, getContinuousChecked, isSelf180Rota
         return;
       }
 
-      if (renderer && typeof renderer.getCellFromCanvasPoint === 'function') {
-        const cell = renderer.getCellFromCanvasPoint(engine, pt.x, pt.y);
-        const diff = ((cell.col - grabbedCol + cols * 1.5) % cols) - cols * 0.5;
-        const moveDiff = pt.x - lastSwapCanvasX;
-        if (diff > 0 && moveDiff >= 12) {
-          const steps = Math.min(3, Math.round(diff));
-          for (let s = 0; s < steps; s++) {
-            if (!stepGrabSwap(1, false)) break;
-            lastSwapCanvasX = pt.x;
-            if (!continuous) { activePointerId = null; break; }
+      if (dragMode === 'swap') {
+        if (renderer && typeof renderer.getCellFromCanvasPoint === 'function') {
+          const cell = renderer.getCellFromCanvasPoint(engine, pt.x, pt.y);
+          const diff = ((cell.col - grabbedCol + cols * 1.5) % cols) - cols * 0.5;
+          const moveDiff = pt.x - lastSwapCanvasX;
+          if (diff > 0 && moveDiff >= 12) {
+            const steps = Math.min(3, Math.round(diff));
+            for (let s = 0; s < steps; s++) {
+              if (!stepGrabSwap(1, false)) break;
+              lastSwapCanvasX = pt.x;
+              if (!continuous) break;
+            }
+          } else if (diff < 0 && moveDiff <= -12) {
+            const steps = Math.min(3, Math.round(-diff));
+            for (let s = 0; s < steps; s++) {
+              if (!stepGrabSwap(-1, false)) break;
+              lastSwapCanvasX = pt.x;
+              if (!continuous) break;
+            }
           }
-        } else if (diff < 0 && moveDiff <= -12) {
-          const steps = Math.min(3, Math.round(-diff));
-          for (let s = 0; s < steps; s++) {
-            if (!stepGrabSwap(-1, false)) break;
-            lastSwapCanvasX = pt.x;
-            if (!continuous) { activePointerId = null; break; }
-          }
+          return;
+        }
+
+        const stepPx = 34;
+        const diffPx = pt.x - lastCanvasX;
+        if (Math.abs(diffPx) < stepPx) return;
+        const steps = Math.trunc(diffPx / stepPx);
+        lastCanvasX += steps * stepPx;
+        const dir = steps > 0 ? 1 : -1;
+        const count = Math.abs(steps);
+        for (let s = 0; s < count; s++) {
+          if (!stepGrabSwap(dir, false)) break;
+          lastSwapCanvasX = pt.x;
+          if (!continuous) break;
         }
         return;
-      }
-
-      const stepPx = 34;
-      const diffPx = pt.x - lastCanvasX;
-      if (Math.abs(diffPx) < stepPx) return;
-      const steps = Math.trunc(diffPx / stepPx);
-      lastCanvasX += steps * stepPx;
-      const dir = steps > 0 ? 1 : -1;
-      const count = Math.abs(steps);
-      for (let s = 0; s < count; s++) {
-        if (!stepGrabSwap(dir, false)) break;
-        lastSwapCanvasX = pt.x;
-        if (!continuous) { activePointerId = null; break; }
       }
       return;
     }
@@ -6158,27 +6283,48 @@ function bindBoardTouchInput(cvs, getEngine, getContinuousChecked, isSelf180Rota
 
   const endPointer = (e, isTapCandidate) => {
     if (e.pointerId !== activePointerId) return;
+    const prevMode = dragMode;
+    clearGrabMode();
     activePointerId = null;
     try { cvs.releasePointerCapture(e.pointerId); } catch (_) {}
     const engine = getEngine();
-    if (!isTapCandidate || suppressTapOnUp || !engine || (isMatchOver && !isPracticeMode)) {
+    if (!isTapCandidate || suppressTapOnUp || (engine && engine.is3D && prevMode === 'swap') || !engine || (isMatchOver && !isPracticeMode)) {
       return;
     }
     const pt = getCanvasCoordsFromPointer(cvs, e, isSelf180Rotated);
-    if (Math.abs(pt.x - initialCanvasX) < CELL_PX * 0.3 && Math.abs(pt.y - initialCanvasY) < CELL_PX * 0.3) {
-      const renderer = typeof getRenderer === 'function' ? getRenderer() : null;
+    if (Math.abs(pt.x - initialCanvasX) < CELL_PX * 0.32 && Math.abs(pt.y - initialCanvasY) < CELL_PX * 0.32) {
       const cols = engine.cols || COLS;
       const rows = engine.rows || ROWS;
-      let c, r;
-      if (engine.is3D && renderer && typeof renderer.getCellFromCanvasPoint === 'function') {
-        const cell = renderer.getCellFromCanvasPoint(engine, pt.x, pt.y);
-        c = cell.col;
-        r = cell.row;
-      } else {
-        c = Math.max(0, Math.min(cols - 2, Math.floor(pt.x / CELL_PX)));
-        r = Math.max(0, Math.min(rows - 1, Math.floor((pt.y + engine.riseOffset * CELL_PX) / CELL_PX)));
+      if (engine.is3D) {
+        if (downHasBlock) {
+          if (startedInCursor) {
+            engine.swap(engine.cursor.x, engine.cursor.y);
+          } else {
+            if (engine.cursor.x !== downCol || engine.cursor.y !== downRow) SE.play('cursorMove');
+            engine.cursor.x = downCol;
+            engine.cursor.y = downRow;
+          }
+        } else {
+          const rightCol = (engine.cursor.x + 1) % cols;
+          const rowArr = engine.grid[engine.cursor.y];
+          const curHasSwappable = !!(rowArr && (
+            (rowArr[engine.cursor.x] && rowArr[engine.cursor.x].type !== 'garbage') ||
+            (rowArr[rightCol] && rowArr[rightCol].type !== 'garbage')
+          ));
+          if (startedInCursor && curHasSwappable) {
+            engine.swap(engine.cursor.x, engine.cursor.y);
+          } else {
+            if (engine.cursor.x !== downCol || engine.cursor.y !== downRow) SE.play('cursorMove');
+            engine.cursor.x = downCol;
+            engine.cursor.y = downRow;
+          }
+        }
+        return;
       }
-      const rightCol = engine.is3D ? (engine.cursor.x + 1) % cols : (engine.cursor.x + 1);
+
+      const c = Math.max(0, Math.min(cols - 2, Math.floor(pt.x / CELL_PX)));
+      const r = Math.max(0, Math.min(rows - 1, Math.floor((pt.y + engine.riseOffset * CELL_PX) / CELL_PX)));
+      const rightCol = engine.cursor.x + 1;
       const alreadyInCursor = (c === engine.cursor.x || c === rightCol);
       if (alreadyInCursor) {
         if (cursorMovedOnDown || engine.cursor.y !== r) SE.play('cursorMove');
@@ -6359,9 +6505,15 @@ function setupInput() {
   window.addEventListener('blur', () => {
     clearKeyboardHoldStates();
     stopRotateTouchHold();
-    if (myEngine) myEngine.isRisingManualKey = false;
+    if (myEngine) {
+      myEngine.isRisingManualKey = false;
+      myEngine.touchGrab = null;
+    }
     opponents.forEach(opp => {
-      if (opp.engine) opp.engine.isRisingManualKey = false;
+      if (opp.engine) {
+        opp.engine.isRisingManualKey = false;
+        opp.engine.touchGrab = null;
+      }
     });
   });
 
@@ -6522,6 +6674,136 @@ function updateMyZoneFrameLayout(rect) {
   }
 }
 
+function resetControlsSpacingOverrides(controls) {
+  if (!controls) return;
+  controls.classList.remove('compact-1on1', 'spacious-controls');
+  controls.style.paddingBottom = '';
+  const layoutBtn = document.getElementById('layout-toggle-btn');
+  const handednessWrapper = document.getElementById('handedness-wrapper');
+  const swipeWrapper = document.getElementById('swipe-wrapper');
+  const vibrateWrapper = document.getElementById('vibrate-wrapper');
+  const skillBtn = document.getElementById('skill-btn');
+  const riseBtn = document.getElementById('rise-btn');
+  const rotateRow = document.getElementById('rotate-btns-row');
+  const exitBtn = document.getElementById('exit-btn');
+
+  if (layoutBtn) layoutBtn.style.marginTop = '';
+  if (handednessWrapper) handednessWrapper.style.marginTop = '0';
+  if (swipeWrapper) swipeWrapper.style.marginTop = '';
+  if (vibrateWrapper) vibrateWrapper.style.marginTop = '';
+  if (skillBtn) {
+    skillBtn.style.marginTop = '';
+    skillBtn.style.minHeight = '';
+  }
+  if (riseBtn) {
+    riseBtn.style.marginTop = '';
+    riseBtn.style.height = '38px';
+    riseBtn.style.padding = '6px 8px';
+    riseBtn.style.fontSize = '0.92rem';
+  }
+  if (rotateRow) {
+    rotateRow.style.marginTop = '';
+    rotateRow.querySelectorAll('.rotate-touch-btn').forEach(b => {
+      b.style.height = '';
+    });
+  }
+  if (exitBtn && exitBtn.parentNode === controls) {
+    exitBtn.style.marginBottom = '4px';
+  }
+}
+
+function applyVerticalControlsSpacing(controls, targetTotalH, rivalUsedH = 0, hasExitInside = false) {
+  if (!controls) return targetTotalH;
+  resetControlsSpacingOverrides(controls);
+
+  const layoutBtn = document.getElementById('layout-toggle-btn');
+  const handednessWrapper = document.getElementById('handedness-wrapper');
+  const swipeWrapper = document.getElementById('swipe-wrapper');
+  const vibrateWrapper = document.getElementById('vibrate-wrapper');
+  const skillBtn = document.getElementById('skill-btn');
+  const riseBtn = document.getElementById('rise-btn');
+  const rotateRow = document.getElementById('rotate-btns-row');
+  const exitBtn = document.getElementById('exit-btn');
+
+  const isVis = (el) => !!el && el.style.display !== 'none';
+  const settingItems = [layoutBtn, handednessWrapper, swipeWrapper, vibrateWrapper].filter(isVis);
+  const actionItems = [skillBtn, riseBtn, rotateRow].filter(isVis);
+
+  const exitH = hasExitInside ? 42 : 0;
+  let settingSum = 0;
+  settingItems.forEach(el => {
+    settingSum += (el === layoutBtn) ? 28 : 45;
+  });
+  let actionSum = 0;
+  if (isVis(skillBtn)) actionSum += 46;
+  if (isVis(riseBtn)) actionSum += 38;
+  if (isVis(rotateRow)) actionSum += 38;
+
+  const rotateExtraSep = isVis(rotateRow) ? 14 : 0;
+  const visibleCount = settingItems.length + actionItems.length;
+  const baseGap = 6;
+  const naturalH = rivalUsedH + exitH + settingSum + actionSum + rotateExtraSep + Math.max(0, visibleCount - 1) * baseGap;
+
+  if (rivalUsedH > 0 && naturalH > targetTotalH) {
+    controls.classList.add('compact-1on1');
+    if (settingItems.length > 0) settingItems[0].style.marginTop = 'auto';
+    if (isVis(rotateRow)) rotateRow.style.marginTop = '10px';
+    controls.style.height = 'auto';
+    controls.style.minHeight = `${targetTotalH}px`;
+    controls.style.justifyContent = 'flex-start';
+    const ctrlBaseH = Math.max(targetTotalH, controls.scrollHeight || targetTotalH);
+    controls.style.height = `${ctrlBaseH}px`;
+    return ctrlBaseH;
+  }
+
+  const freeSpace = Math.max(0, targetTotalH - naturalH);
+  if (freeSpace >= 24) {
+    controls.classList.add('spacious-controls');
+  }
+
+  const gapPx = Math.round(Math.min(18, 7 + freeSpace * 0.055));
+  controls.style.gap = `${gapPx}px`;
+
+  if (isVis(riseBtn)) {
+    const riseBoost = Math.round(Math.min(12, freeSpace * 0.045));
+    riseBtn.style.height = `${38 + riseBoost}px`;
+  }
+  if (isVis(skillBtn)) {
+    const skillBoost = Math.round(Math.min(12, freeSpace * 0.045));
+    skillBtn.style.minHeight = `${46 + skillBoost}px`;
+  }
+  if (isVis(rotateRow)) {
+    const rotBoost = Math.round(Math.min(10, freeSpace * 0.04));
+    const rotSep = Math.round(Math.min(28, 14 + freeSpace * 0.065));
+    rotateRow.style.marginTop = `${rotSep}px`;
+    rotateRow.querySelectorAll('.rotate-touch-btn').forEach(b => {
+      b.style.height = `${38 + rotBoost}px`;
+    });
+  }
+
+  if (settingItems.length > 0 && actionItems.length > 0) {
+    if (rivalUsedH > 0) {
+      settingItems[0].style.marginTop = 'auto';
+      actionItems[0].style.marginTop = `${Math.round(Math.min(24, 6 + freeSpace * 0.14))}px`;
+    } else if (hasExitInside) {
+      if (exitBtn && exitBtn.parentNode === controls) exitBtn.style.marginBottom = 'auto';
+      actionItems[0].style.marginTop = `${Math.round(Math.min(34, 8 + freeSpace * 0.16))}px`;
+    } else {
+      settingItems[0].style.marginTop = 'auto';
+      actionItems[0].style.marginTop = `${Math.round(Math.min(44, 12 + freeSpace * 0.22))}px`;
+    }
+  } else if (hasExitInside && exitBtn && exitBtn.parentNode === controls) {
+    exitBtn.style.marginBottom = 'auto';
+  }
+
+  controls.style.height = `${targetTotalH}px`;
+  controls.style.minHeight = `${targetTotalH}px`;
+  controls.style.justifyContent = rivalUsedH > 0 ? 'flex-start' : 'flex-end';
+  if (rivalUsedH === 0) controls.style.paddingBottom = '6px';
+
+  return Math.max(targetTotalH, controls.scrollHeight || targetTotalH);
+}
+
 function resetBattleLayoutStyles() {
   cleanupShareDomZones();
   removeInlinePlayerPortraits();
@@ -6545,7 +6827,7 @@ function resetBattleLayoutStyles() {
   }
   if (controls) {
     if (gameContainer && controls.parentNode !== gameContainer) gameContainer.appendChild(controls);
-    controls.classList.remove('compact-1on1');
+    resetControlsSpacingOverrides(controls);
     controls.style.cssText = 'display: flex; flex-direction: column; justify-content: flex-end; gap: 6px; z-index: 20; width: 110px;';
   }
   if (rotateRow) {
@@ -6888,9 +7170,8 @@ function adjustLayout() {
     gameContainer.style.cssText = `position:relative;width:100%;height:100%;display:flex;flex-direction:${isLeft ? 'row' : 'row-reverse'};align-items:center;justify-content:center;padding:${topReserve}px 0 ${bottomReserve}px 0;gap:10px;`;
 
     controls.style.alignItems = 'center';
-    let ctrlBaseH = 536;
+    let rivalUsedH = 0;
     if (oppCount === 1) {
-      controls.classList.add('compact-1on1');
       const rivalWrapper = document.getElementById('rival-wrapper-0');
       if (rivalWrapper) {
         if (rivalWrapper.parentNode !== controls) controls.insertBefore(rivalWrapper, controls.firstChild);
@@ -6912,21 +7193,11 @@ function adjustLayout() {
         rivalWrapper.style.marginLeft = `${horizCenterOffset}px`;
         rivalWrapper.style.marginRight = `${horizCenterOffset}px`;
         rivalWrapper.style.marginBottom = `${originalRivalH * rivalScale - originalRivalH}px`;
+        rivalUsedH = Math.round(originalRivalH * rivalScale);
       }
-      controls.style.height = 'auto';
-      controls.style.minHeight = '536px';
-      controls.style.justifyContent = 'flex-start';
-      if (handednessWrapper) handednessWrapper.style.marginTop = 'auto';
-      ctrlBaseH = Math.max(536, controls.scrollHeight || 536);
-      controls.style.height = `${ctrlBaseH}px`;
-    } else {
-      controls.classList.remove('compact-1on1');
-      controls.style.height = '';
-      controls.style.minHeight = '';
-      controls.style.justifyContent = 'flex-end';
-      if (handednessWrapper) handednessWrapper.style.marginTop = '0';
     }
 
+    const ctrlBaseH = applyVerticalControlsSpacing(controls, 536, rivalUsedH, false);
     const baseBoardH = Math.max(536, ctrlBaseH);
     const availH = Math.max(220, H - topReserve - bottomReserve - 8), contentW = 344;
     const myScale = Math.max(0.4, Math.min(maxDynamicScale, availH / baseBoardH, (W - 14) / contentW));
@@ -6959,16 +7230,18 @@ function adjustLayout() {
     if (exitBtn.parentNode !== controls) controls.insertBefore(exitBtn, controls.firstChild);
     exitBtn.className = 'action-btn retire-btn';
     exitBtn.style.cssText = 'position:static;width:100%;padding:8px 4px;font-size:0.85rem;margin-bottom:4px;';
-    controls.style.height = 'auto'; controls.style.justifyContent = 'center'; controls.style.width = '110px';
-    if (handednessWrapper) handednessWrapper.style.marginTop = '0';
+    controls.style.width = '110px';
+    controls.style.alignItems = 'center';
 
+    const ctrlBaseH = applyVerticalControlsSpacing(controls, 536, 0, true);
     gameContainer.style.cssText = `display:flex;flex-direction:${isLeft ? 'row' : 'row-reverse'};align-items:center;justify-content:center;position:absolute;top:${maxTopH + 8}px;left:0;width:100vw;height:${H - maxTopH - 8 - bottomReserve}px;padding:0;gap:10px;`;
     const maxCenterH = Math.max(200, H - maxTopH - 18 - bottomReserve), contentW = 344;
-    const ctrlBaseH = controls.scrollHeight ? Math.max(340, controls.scrollHeight) : 360;
-    const myScale = Math.max(0.32, Math.min(maxDynamicScale, maxCenterH / Math.max(536, ctrlBaseH), (W - 14) / contentW));
+    const baseBoardH = Math.max(536, ctrlBaseH);
+    const myScale = Math.max(0.32, Math.min(maxDynamicScale, maxCenterH / baseBoardH, (W - 14) / contentW));
     myWrapper.style.transform = `scale(${myScale})`; controls.style.transform = `scale(${myScale})`;
     myWrapper.style.transformOrigin = 'center'; controls.style.transformOrigin = 'center';
-    myWrapper.style.margin = `0 ${(224 - 224 * myScale) / -2}px`; controls.style.margin = `0 ${(110 - 110 * myScale) / -2}px`;
+    myWrapper.style.margin = `${(536 - 536 * myScale) / -2}px ${(224 - 224 * myScale) / -2}px`;
+    controls.style.margin = `${(ctrlBaseH - ctrlBaseH * myScale) / -2}px ${(110 - 110 * myScale) / -2}px`;
     const topStart = maxTopH + 4;
     updateBottomStatusBar();
     updateMyZoneFrameLayout({ top: topStart, left: 0, width: W, height: H - topStart - bottomReserve, radius: '16px 16px 0 0' });

@@ -1,5 +1,6 @@
 ﻿// ==========================================
-// ゲームエンジン（全段パズル可能化 / 凹凸共通初期盤面 / 3D円筒18列正面投影 / 新お邪魔パネル計算ルール＆混合倍率補正対応）
+// ゲームエンジン（全段パズル可能化 / 凹凸共通初期盤面 / 3D円筒18列正面投影 / 新お邪魔パネル計算ルール＆混合対戦ルール対応）
+// [Part 1 / 2]
 // ==========================================
 function createSeededRng(seed) {
   let s = seed >>> 0;
@@ -11,7 +12,7 @@ function createSeededRng(seed) {
   };
 }
 
-// 同時消し数に応じたお邪魔パネル配列（6列最大幅単位）を生成
+// 同時消し数に応じたお邪魔パネル配列（2D・3D共通テーブル）
 function generateComboGarbagePanels(comboSize, isHard = false) {
   const n = Math.floor(comboSize);
   if (n < 4) return [];
@@ -21,73 +22,62 @@ function generateComboGarbagePanels(comboSize, isHard = false) {
   if (n === 7) return [{ w: 6, h: 1, isHard }];
   if (n === 8) return [{ w: 3, h: 1, isHard }, { w: 4, h: 1, isHard }];
   if (n === 9) return [{ w: 4, h: 1, isHard }, { w: 4, h: 1, isHard }];
-  if (n === 10) return [{ w: 4, h: 1, isHard }, { w: 5, h: 1, isHard }];
-  if (n === 11) return [{ w: 5, h: 1, isHard }, { w: 5, h: 1, isHard }];
-  if (n === 12 || n === 13) return [{ w: 6, h: 1, isHard }, { w: 6, h: 1, isHard }];
-  if (n === 14) return [{ w: 6, h: 1, isHard }, { w: 6, h: 1, isHard }, { w: 3, h: 1, isHard }];
-  if (n === 15) return [{ w: 6, h: 1, isHard }, { w: 6, h: 1, isHard }, { w: 4, h: 1, isHard }];
-  if (n === 16) return [{ w: 6, h: 1, isHard }, { w: 6, h: 1, isHard }, { w: 5, h: 1, isHard }];
-  if (n <= 19) return [{ w: 6, h: 1, isHard }, { w: 6, h: 1, isHard }, { w: 6, h: 1, isHard }];
-
-  // 20個以上：18列（1周）に達して2段目へ
-  const panels = [
-    { w: 6, h: 1, isHard },
-    { w: 6, h: 1, isHard },
-    { w: 6, h: 1, isHard }
-  ];
-  const extraPanels = generateComboGarbagePanels(3 + (n - 19), isHard);
-  return panels.concat(extraPanels);
+  if (n === 10) return [{ w: 5, h: 1, isHard }, { w: 5, h: 1, isHard }];
+  if (n === 11) return [{ w: 6, h: 1, isHard }, { w: 5, h: 1, isHard }];
+  if (n === 12) return [{ w: 6, h: 2, isHard }];
+  if (n === 13) return [{ w: 6, h: 3, isHard }];
+  if (n <= 19) return [{ w: 6, h: 4, isHard }];
+  if (n <= 26) return [{ w: 6, h: 6, isHard }];
+  return [{ w: 6, h: 8, isHard }];
 }
 
-// 連鎖数に応じたお邪魔パネル配列（盤面列数に応じて2D=6列 / 3D=18列へ展開）
-function generateChainGarbagePanels(chainCount, baseCols = COLS_3D, isHard = false) {
+// 連鎖数に応じたお邪魔パネル配列（受け手の盤面列数に応じて 2D=6列 / 3D=18列 × (連鎖数-1)段、上限12段）
+function generateChainGarbagePanels(chainCount, targetCols = COLS_3D, isHard = false) {
   const n = Math.floor(chainCount);
   if (n < 2) return [];
-  if (baseCols >= 18) {
-    if (n === 2) return [{ w: 6, h: 1, isHard }];
-    if (n === 3) return [{ w: 12, h: 1, isHard }];
-    const h = Math.min(12, n - 3);
-    return [{ w: 18, h, isHard }];
-  }
   const h = Math.min(12, n - 1);
-  return [{ w: Math.min(baseCols, 6), h, isHard }];
+  const w = targetCols >= 18 ? (typeof COLS_3D !== 'undefined' ? COLS_3D : 18) : Math.min(targetCols, COLS);
+  return [{ w, h, isHard }];
+}
+
+// ビックリパネル（！パネル）消去時の1マス幅・灰色（石模様）お邪魔パネル配列（2D・3D共通）
+function generateSpecialGarbagePanels(specialCount) {
+  const n = Math.floor(specialCount);
+  if (n < 3) return [];
+  return [{ w: 1, h: Math.max(1, n - 2), isHard: true }];
 }
 
 // 攻撃仕様オブジェクトを受け手盤面の列数に合わせたお邪魔パネル配列へ解決
-// （盤面混合時は 2D→3D で3倍、3D→2D で1/3倍にスケーリング）
 function resolveAttackSpecToPanels(spec, targetCols = COLS) {
   if (!spec || !Array.isArray(spec.events)) return [];
   const senderCols = (spec.senderCols && spec.senderCols > 0) ? spec.senderCols : targetCols;
-  const is3DSender = senderCols >= 18;
   const rawPanels = [];
 
   spec.events.forEach(ev => {
     if (!ev) return;
     if (ev.kind === 'chain') {
-      const list = generateChainGarbagePanels(ev.chain, senderCols, !!ev.isHard);
+      const list = generateChainGarbagePanels(ev.chain, targetCols, !!ev.isHard);
       list.forEach(p => rawPanels.push(p));
     } else if (ev.kind === 'combo') {
-      let list = generateComboGarbagePanels(ev.size, !!ev.isHard);
-      // 3D盤面で20個以上のとき、先頭3個（6列×3＝18列）を18列×1段の1周パネルへ統合
-      if (is3DSender && ev.size >= 20 && list.length >= 3) {
-        const rest = list.slice(3);
-        const merged = [{ w: 18, h: 1, isHard: !!ev.isHard }];
-        let fullRows = 1;
-        while (rest.length >= 3 && rest[0].w === 6 && rest[1].w === 6 && rest[2].w === 6 && fullRows < 12) {
-          rest.splice(0, 3);
-          fullRows++;
-        }
-        merged[0].h = fullRows;
-        list = merged.concat(rest);
-      }
+      const list = generateComboGarbagePanels(ev.size, !!ev.isHard);
       list.forEach(p => rawPanels.push({
-        w: Math.max(1, Math.min(senderCols, p.w)),
+        w: Math.max(1, Math.min(targetCols, p.w)),
         h: Math.max(1, Math.min(12, p.h)),
         isHard: !!p.isHard
       }));
+    } else if (ev.kind === 'special') {
+      const list = generateSpecialGarbagePanels(ev.count);
+      list.forEach(p => rawPanels.push({
+        w: 1,
+        h: Math.max(1, Math.min(12, p.h)),
+        isHard: true
+      }));
     } else if (ev.kind === 'flat') {
+      const scaledW = senderCols !== targetCols
+        ? Math.round((ev.w || 6) * (targetCols / senderCols))
+        : (ev.w || 6);
       rawPanels.push({
-        w: Math.max(1, Math.min(senderCols, ev.w || 6)),
+        w: Math.max(1, Math.min(targetCols, scaledW)),
         h: Math.max(1, Math.min(12, ev.h || 1)),
         isHard: !!ev.isHard
       });
@@ -148,37 +138,6 @@ function resolveAttackSpecToPanels(spec, targetCols = COLS) {
     finalPanels = reduced;
   }
 
-  // 送信元と受け手の盤面列数が異なる場合（2D⇔3D混合）、幅比（3倍 / 1/3倍）で変換
-  if (senderCols !== targetCols && finalPanels.length > 0) {
-    const dimScale = targetCols / senderCols; // 2D->3D: 3.0, 3D->2D: 1/3
-    const scaled = [];
-    let normalAreaAccum = 0;
-    let hardAreaAccum = 0;
-
-    finalPanels.forEach(p => {
-      const a = p.w * p.h * dimScale;
-      if (p.isHard) hardAreaAccum += a;
-      else normalAreaAccum += a;
-    });
-
-    const emitAreaAsPanels = (areaVal, isHard) => {
-      const totalBlocks = Math.floor(areaVal + 1e-6);
-      if (totalBlocks <= 0) return;
-      const fullRows = Math.floor(totalBlocks / targetCols);
-      const rem = totalBlocks % targetCols;
-      if (fullRows > 0) {
-        scaled.push({ w: targetCols, h: Math.min(12, fullRows), isHard });
-      }
-      if (rem > 0) {
-        scaled.push({ w: rem, h: 1, isHard });
-      }
-    };
-
-    emitAreaAsPanels(normalAreaAccum, false);
-    emitAreaAsPanels(hardAreaAccum, true);
-    return scaled;
-  }
-
   return finalPanels;
 }
 
@@ -230,6 +189,7 @@ class PonEngine {
     this.gameOver = false;
     this.endAnim = null;
     this.cursor = { x: 2, y: 6 };
+    this.touchGrab = null;
     this.garbageQueue = [];
     this.purifyState = null;
     this.onStateChange = onStateChange;
@@ -435,6 +395,7 @@ class PonEngine {
     this.isRisingManualBtn = false;
     this.isRisingManualKey = false;
     this.isRisingManualPad = false;
+    this.touchGrab = null;
     this.purifyState = null;
     this.endAnim = {
       type: 'gameover_fill',
@@ -457,6 +418,7 @@ class PonEngine {
     this.isRisingManualBtn = false;
     this.isRisingManualKey = false;
     this.isRisingManualPad = false;
+    this.touchGrab = null;
     this.purifyState = null;
     this.endAnim = {
       type: 'victory_clear',
@@ -1660,7 +1622,7 @@ class PonEngine {
       SE.play('normalErase');
 
       let chainActive = false;
-      let hasSpecial = false;
+      let specialCount = 0;
 
       if (this.hasChainGraceEnabled() && this.chain >= 1 && this.chainGraceTimer > 0) {
         chainActive = true;
@@ -1670,7 +1632,7 @@ class PonEngine {
         const [r, c] = pos.split(',').map(Number);
         const block = this.grid[r][c];
         if (block.chainEligible) chainActive = true;
-        if (COLORS.find(col => col.id === block.type)?.isSpecial) hasSpecial = true;
+        if (COLORS.find(col => col.id === block.type)?.isSpecial) specialCount++;
         block.state = 'match';
         block.timer = 46;
         delete block.landChainTimer;
@@ -1735,16 +1697,17 @@ class PonEngine {
       const twoTierDrop = this.isSacrifice || (this.skillModifiers && this.skillModifiers.outgoingTwoTierDrop);
       const effChain = twoTierDrop ? Math.max(0, this.chain - 2) : this.chain;
       const effCombo = twoTierDrop ? Math.max(0, matchedPositions.size - 2) : matchedPositions.size;
+      const effSpecial = twoTierDrop ? Math.max(0, specialCount - 2) : specialCount;
 
       const events = [];
       if (effChain >= 2) {
-        events.push({ kind: 'chain', chain: effChain, isHard: hasSpecial });
+        events.push({ kind: 'chain', chain: effChain, isHard: false });
       }
       if (effCombo >= 4) {
-        events.push({ kind: 'combo', size: effCombo, isHard: hasSpecial });
+        events.push({ kind: 'combo', size: effCombo, isHard: false });
       }
-      if (hasSpecial) {
-        events.push({ kind: 'flat', w: 6, h: 1, isHard: true });
+      if (effSpecial >= 3) {
+        events.push({ kind: 'special', count: effSpecial, isHard: true });
       }
 
       if (events.length > 0 && this.onSendGarbage) {
@@ -1761,7 +1724,7 @@ class PonEngine {
         const resolvedRef = resolveAttackSpecToPanels(attackSpec, this.cols);
         const totalBlocks = resolvedRef.reduce((sum, p) => sum + p.w * p.h, 0);
         if (totalBlocks > 0) {
-          this.onSendGarbage(totalBlocks, hasSpecial, attackSpec);
+          this.onSendGarbage(totalBlocks, effSpecial >= 3, attackSpec);
         }
       }
       if (this.chain >= 2 && this.onChainStep) {
@@ -1781,7 +1744,7 @@ class PonEngine {
   }
 }
 // ==========================================
-// GB風モード用：ブロック濃淡＆高視認性識別パターン定義
+// [Part 2 / 2] GB風ブロック識別・描画エンジン（2D & 3D円筒）・COM AI
 // ==========================================
 const GB_BLOCK_PALETTE = {
   1: { bg: '#101010', text: '#ffffff', textStroke: '#000000', stroke: '#ffffff', accent: '#ffffff', pattern: 'solid_dark' },
@@ -2887,6 +2850,30 @@ class BoardRenderer {
     }
 
     if (!engine.endAnim) {
+      const isGrabActive = !!(engine.touchGrab && engine.touchGrab.active);
+      if (isGrabActive) {
+        const gCol = engine.touchGrab.col;
+        const gRow = engine.touchGrab.row;
+        const gDelta = ((gCol + 0.5 - vCol + N * 1.5) % N) - N * 0.5;
+        const gThetaL = (gDelta - 0.5) * dTheta;
+        const gThetaR = (gDelta + 0.5) * dTheta;
+        const gyTop = gRow * CELL_PX - offsetY;
+        const gyBot = gyTop + CELL_PX;
+        const g0 = this.project3DPoint(metrics, gThetaL, gyTop);
+        const g1 = this.project3DPoint(metrics, gThetaR, gyTop);
+        const g2 = this.project3DPoint(metrics, gThetaR, gyBot);
+        const g3 = this.project3DPoint(metrics, gThetaL, gyBot);
+
+        ctx.save();
+        traceQuadPath(ctx, g0, g1, g2, g3);
+        ctx.fillStyle = gb ? 'rgba(255, 255, 255, 0.24)' : 'rgba(255, 215, 0, 0.26)';
+        ctx.fill();
+        ctx.strokeStyle = gb ? '#ffffff' : '#ffd700';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+        ctx.restore();
+      }
+
       const c1 = engine.cursor.x;
       const delta1 = ((c1 + 0.5 - vCol + N * 1.5) % N) - N * 0.5;
       const theta1L = (delta1 - 0.5) * dTheta;
@@ -2914,11 +2901,11 @@ class BoardRenderer {
       ctx.lineTo(b0.x, b0.y);
       ctx.closePath();
 
-      ctx.strokeStyle = 'rgba(0, 0, 0, 0.82)';
-      ctx.lineWidth = 5;
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.85)';
+      ctx.lineWidth = isGrabActive ? 6 : 5;
       ctx.stroke();
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = isGrabActive ? (gb ? '#ffffff' : '#00d4ff') : '#ffffff';
+      ctx.lineWidth = isGrabActive ? 3.2 : 2.5;
       ctx.stroke();
 
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.45)';
@@ -3441,7 +3428,7 @@ class ComAI {
       maxChain++;
       totalCleared += matchCount;
 
-      if (maxChain >= 2) totalSentEstimate += 6;
+      if (maxChain >= 2) totalSentEstimate += cols;
       if (matchCount >= 4) {
         const comboPanels = generateComboGarbagePanels(matchCount, false);
         for (let pi = 0; pi < comboPanels.length; pi++) {
@@ -3449,6 +3436,7 @@ class ComAI {
         }
       }
 
+      let stepSpecialCount = 0;
       const thawVisited = new Uint8Array(rows * cols);
       const thawQueue = [];
       for (let rr = 0; rr < rows; rr++) {
@@ -3458,7 +3446,7 @@ class ComAI {
           if (rr < minClearedRow) minClearedRow = rr;
           if (b[idx] === 7) {
             specialCleared++;
-            totalSentEstimate += 6;
+            stepSpecialCount++;
           }
           b[idx] = 0;
 
@@ -3476,6 +3464,10 @@ class ComAI {
             }
           }
         }
+      }
+
+      if (stepSpecialCount >= 3) {
+        totalSentEstimate += Math.max(1, stepSpecialCount - 2) * 3;
       }
 
       while (thawQueue.length > 0) {

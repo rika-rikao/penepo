@@ -1,5 +1,6 @@
 /* ==========================================
-   追加UI・PWAボタン・2D/3D切替トグル・3Dカバーフロー・白透明キャラ枠・スキル自作ラボ・共通2段階スライダー・縦ボトムナビ・シェア実寸箱・ボタンフォーカス演出・連勝/累計バッジ・練習右パネル・PC150%相当スケール・左右回転ボタン・GBトーン用CSS
+   追加UI・PWAボタン・2D/3D切替トグル・3Dカバーフロー・白透明キャラ枠・スキル自作ラボ・共通2段階スライダー・縦ボトムナビ・シェア実寸箱・ボタンフォーカス演出・連勝/累計バッジ・練習右パネル・PC150%相当スケール・左右回転ボタン・縦UIゆとり配置・GBトーン用CSS
+   [Part 1 / 2]
    ========================================== */
 .char-select-bar {
   font-size: 0.85rem;
@@ -1209,9 +1210,8 @@ body.settings-has-vnav #settings-overlay {
   flex-wrap: wrap;
   justify-content: flex-end;
 }
-
 /* ==========================================
-   ローカル対戦：スマブラ風 上半分タイル選択＆下半分4等分ドックUI
+   [Part 2 / 2] ローカル対戦・3Dカバーフロー・縦UIボタン間隔・シェア・GB風・OPアニメーション
    ========================================== */
 .local-smash-panel {
   width: 100%;
@@ -2701,13 +2701,14 @@ input[type="range"] { touch-action: pan-y; cursor: pointer; }
   display: block;
 }
 
-/* せり上げボタン下の左右回転・移動タッチボタン */
+/* せり上げボタン下の左右回転・移動タッチボタン（誤タップ防止のため間隔確保） */
 .rotate-btns-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 5px;
+  gap: 6px;
   width: 100%;
+  margin-top: 12px;
   flex-shrink: 0;
 }
 .rotate-touch-btn {
@@ -2732,7 +2733,19 @@ input[type="range"] { touch-action: pan-y; cursor: pointer; }
   border-color: #ffd700;
 }
 
-/* 縦1on1時：ミニ盤面＋操作系＋左右タッチボタンを余裕をもって収めるコンパクト調整 */
+/* 縦UIゆとり配置：非表示ボタン分の空きスペースがある場合はスイッチ枠や文字もゆとりを持たせる */
+#controls-container.spacious-controls .switch-wrapper {
+  padding: 5px 8px !important;
+  gap: 3px !important;
+}
+#controls-container.spacious-controls #rise-btn {
+  font-size: 0.96rem !important;
+}
+#controls-container.spacious-controls .rotate-touch-btn {
+  font-size: 1.18rem;
+}
+
+/* 縦1on1時（全ボタン表示で窮屈な場合のみ）：コンパクト化しつつ誤タップ防止の離隔は維持 */
 #controls-container.compact-1on1 {
   gap: 3px !important;
 }
@@ -2758,6 +2771,9 @@ input[type="range"] { touch-action: pan-y; cursor: pointer; }
   height: 33px !important;
   padding: 4px 6px !important;
   font-size: 0.84rem !important;
+}
+#controls-container.compact-1on1 .rotate-btns-row {
+  margin-top: 10px;
 }
 #controls-container.compact-1on1 .rotate-touch-btn {
   height: 33px;

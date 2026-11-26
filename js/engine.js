@@ -2105,7 +2105,7 @@ function getGarbageBaseSprite(isHard, gb, litIdx, isFlashing) {
   return cvs;
 }
 
-// --- 描画エンジン（2D & 3D円筒18列正面投影：スプライトキャッシュ・背面カリング＆色味/マーク付軽量描画・変形枠） ---
+// --- 描画エンジン（2D & 3D円筒18列正面投影：スプライトキャッシュ・背面カリング＆色味/マーク付軽量描画・操作別視点追従・変形枠） ---
 class BoardRenderer {
   constructor(canvasId) {
     this.canvas = document.getElementById(canvasId);
@@ -2114,11 +2114,19 @@ class BoardRenderer {
     this.canvas.height = ROWS * CELL_PX;
     this.theme = null;
     this.viewCol = null;
+    this.targetViewCol = null;
+    this.cameraMode = 'viewport';
     this._lastIs3D = null;
   }
 
   isGbActive() {
     return (typeof isGbMode !== 'undefined' && isGbMode);
+  }
+
+  setCameraMode(mode) {
+    if (mode === 'center' || mode === 'viewport' || mode === 'free') {
+      this.cameraMode = mode;
+    }
   }
 
   getCylinderMetrics(engine) {
@@ -2342,17 +2350,48 @@ class BoardRenderer {
     };
   }
 
+  shiftViewCol(engine, deltaCols) {
+    if (!engine || !engine.is3D) return;
+    const N = engine.cols;
+    if (this.viewCol === null || Number.isNaN(this.viewCol)) {
+      this.viewCol = ((engine.cursor.x + 1.0) % N + N) % N;
+    }
+    if (this.targetViewCol === null || Number.isNaN(this.targetViewCol)) {
+      this.targetViewCol = this.viewCol;
+    }
+    this.targetViewCol = ((this.targetViewCol + deltaCols) % N + N) % N;
+  }
+
   syncViewCol(engine) {
     if (!engine || !engine.is3D) return 0;
     const N = engine.cols;
-    const target = ((engine.cursor.x + 1.0) % N + N) % N;
-    if (this.viewCol === null || Number.isNaN(this.viewCol)) {
-      this.viewCol = target;
+    const cursorCenter = ((engine.cursor.x + 1.0) % N + N) % N;
+
+    if (this.viewCol === null || Number.isNaN(this.viewCol) || this.targetViewCol === null || Number.isNaN(this.targetViewCol)) {
+      this.viewCol = cursorCenter;
+      this.targetViewCol = cursorCenter;
       return this.viewCol;
     }
-    const diff = ((target - this.viewCol + N * 1.5) % N) - N * 0.5;
+
+    const isGrabLocked = !!(engine.touchGrab && engine.touchGrab.active);
+    if (!isGrabLocked) {
+      if (this.cameraMode === 'center') {
+        // キーボード・ゲームパッド操作：カーソルを常に中心軸に置いて盤面を回転
+        this.targetViewCol = cursorCenter;
+      } else if (this.cameraMode === 'viewport') {
+        // タッチ・マウス操作：表示盤面全体（正面6列分）をデッドゾーンとし、盤面端を超えようとした時のみ回転
+        const deadzoneDiff = ((cursorCenter - this.targetViewCol + N * 1.5) % N) - N * 0.5;
+        const deadzoneLimit = 2.0;
+        if (Math.abs(deadzoneDiff) > deadzoneLimit) {
+          const shift = deadzoneDiff > 0 ? (deadzoneDiff - deadzoneLimit) : (deadzoneDiff + deadzoneLimit);
+          this.targetViewCol = ((this.targetViewCol + shift) % N + N) % N;
+        }
+      }
+    }
+
+    const diff = ((this.targetViewCol - this.viewCol + N * 1.5) % N) - N * 0.5;
     if (Math.abs(diff) < 0.005) {
-      this.viewCol = target;
+      this.viewCol = this.targetViewCol;
     } else {
       this.viewCol = ((this.viewCol + diff * 0.28) % N + N) % N;
     }
@@ -3090,6 +3129,9 @@ class BoardRenderer {
       this.drawCell3DBackSimple(ctx, engine, r, c, b, pLT, pRT, pRB, pLB, fRB, fLB, cosT, lighting, effNext, cellVisRatio);
     }
 
+    // 背面側へ回転したカーソルの追従表示（背面ブロックの直後・内部ベールの前に描画）
+    this.draw3DCursorOverlay(ctx, engine, metrics, offsetY, true);
+
     // ③ キャッシュされた内部ベール＋前面上下リング＋動的縦線
     ctx.drawImage(staticLayers.mid, 0, 0);
     this.drawCylinderVerticalWires(ctx, metrics, vCol, true);
@@ -3203,7 +3245,7 @@ class BoardRenderer {
     }
   }
 
-  draw3DCursorOverlay(ctx, engine, metrics, offsetY) {
+  draw3DCursorOverlay(ctx, engine, metrics, offsetY, drawBackLayer = false) {
     if (engine.endAnim) return;
     const { N, dTheta } = metrics;
     const vCol = (this.viewCol !== null && !Number.isNaN(this.viewCol))
@@ -3212,7 +3254,23 @@ class BoardRenderer {
     const gb = this.isGbActive();
     const isGrabActive = !!(engine.touchGrab && engine.touchGrab.active);
 
-    if (isGrabActive) {
+    const c1 = engine.cursor.x;
+    const delta1 = ((c1 + 0.5 - vCol + N * 1.5) % N) - N * 0.5;
+    const theta1L = (delta1 - 0.5) * dTheta;
+    const thetaMid = (delta1 + 0.5) * dTheta;
+    const theta2R = (delta1 + 1.5) * dTheta;
+
+    const cos1L = Math.cos(theta1L);
+    const cosMid = Math.cos(thetaMid);
+    const cos2R = Math.cos(theta2R);
+
+    if (drawBackLayer) {
+      if (!(cos1L < 0 && cosMid < 0 && cos2R < 0)) return;
+    } else {
+      if (!(cos1L >= 0 && cosMid >= 0 && cos2R >= 0)) return;
+    }
+
+    if (!drawBackLayer && isGrabActive) {
       const gCol = engine.touchGrab.col;
       const gRow = engine.touchGrab.row;
       const gDelta = ((gCol + 0.5 - vCol + N * 1.5) % N) - N * 0.5;
@@ -3235,12 +3293,6 @@ class BoardRenderer {
       ctx.restore();
     }
 
-    const c1 = engine.cursor.x;
-    const delta1 = ((c1 + 0.5 - vCol + N * 1.5) % N) - N * 0.5;
-    const theta1L = (delta1 - 0.5) * dTheta;
-    const thetaMid = (delta1 + 0.5) * dTheta;
-    const theta2R = (delta1 + 1.5) * dTheta;
-
     const yTop = engine.cursor.y * CELL_PX - offsetY;
     const yBot = yTop + CELL_PX;
 
@@ -3252,6 +3304,7 @@ class BoardRenderer {
     const b0 = this.project3DPoint(metrics, theta1L, yBot);
 
     ctx.save();
+    if (drawBackLayer) ctx.globalAlpha *= 0.55;
     ctx.lineJoin = 'round';
     ctx.beginPath();
     ctx.moveTo(t0.x, t0.y);
@@ -3361,7 +3414,7 @@ class BoardRenderer {
       this.drawCylinderFrameBorder(ctx, metrics, engine);
 
       // カーソルは枠境界でも視認できるよう枠線の上に描画
-      this.draw3DCursorOverlay(ctx, engine, metrics, offsetY);
+      this.draw3DCursorOverlay(ctx, engine, metrics, offsetY, false);
     } else {
       if (typeof drawBoardBgAddon === 'function') drawBoardBgAddon(ctx, this.canvas, engine, this);
       this.drawSacrificeAura(ctx, engine);

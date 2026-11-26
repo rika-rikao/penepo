@@ -1,5 +1,6 @@
 ﻿// ==========================================
 // 対戦・ターゲット・スマブラ風ローカル選択・2D/3D/こんごう切替・連勝/累計勝利記録・縦UIバッジ・PC150%相当スケール統合管理
+// [Part 1 / 3]
 // ==========================================
 let myEngine, myRenderer;
 let opponents = [];
@@ -2352,6 +2353,8 @@ function startLocalGame() {
   const customSkillEnabled = isLocalCustomSkillRuleOn();
   startGame('local', 3, count, skillEnabled, customSkillEnabled);
 }
+
+
 // ==========================================
 // シェア対戦（複数回タップ誤爆防止・2D/3D/こんごう対応） & メニューナビゲーション & 勝利統計記録
 // ==========================================
@@ -3352,8 +3355,9 @@ function sendBlocksToOpponent(opp, count, isHard, attackSpec = null) {
     opp.engine.addGarbage(remainder, 1, isHard, true);
   }
 }
+
 // ==========================================
-// [Part 2 / 2] 勝敗演出・ゲーム進行・3D長押しつかみ対応タッチ入力・縦UIゆとり配置・初期化
+// 勝敗演出・ゲーム進行・スキル・レイアウト補助
 // ==========================================
 let battleEndState = { active: false, canDismissAt: 0, onContinue: null, prevAnyPadPressed: false };
 
@@ -5400,6 +5404,10 @@ function gameLoop(time) {
   loopId = requestAnimationFrame(gameLoop);
 }
 
+// ==========================================
+// 入力処理・タッチ/マウス/仮想左右キー/キーボード/パッド制御・レイアウト計算
+// [Part 3 / 3]
+// ==========================================
 function toggleContinuousSwipe() {
   const cb = document.getElementById('continuous-swipe');
   if (!cb) return;
@@ -5586,7 +5594,7 @@ function executeGrabMoveForEngine(engine, grabState, dx) {
   return swapped;
 }
 
-function pollSingleGamepad(engine, cfgPad, stateObj, padObj, isMainPlayer, oppRef = null, now = performance.now()) {
+function pollSingleGamepad(engine, cfgPad, stateObj, padObj, isMainPlayer, oppRef = null, now = performance.now(), renderer = null) {
   if (!padObj) {
     if (engine) engine.isRisingManualPad = false;
     stateObj.padHoldFrames = { Up: 0, Down: 0, Left: 0, Right: 0 };
@@ -5619,6 +5627,11 @@ function pollSingleGamepad(engine, cfgPad, stateObj, padObj, isMainPlayer, oppRe
     if (stateObj.padLastPressAt) stateObj.padLastPressAt[btnIdx] = now;
     return true;
   };
+  const setCenterCamera = () => {
+    if (renderer && typeof renderer.setCameraMode === 'function') {
+      renderer.setCameraMode('center');
+    }
+  };
 
   if (isMainPlayer && justPressed(cfgPad.Pause)) {
     if (isExitConfirmOpen) {
@@ -5646,8 +5659,8 @@ function pollSingleGamepad(engine, cfgPad, stateObj, padObj, isMainPlayer, oppRe
     return;
   }
   if (isMainPlayer && justPressed(cfgPad.ToggleContinuous)) toggleContinuousSwipe();
-  if (justPressed(cfgPad.GrabLeft)) startGrabForEngine(engine, stateObj.padGrabState, 'left');
-  else if (justPressed(cfgPad.GrabRight)) startGrabForEngine(engine, stateObj.padGrabState, 'right');
+  if (justPressed(cfgPad.GrabLeft)) { setCenterCamera(); startGrabForEngine(engine, stateObj.padGrabState, 'left'); }
+  else if (justPressed(cfgPad.GrabRight)) { setCenterCamera(); startGrabForEngine(engine, stateObj.padGrabState, 'right'); }
   if (stateObj.padGrabState.active) {
     if ((stateObj.padGrabState.side === 'left' && !isPressed(cfgPad.GrabLeft)) || (stateObj.padGrabState.side === 'right' && !isPressed(cfgPad.GrabRight))) {
       stateObj.padGrabState.active = stateObj.padGrabState.consumed = false;
@@ -5696,13 +5709,19 @@ function pollSingleGamepad(engine, cfgPad, stateObj, padObj, isMainPlayer, oppRe
     stateObj.padDirTime.Up.held = stateObj.padDirTime.Down.held = false;
     stateObj.padDirTime.Up.releaseAt = stateObj.padDirTime.Down.releaseAt = 0;
   } else {
-    if (checkDirTrigger('Up', cfgPad.Up) && engine.cursor.y > 0) {
-      engine.cursor.y--; moved = true;
-      syncGrabColFromCursor(engine, stateObj.padGrabState);
+    if (checkDirTrigger('Up', cfgPad.Up)) {
+      setCenterCamera();
+      if (engine.cursor.y > 0) {
+        engine.cursor.y--; moved = true;
+        syncGrabColFromCursor(engine, stateObj.padGrabState);
+      }
     }
-    if (checkDirTrigger('Down', cfgPad.Down) && engine.cursor.y < rows - 1) {
-      engine.cursor.y++; moved = true;
-      syncGrabColFromCursor(engine, stateObj.padGrabState);
+    if (checkDirTrigger('Down', cfgPad.Down)) {
+      setCenterCamera();
+      if (engine.cursor.y < rows - 1) {
+        engine.cursor.y++; moved = true;
+        syncGrabColFromCursor(engine, stateObj.padGrabState);
+      }
     }
   }
   if (isPressed(cfgPad.Left) && isPressed(cfgPad.Right)) {
@@ -5710,16 +5729,21 @@ function pollSingleGamepad(engine, cfgPad, stateObj, padObj, isMainPlayer, oppRe
     stateObj.padDirTime.Left.releaseAt = stateObj.padDirTime.Right.releaseAt = 0;
   } else {
     if (checkDirTrigger('Left', cfgPad.Left)) {
+      setCenterCamera();
       if (stateObj.padGrabState.active) executeGrabMoveForEngine(engine, stateObj.padGrabState, -1);
       else if (moveEngineCursorHoriz(engine, -1)) moved = true;
     }
     if (checkDirTrigger('Right', cfgPad.Right)) {
+      setCenterCamera();
       if (stateObj.padGrabState.active) executeGrabMoveForEngine(engine, stateObj.padGrabState, 1);
       else if (moveEngineCursorHoriz(engine, 1)) moved = true;
     }
   }
   if (moved) SE.play('cursorMove');
-  if (justPressed(cfgPad.Swap)) engine.swap(engine.cursor.x, engine.cursor.y);
+  if (justPressed(cfgPad.Swap)) {
+    setCenterCamera();
+    engine.swap(engine.cursor.x, engine.cursor.y);
+  }
   engine.isRisingManualPad = !!(isPressed(cfgPad.Rise1) || isPressed(cfgPad.Rise2));
   if (isMainPlayer) {
     if (justPressed(cfgPad.TargetRight)) cycleTarget(1);
@@ -5732,7 +5756,7 @@ function pollSingleGamepad(engine, cfgPad, stateObj, padObj, isMainPlayer, oppRe
   }
 }
 
-function pollSingleKeyboardHold(engine, stateObj, now = performance.now()) {
+function pollSingleKeyboardHold(engine, stateObj, now = performance.now(), renderer = null) {
   if (!engine || !stateObj || !stateObj.keyHeld) return;
   if (isExitConfirmOpen || engine.gameOver || (isMatchOver && !isPracticeMode)) {
     stateObj.keyHoldFrames = { Up: 0, Down: 0, Left: 0, Right: 0 };
@@ -5743,6 +5767,11 @@ function pollSingleKeyboardHold(engine, stateObj, now = performance.now()) {
   }
   if (typeof getCurrentPadContextKey === 'function' && getCurrentPadContextKey() !== 'game') return;
 
+  const setCenterCamera = () => {
+    if (renderer && typeof renderer.setCameraMode === 'function') {
+      renderer.setCameraMode('center');
+    }
+  };
   const checkKeyDirRepeat = (dirName) => {
     const dt = stateObj.keyDirTime[dirName];
     if (!stateObj.keyHeld[dirName]) {
@@ -5766,23 +5795,31 @@ function pollSingleKeyboardHold(engine, stateObj, now = performance.now()) {
   if (stateObj.keyHeld.Up && stateObj.keyHeld.Down) {
     stateObj.keyDirTime.Up.held = stateObj.keyDirTime.Down.held = false;
   } else {
-    if (checkKeyDirRepeat('Up') && engine.cursor.y > 0) {
-      engine.cursor.y--; moved = true;
-      syncGrabColFromCursor(engine, stateObj.keyGrabState);
+    if (checkKeyDirRepeat('Up')) {
+      setCenterCamera();
+      if (engine.cursor.y > 0) {
+        engine.cursor.y--; moved = true;
+        syncGrabColFromCursor(engine, stateObj.keyGrabState);
+      }
     }
-    if (checkKeyDirRepeat('Down') && engine.cursor.y < rows - 1) {
-      engine.cursor.y++; moved = true;
-      syncGrabColFromCursor(engine, stateObj.keyGrabState);
+    if (checkKeyDirRepeat('Down')) {
+      setCenterCamera();
+      if (engine.cursor.y < rows - 1) {
+        engine.cursor.y++; moved = true;
+        syncGrabColFromCursor(engine, stateObj.keyGrabState);
+      }
     }
   }
   if (stateObj.keyHeld.Left && stateObj.keyHeld.Right) {
     stateObj.keyDirTime.Left.held = stateObj.keyDirTime.Right.held = false;
   } else {
     if (checkKeyDirRepeat('Left')) {
+      setCenterCamera();
       if (stateObj.keyGrabState.active) executeGrabMoveForEngine(engine, stateObj.keyGrabState, -1);
       else if (moveEngineCursorHoriz(engine, -1)) moved = true;
     }
     if (checkKeyDirRepeat('Right')) {
+      setCenterCamera();
       if (stateObj.keyGrabState.active) executeGrabMoveForEngine(engine, stateObj.keyGrabState, 1);
       else if (moveEngineCursorHoriz(engine, 1)) moved = true;
     }
@@ -5791,10 +5828,10 @@ function pollSingleKeyboardHold(engine, stateObj, now = performance.now()) {
 }
 
 function pollKeyboardHoldInput(now = performance.now()) {
-  pollSingleKeyboardHold(myEngine, p1InputState, now);
+  pollSingleKeyboardHold(myEngine, p1InputState, now, myRenderer);
   if (currentMode === 'local' || currentMode === 'share') {
     opponents.forEach(opp => {
-      if (opp.type === 'local_human' && opp.inputState) pollSingleKeyboardHold(opp.engine, opp.inputState, now);
+      if (opp.type === 'local_human' && opp.inputState) pollSingleKeyboardHold(opp.engine, opp.inputState, now, opp.renderer);
     });
   }
 }
@@ -5822,28 +5859,34 @@ function pollGamepadInput(now = performance.now()) {
   } else if (slot0 === 0 && currentMode !== 'local' && currentMode !== 'share') {
     pad0 = pads.find(p => p && p.connected) || null;
   }
-  pollSingleGamepad(myEngine, playerConfigs[0].pad, p1InputState, pad0, true, null, now);
+  pollSingleGamepad(myEngine, playerConfigs[0].pad, p1InputState, pad0, true, null, now, myRenderer);
   if (currentMode === 'local' || currentMode === 'share') {
     opponents.forEach(opp => {
       if (opp.type === 'local_human' && opp.inputState) {
         const slot = playerConfigs[opp.playerSlotIndex].padSlot;
-        pollSingleGamepad(opp.engine, playerConfigs[opp.playerSlotIndex].pad, opp.inputState, (slot >= 0 && pads[slot]) ? pads[slot] : null, false, opp, now);
+        pollSingleGamepad(opp.engine, playerConfigs[opp.playerSlotIndex].pad, opp.inputState, (slot >= 0 && pads[slot]) ? pads[slot] : null, false, opp, now, opp.renderer);
       }
     });
   }
 }
 
-function handleKeyboardActionForPlayer(engine, cfgKey, stateObj, code, isRepeat, isMainPlayer, oppRef, e) {
+function handleKeyboardActionForPlayer(engine, cfgKey, stateObj, code, isRepeat, isMainPlayer, oppRef, e, renderer = null) {
   if (!engine || engine.gameOver || (isMatchOver && !isPracticeMode)) return false;
   let handled = false, moved = false;
   const now = performance.now();
   const rows = engine.rows || ROWS;
+  const setCenterCamera = () => {
+    if (renderer && typeof renderer.setCameraMode === 'function') {
+      renderer.setCameraMode('center');
+    }
+  };
   if (isMainPlayer && code === cfgKey.ToggleContinuous) { handled = true; if (!isRepeat) toggleContinuousSwipe(); }
-  if (code === cfgKey.GrabLeft) { handled = true; if (!isRepeat) startGrabForEngine(engine, stateObj.keyGrabState, 'left'); }
-  if (code === cfgKey.GrabRight) { handled = true; if (!isRepeat) startGrabForEngine(engine, stateObj.keyGrabState, 'right'); }
+  if (code === cfgKey.GrabLeft) { handled = true; if (!isRepeat) { setCenterCamera(); startGrabForEngine(engine, stateObj.keyGrabState, 'left'); } }
+  if (code === cfgKey.GrabRight) { handled = true; if (!isRepeat) { setCenterCamera(); startGrabForEngine(engine, stateObj.keyGrabState, 'right'); } }
   if (code === cfgKey.Up) {
     handled = true;
     if (!isRepeat) {
+      setCenterCamera();
       stateObj.keyHeld.Up = true; stateObj.keyHoldFrames.Up = 1;
       if (stateObj.keyDirTime) stateObj.keyDirTime.Up = { held: true, startAt: now, lastAt: now };
       if (engine.cursor.y > 0) {
@@ -5855,6 +5898,7 @@ function handleKeyboardActionForPlayer(engine, cfgKey, stateObj, code, isRepeat,
   if (code === cfgKey.Down) {
     handled = true;
     if (!isRepeat) {
+      setCenterCamera();
       stateObj.keyHeld.Down = true; stateObj.keyHoldFrames.Down = 1;
       if (stateObj.keyDirTime) stateObj.keyDirTime.Down = { held: true, startAt: now, lastAt: now };
       if (engine.cursor.y < rows - 1) {
@@ -5866,6 +5910,7 @@ function handleKeyboardActionForPlayer(engine, cfgKey, stateObj, code, isRepeat,
   if (code === cfgKey.Left) {
     handled = true;
     if (!isRepeat) {
+      setCenterCamera();
       stateObj.keyHeld.Left = true; stateObj.keyHoldFrames.Left = 1;
       if (stateObj.keyDirTime) stateObj.keyDirTime.Left = { held: true, startAt: now, lastAt: now };
       if (stateObj.keyGrabState.active) executeGrabMoveForEngine(engine, stateObj.keyGrabState, -1);
@@ -5875,6 +5920,7 @@ function handleKeyboardActionForPlayer(engine, cfgKey, stateObj, code, isRepeat,
   if (code === cfgKey.Right) {
     handled = true;
     if (!isRepeat) {
+      setCenterCamera();
       stateObj.keyHeld.Right = true; stateObj.keyHoldFrames.Right = 1;
       if (stateObj.keyDirTime) stateObj.keyDirTime.Right = { held: true, startAt: now, lastAt: now };
       if (stateObj.keyGrabState.active) executeGrabMoveForEngine(engine, stateObj.keyGrabState, 1);
@@ -5882,7 +5928,11 @@ function handleKeyboardActionForPlayer(engine, cfgKey, stateObj, code, isRepeat,
     }
   }
   if (moved) SE.play('cursorMove');
-  if (code === cfgKey.Swap) { handled = true; engine.swap(engine.cursor.x, engine.cursor.y); }
+  if (code === cfgKey.Swap) {
+    handled = true;
+    setCenterCamera();
+    engine.swap(engine.cursor.x, engine.cursor.y);
+  }
   if (code === cfgKey.Rise1 || code === cfgKey.Rise2) { handled = true; engine.isRisingManualKey = true; }
   if (isMainPlayer) {
     if (code === cfgKey.TargetRight) { handled = true; cycleTarget(1); }
@@ -6005,12 +6055,31 @@ function getCanvasCoordsFromPointer(cvs, e, isSelf180Rotated = false) {
 function bindBoardTouchInput(cvs, getEngine, getContinuousChecked, isSelf180Rotated, setRowFollowCb, getRenderer = null) {
   const LONG_PRESS_MS = 180;
   const DRAG_THRESHOLD_PX = 10;
+  const EDGE_ZONE_PX = 28;
+  const EDGE_ROTATE_INTERVAL_MS = 145;
 
   let activePointerId = null, grabbedCol = -1, grabbedRow = -1;
   let initialCanvasX = 0, initialCanvasY = 0;
-  let lastCanvasX = 0, lastSwapCanvasX = 0, dragMode = 'swap', suppressTapOnUp = false, cursorMovedOnDown = false;
-  let longPressTimer = null;
+  let lastCanvasX = 0, lastSwapCanvasX = 0, lastPointerMoveX = 0;
+  let dragMode = 'swap', suppressTapOnUp = false, cursorMovedOnDown = false;
+  let longPressTimer = null, edgeDragTimer = null;
+  let lastDragDir = 0, lastEdgeStepAt = 0;
+  let wheelAccum = 0, lastWheelResetAt = 0, lastWheelStepAt = 0;
   let downCol = -1, downRow = -1, startedInCursor = false, downHasBlock = false, grabConsumed = false;
+
+  const setViewportCameraMode = () => {
+    const renderer = typeof getRenderer === 'function' ? getRenderer() : null;
+    if (renderer && typeof renderer.setCameraMode === 'function') {
+      renderer.setCameraMode('viewport');
+    }
+  };
+
+  const setFreeCameraMode = () => {
+    const renderer = typeof getRenderer === 'function' ? getRenderer() : null;
+    if (renderer && typeof renderer.setCameraMode === 'function') {
+      renderer.setCameraMode('free');
+    }
+  };
 
   const clearLongPressTimer = () => {
     if (longPressTimer) {
@@ -6019,45 +6088,18 @@ function bindBoardTouchInput(cvs, getEngine, getContinuousChecked, isSelf180Rota
     }
   };
 
-  const clearGrabMode = () => {
-    clearLongPressTimer();
-    grabConsumed = false;
-    const engine = getEngine();
-    if (engine && engine.touchGrab) {
-      engine.touchGrab = null;
+  const stopEdgeDragTimer = () => {
+    if (edgeDragTimer) {
+      clearInterval(edgeDragTimer);
+      edgeDragTimer = null;
     }
   };
 
-  const enter3DGrabMode = (engine) => {
-    clearLongPressTimer();
-    if (!engine || !engine.is3D || (isMatchOver && !isPracticeMode)) return;
-    const cols = engine.cols || COLS_3D;
-    dragMode = 'swap';
-    suppressTapOnUp = true;
-    grabConsumed = false;
-    engine.cursor.y = grabbedRow;
-    const rightCol = (engine.cursor.x + 1) % cols;
-    if (grabbedCol !== engine.cursor.x && grabbedCol !== rightCol) {
-      engine.cursor.x = grabbedCol;
-    }
-    engine.touchGrab = { active: true, col: grabbedCol, row: grabbedRow };
-    SE.play('cursorMove');
-    if (typeof triggerSwapVibration === 'function' && typeof getMainPlayerPadSlot === 'function') {
-      triggerSwapVibration(false, getMainPlayerPadSlot());
-    }
+  const getActiveEdgeDir = (ptX) => {
+    if (ptX >= cvs.width - EDGE_ZONE_PX && lastDragDir > 0) return 1;
+    if (ptX <= EDGE_ZONE_PX && lastDragDir < 0) return -1;
+    return 0;
   };
-
-  if (setRowFollowCb) {
-    setRowFollowCb(() => {
-      if (activePointerId !== null && grabbedRow > 0) {
-        grabbedRow--;
-        const engine = getEngine();
-        if (engine && engine.touchGrab && engine.touchGrab.active) {
-          engine.touchGrab.row = grabbedRow;
-        }
-      }
-    });
-  }
 
   const stepGrabSwap = (dir, isRepeatCall = false) => {
     const engine = getEngine();
@@ -6066,6 +6108,8 @@ function bindBoardTouchInput(cvs, getEngine, getContinuousChecked, isSelf180Rota
     const cols = engine.cols || COLS;
     const continuous = getContinuousChecked();
     if (isRepeatCall && !continuous) return false;
+
+    setViewportCameraMode();
 
     if (engine.is3D) {
       if (dir > 0) {
@@ -6124,6 +6168,90 @@ function bindBoardTouchInput(cvs, getEngine, getContinuousChecked, isSelf180Rota
     return false;
   };
 
+  const performEdgeStep = () => {
+    const engine = getEngine();
+    if (!engine || !engine.is3D || activePointerId === null || (isMatchOver && !isPracticeMode) || isExitConfirmOpen) {
+      stopEdgeDragTimer();
+      return;
+    }
+    const edgeDir = getActiveEdgeDir(lastPointerMoveX);
+    if (edgeDir === 0) return;
+
+    const now = performance.now();
+    if (now - lastEdgeStepAt < EDGE_ROTATE_INTERVAL_MS) return;
+
+    const renderer = typeof getRenderer === 'function' ? getRenderer() : null;
+    const cols = engine.cols || COLS_3D;
+
+    if (dragMode === 'rotate') {
+      setFreeCameraMode();
+      engine.cursor.x = ((engine.cursor.x - edgeDir) % cols + cols) % cols;
+      if (renderer && typeof renderer.shiftViewCol === 'function') {
+        renderer.shiftViewCol(engine, -edgeDir);
+      }
+      suppressTapOnUp = true;
+      lastEdgeStepAt = now;
+      SE.play('cursorMove');
+    } else if (dragMode === 'swap') {
+      if (stepGrabSwap(edgeDir, true)) {
+        if (renderer && typeof renderer.shiftViewCol === 'function') {
+          renderer.shiftViewCol(engine, edgeDir);
+        }
+        lastSwapCanvasX = lastPointerMoveX;
+        lastEdgeStepAt = now;
+      }
+    }
+  };
+
+  const ensureEdgeDragTimer = () => {
+    if (edgeDragTimer) return;
+    edgeDragTimer = setInterval(performEdgeStep, 30);
+  };
+
+  const clearGrabMode = () => {
+    clearLongPressTimer();
+    stopEdgeDragTimer();
+    grabConsumed = false;
+    lastDragDir = 0;
+    const engine = getEngine();
+    if (engine && engine.touchGrab) {
+      engine.touchGrab = null;
+    }
+  };
+
+  const enter3DGrabMode = (engine) => {
+    clearLongPressTimer();
+    if (!engine || !engine.is3D || (isMatchOver && !isPracticeMode)) return;
+    const cols = engine.cols || COLS_3D;
+    setViewportCameraMode();
+    dragMode = 'swap';
+    suppressTapOnUp = true;
+    grabConsumed = false;
+    lastEdgeStepAt = performance.now();
+    engine.cursor.y = grabbedRow;
+    const rightCol = (engine.cursor.x + 1) % cols;
+    if (grabbedCol !== engine.cursor.x && grabbedCol !== rightCol) {
+      engine.cursor.x = (lastDragDir < 0) ? ((grabbedCol - 1 + cols) % cols) : grabbedCol;
+    }
+    engine.touchGrab = { active: true, col: grabbedCol, row: grabbedRow };
+    SE.play('cursorMove');
+    if (typeof triggerSwapVibration === 'function' && typeof getMainPlayerPadSlot === 'function') {
+      triggerSwapVibration(false, getMainPlayerPadSlot());
+    }
+  };
+
+  if (setRowFollowCb) {
+    setRowFollowCb(() => {
+      if (activePointerId !== null && grabbedRow > 0) {
+        grabbedRow--;
+        const engine = getEngine();
+        if (engine && engine.touchGrab && engine.touchGrab.active) {
+          engine.touchGrab.row = grabbedRow;
+        }
+      }
+    });
+  }
+
   cvs.addEventListener('pointerdown', (e) => {
     if (e.cancelable) e.preventDefault();
     if (isExitConfirmOpen) return;
@@ -6133,12 +6261,16 @@ function bindBoardTouchInput(cvs, getEngine, getContinuousChecked, isSelf180Rota
     suppressTapOnUp = false;
     cursorMovedOnDown = false;
     grabConsumed = false;
+    lastDragDir = 0;
+    lastEdgeStepAt = 0;
     clearLongPressTimer();
+    stopEdgeDragTimer();
     try { cvs.setPointerCapture(e.pointerId); } catch (_) {}
     const pt = getCanvasCoordsFromPointer(cvs, e, isSelf180Rotated);
     initialCanvasX = pt.x; initialCanvasY = pt.y;
     lastCanvasX = pt.x;
     lastSwapCanvasX = pt.x;
+    lastPointerMoveX = pt.x;
 
     const renderer = typeof getRenderer === 'function' ? getRenderer() : null;
     const cols = engine.cols || COLS;
@@ -6199,11 +6331,17 @@ function bindBoardTouchInput(cvs, getEngine, getContinuousChecked, isSelf180Rota
     if (engine.is3D) {
       const cols = engine.cols || COLS_3D;
       const renderer = typeof getRenderer === 'function' ? getRenderer() : null;
+      const moveDeltaFromPrev = pt.x - lastPointerMoveX;
+      if (Math.abs(moveDeltaFromPrev) >= 2) {
+        lastDragDir = moveDeltaFromPrev > 0 ? 1 : -1;
+      }
+      lastPointerMoveX = pt.x;
 
       if (dragMode === 'pending_block') {
         const dxStart = pt.x - initialCanvasX;
         const dyStart = pt.y - initialCanvasY;
         if (Math.abs(dxStart) >= DRAG_THRESHOLD_PX) {
+          lastDragDir = dxStart > 0 ? 1 : -1;
           enter3DGrabMode(engine);
           lastSwapCanvasX = initialCanvasX;
         } else if (Math.abs(dyStart) >= 22) {
@@ -6221,16 +6359,52 @@ function bindBoardTouchInput(cvs, getEngine, getContinuousChecked, isSelf180Rota
         }
         const stepPx = 34;
         const diffPx = pt.x - lastCanvasX;
-        if (Math.abs(diffPx) < stepPx) return;
-        const steps = Math.trunc(diffPx / stepPx);
-        lastCanvasX += steps * stepPx;
-        engine.cursor.x = ((engine.cursor.x - steps) % cols + cols) % cols;
-        suppressTapOnUp = true;
-        SE.play('cursorMove');
+        if (Math.abs(diffPx) >= stepPx) {
+          const steps = Math.trunc(diffPx / stepPx);
+          lastCanvasX += steps * stepPx;
+          setFreeCameraMode();
+          engine.cursor.x = ((engine.cursor.x - steps) % cols + cols) % cols;
+          if (renderer && typeof renderer.shiftViewCol === 'function') {
+            renderer.shiftViewCol(engine, -steps);
+          }
+          suppressTapOnUp = true;
+          lastEdgeStepAt = performance.now();
+          SE.play('cursorMove');
+        }
+        if (getActiveEdgeDir(pt.x) !== 0) ensureEdgeDragTimer();
+        else stopEdgeDragTimer();
         return;
       }
 
       if (dragMode === 'swap') {
+        const edgeDir = getActiveEdgeDir(pt.x);
+        if (edgeDir !== 0) {
+          if (renderer && typeof renderer.getCellFromCanvasPoint === 'function') {
+            const cell = renderer.getCellFromCanvasPoint(engine, pt.x, pt.y);
+            const diff = ((cell.col - grabbedCol + cols * 1.5) % cols) - cols * 0.5;
+            if (edgeDir > 0 && diff > 0) {
+              const steps = Math.min(3, Math.round(diff));
+              for (let s = 0; s < steps; s++) {
+                if (!stepGrabSwap(1, false)) break;
+                lastSwapCanvasX = pt.x;
+                lastEdgeStepAt = performance.now();
+                if (!continuous) break;
+              }
+            } else if (edgeDir < 0 && diff < 0) {
+              const steps = Math.min(3, Math.round(-diff));
+              for (let s = 0; s < steps; s++) {
+                if (!stepGrabSwap(-1, false)) break;
+                lastSwapCanvasX = pt.x;
+                lastEdgeStepAt = performance.now();
+                if (!continuous) break;
+              }
+            }
+          }
+          ensureEdgeDragTimer();
+          return;
+        }
+
+        stopEdgeDragTimer();
         if (renderer && typeof renderer.getCellFromCanvasPoint === 'function') {
           const cell = renderer.getCellFromCanvasPoint(engine, pt.x, pt.y);
           const diff = ((cell.col - grabbedCol + cols * 1.5) % cols) - cols * 0.5;
@@ -6296,6 +6470,7 @@ function bindBoardTouchInput(cvs, getEngine, getContinuousChecked, isSelf180Rota
       const cols = engine.cols || COLS;
       const rows = engine.rows || ROWS;
       if (engine.is3D) {
+        setViewportCameraMode();
         if (downHasBlock) {
           if (startedInCursor) {
             engine.swap(engine.cursor.x, engine.cursor.y);
@@ -6339,6 +6514,57 @@ function bindBoardTouchInput(cvs, getEngine, getContinuousChecked, isSelf180Rota
   cvs.addEventListener('pointerup', (e) => endPointer(e, true));
   cvs.addEventListener('pointercancel', (e) => endPointer(e, false));
 
+  cvs.addEventListener('wheel', (e) => {
+    const engine = getEngine();
+    if (!engine || !engine.is3D) return;
+    if (e.cancelable) e.preventDefault();
+    if (isExitConfirmOpen || engine.endAnim || engine.gameOver || (isMatchOver && !isPracticeMode)) return;
+
+    const rawDelta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+    if (Math.abs(rawDelta) < 1) return;
+
+    const now = performance.now();
+    if (now - lastWheelResetAt > 240) {
+      wheelAccum = 0;
+    }
+    lastWheelResetAt = now;
+
+    let stepDir = 0;
+    if (Math.abs(rawDelta) >= 40) {
+      if (now - lastWheelStepAt < 45) return;
+      stepDir = rawDelta > 0 ? 1 : -1;
+      wheelAccum = 0;
+    } else {
+      wheelAccum += rawDelta;
+      if (Math.abs(wheelAccum) < 45) return;
+      if (now - lastWheelStepAt < 55) return;
+      stepDir = wheelAccum > 0 ? 1 : -1;
+      wheelAccum -= stepDir * 45;
+    }
+
+    lastWheelStepAt = now;
+    const renderer = typeof getRenderer === 'function' ? getRenderer() : null;
+    const cols = engine.cols || COLS_3D;
+
+    if (activePointerId !== null && dragMode === 'swap') {
+      if (stepGrabSwap(stepDir, true)) {
+        if (renderer && typeof renderer.shiftViewCol === 'function') {
+          renderer.shiftViewCol(engine, stepDir);
+        }
+        lastSwapCanvasX = lastPointerMoveX;
+        lastEdgeStepAt = now;
+      }
+      return;
+    }
+
+    setFreeCameraMode();
+    engine.cursor.x = ((engine.cursor.x + stepDir) % cols + cols) % cols;
+    if (renderer && typeof renderer.shiftViewCol === 'function') {
+      renderer.shiftViewCol(engine, stepDir);
+    }
+    SE.play('cursorMove');
+  }, { passive: false });
+
   return {
     isHoldingSwap: () => activePointerId !== null && dragMode === 'swap',
     stepGrabMove: (dir, isRepeatCall = false) => stepGrabSwap(dir, isRepeatCall)
@@ -6376,7 +6602,11 @@ function triggerRotateTouchStep(dir, isRepeatCall = false) {
     p1BoardTouchCtrl.stepGrabMove(dir, isRepeatCall);
     return;
   }
-  if (moveEngineCursorHoriz(myEngine, dir)) {
+  if (myEngine.is3D && myRenderer && typeof myRenderer.shiftViewCol === 'function') {
+    if (typeof myRenderer.setCameraMode === 'function') myRenderer.setCameraMode('free');
+    myRenderer.shiftViewCol(myEngine, dir);
+    SE.play('cursorMove');
+  } else if (moveEngineCursorHoriz(myEngine, dir)) {
     SE.play('cursorMove');
   }
 }
@@ -6620,10 +6850,10 @@ function setupInput() {
       exitGame(); return;
     }
     if (!myEngine || (isMatchOver && !isPracticeMode)) return;
-    handleKeyboardActionForPlayer(myEngine, playerConfigs[0].key, p1InputState, code, e.repeat, true, null, e);
+    handleKeyboardActionForPlayer(myEngine, playerConfigs[0].key, p1InputState, code, e.repeat, true, null, e, myRenderer);
     if (currentMode === 'local' || currentMode === 'share') {
       opponents.forEach(opp => {
-        if (opp.type === 'local_human' && opp.inputState) handleKeyboardActionForPlayer(opp.engine, playerConfigs[opp.playerSlotIndex].key, opp.inputState, code, e.repeat, false, opp, e);
+        if (opp.type === 'local_human' && opp.inputState) handleKeyboardActionForPlayer(opp.engine, playerConfigs[opp.playerSlotIndex].key, opp.inputState, code, e.repeat, false, opp, e, opp.renderer);
       });
     }
   });
@@ -6647,6 +6877,9 @@ function setupInput() {
   });
 }
 
+// ==========================================
+// [Part 2-B / 2] レイアウト計算・イベント初期化
+// ==========================================
 let useMobileLayoutInLandscape = localStorage.getItem('pdw_mobile_layout') === 'true';
 
 function toggleLandscapeLayout() {

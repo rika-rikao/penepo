@@ -1805,11 +1805,14 @@ function traceQuadPath(ctx, p0, p1, p2, p3) {
 // ① ブロック・お邪魔事前スプライト（オフスクリーンCanvas）キャッシュ
 // ==========================================
 const LIT_PRESETS = [
-  { sat: 1.00, val: 1.00, isNext: false }, // 0: 2D通常 / 3D正面中央
-  { sat: 0.92, val: 0.87, isNext: false }, // 1: 3D正面中間
-  { sat: 0.83, val: 0.72, isNext: false }, // 2: 3D正面端
-  { sat: 0.16, val: 0.45, isNext: true  }, // 3: 2D nextRow / 3D nextRow中央
-  { sat: 0.14, val: 0.34, isNext: true  }  // 4: 3D nextRow端
+  { sat: 1.00, val: 1.00, isNext: false, isBack: false }, // 0: 2D通常 / 3D正面中央
+  { sat: 0.92, val: 0.87, isNext: false, isBack: false }, // 1: 3D正面中間
+  { sat: 0.83, val: 0.72, isNext: false, isBack: false }, // 2: 3D正面端
+  { sat: 0.16, val: 0.45, isNext: true,  isBack: false }, // 3: 2D nextRow / 3D nextRow中央
+  { sat: 0.14, val: 0.34, isNext: true,  isBack: false }, // 4: 3D nextRow端
+  { sat: 0.76, val: 0.58, isNext: false, isBack: true  }, // 5: 3D背面浅め（元色味＋マーク有・細部装飾なし）
+  { sat: 0.66, val: 0.45, isNext: false, isBack: true  }, // 6: 3D背面深め（元色味＋マーク有・細部装飾なし）
+  { sat: 0.28, val: 0.30, isNext: true,  isBack: true  }  // 7: 3D背面 nextRow
 ];
 
 const PanelSpriteCache = new Map();
@@ -1817,7 +1820,11 @@ const GarbageBaseSpriteCache = new Map();
 const CylinderStaticCache = new Map();
 const CylinderOutlineCache = new Map();
 
-function getLightingBucket(cosT, isNextRow) {
+function getLightingBucket(cosT, isNextRow, isBack = false) {
+  if (isBack) {
+    if (isNextRow) return 7;
+    return cosT >= -0.65 ? 5 : 6;
+  }
   if (isNextRow) return cosT >= 0.78 ? 3 : 4;
   if (cosT >= 0.86) return 0;
   if (cosT >= 0.56) return 1;
@@ -1911,6 +1918,7 @@ function getPanelSprite(conf, gb, litIdx, isFlashing, withSymbol = true) {
   const satScale = preset.sat;
   const valScale = preset.val;
   const isNextRow = preset.isNext;
+  const isBack = !!preset.isBack;
   const gbStyle = gb ? (GB_BLOCK_PALETTE[conf.id] || GB_BLOCK_PALETTE[3]) : null;
 
   if (gb) {
@@ -1922,15 +1930,17 @@ function getPanelSprite(conf, gb, litIdx, isFlashing, withSymbol = true) {
     ctx.fill();
 
     if (!isFlashing) {
-      drawGbPatternOnSprite(ctx, bx, by, bw, bh, radius, gbStyle, valScale);
+      if (!isBack) {
+        drawGbPatternOnSprite(ctx, bx, by, bw, bh, radius, gbStyle, valScale);
+      }
       ctx.strokeStyle = dimHexColor(gbStyle.stroke, 0, valScale);
-      ctx.lineWidth = 2.0;
+      ctx.lineWidth = isBack ? 1.4 : 2.0;
       ctx.beginPath();
       ctx.roundRect(bx + 0.8, by + 0.8, bw - 1.6, bh - 1.6, Math.max(4, radius - 1));
       ctx.stroke();
     } else {
       ctx.strokeStyle = '#000000';
-      ctx.lineWidth = 2.4;
+      ctx.lineWidth = isBack ? 1.6 : 2.4;
       ctx.beginPath();
       ctx.roundRect(bx + 1, by + 1, bw - 2, bh - 2, radius);
       ctx.stroke();
@@ -1943,36 +1953,38 @@ function getPanelSprite(conf, gb, litIdx, isFlashing, withSymbol = true) {
     ctx.roundRect(bx, by, bw, bh, radius);
     ctx.fill();
 
-    if (!isFlashing) {
-      const topGrad = ctx.createLinearGradient(bx, by, bx, by + bh);
-      if (isNextRow) {
-        topGrad.addColorStop(0, 'rgba(255, 255, 255, 0.10)');
-        topGrad.addColorStop(0.5, 'rgba(0, 0, 0, 0.08)');
-        topGrad.addColorStop(1, 'rgba(0, 0, 0, 0.42)');
-      } else {
-        topGrad.addColorStop(0, 'rgba(255, 255, 255, 0.42)');
-        topGrad.addColorStop(0.42, 'rgba(255, 255, 255, 0.08)');
-        topGrad.addColorStop(0.55, 'rgba(0, 0, 0, 0.0)');
-        topGrad.addColorStop(1, 'rgba(0, 0, 0, 0.34)');
-      }
-      ctx.fillStyle = topGrad;
-      ctx.beginPath();
-      ctx.roundRect(bx, by, bw, bh, radius);
-      ctx.fill();
+    if (!isBack) {
+      if (!isFlashing) {
+        const topGrad = ctx.createLinearGradient(bx, by, bx, by + bh);
+        if (isNextRow) {
+          topGrad.addColorStop(0, 'rgba(255, 255, 255, 0.10)');
+          topGrad.addColorStop(0.5, 'rgba(0, 0, 0, 0.08)');
+          topGrad.addColorStop(1, 'rgba(0, 0, 0, 0.42)');
+        } else {
+          topGrad.addColorStop(0, 'rgba(255, 255, 255, 0.42)');
+          topGrad.addColorStop(0.42, 'rgba(255, 255, 255, 0.08)');
+          topGrad.addColorStop(0.55, 'rgba(0, 0, 0, 0.0)');
+          topGrad.addColorStop(1, 'rgba(0, 0, 0, 0.34)');
+        }
+        ctx.fillStyle = topGrad;
+        ctx.beginPath();
+        ctx.roundRect(bx, by, bw, bh, radius);
+        ctx.fill();
 
-      ctx.strokeStyle = isNextRow
-        ? 'rgba(255, 255, 255, 0.16)'
-        : (conf.isSpecial ? 'rgba(0, 0, 0, 0.25)' : 'rgba(255, 255, 255, 0.36)');
-      ctx.lineWidth = 1.25;
-      ctx.beginPath();
-      ctx.roundRect(bx + 1.5, by + 1.5, bw - 3, bh - 3, Math.max(4, radius - 2));
-      ctx.stroke();
-    } else {
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.roundRect(bx + 1, by + 1, bw - 2, bh - 2, radius);
-      ctx.stroke();
+        ctx.strokeStyle = isNextRow
+          ? 'rgba(255, 255, 255, 0.16)'
+          : (conf.isSpecial ? 'rgba(0, 0, 0, 0.25)' : 'rgba(255, 255, 255, 0.36)');
+        ctx.lineWidth = 1.25;
+        ctx.beginPath();
+        ctx.roundRect(bx + 1.5, by + 1.5, bw - 3, bh - 3, Math.max(4, radius - 2));
+        ctx.stroke();
+      } else {
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.roundRect(bx + 1, by + 1, bw - 2, bh - 2, radius);
+        ctx.stroke();
+      }
     }
   }
 
@@ -1986,7 +1998,7 @@ function getPanelSprite(conf, gb, litIdx, isFlashing, withSymbol = true) {
     if (gb) {
       if (!isFlashing) {
         const textVal = isNextRow ? Math.min(1, valScale + 0.07) : valScale;
-        if (gbStyle.pattern === 'inner_white_box') {
+        if (!isBack && gbStyle.pattern === 'inner_white_box') {
           ctx.lineJoin = 'round';
           ctx.lineWidth = 3.2;
           ctx.strokeStyle = dimHexColor(gbStyle.textStroke, 0, textVal);
@@ -1999,7 +2011,7 @@ function getPanelSprite(conf, gb, litIdx, isFlashing, withSymbol = true) {
         ctx.fillText(conf.symbol, cx, cy);
       }
     } else {
-      if (!isFlashing && !conf.isSpecial) {
+      if (!isBack && !isFlashing && !conf.isSpecial) {
         ctx.fillStyle = isNextRow ? 'rgba(0, 0, 0, 0.25)' : 'rgba(0, 0, 0, 0.45)';
         ctx.fillText(conf.symbol, cx, cy + 1.5);
       }
@@ -2033,6 +2045,7 @@ function getGarbageBaseSprite(isHard, gb, litIdx, isFlashing) {
   const satScale = preset.sat;
   const valScale = preset.val;
   const isNextRow = preset.isNext;
+  const isBack = !!preset.isBack;
 
   const rawFill = isFlashing
     ? '#ffffff'
@@ -2040,7 +2053,7 @@ function getGarbageBaseSprite(isHard, gb, litIdx, isFlashing) {
   ctx.fillStyle = dimHexColor(rawFill, isFlashing ? 0 : satScale, isFlashing ? Math.min(1, valScale + 0.1) : valScale);
   ctx.fillRect(0, 0, S, S);
 
-  if (!isFlashing) {
+  if (!isFlashing && !isBack) {
     if (gb) {
       ctx.fillStyle = isHard ? 'rgba(0, 0, 0, 0.16)' : 'rgba(255, 255, 255, 0.16)';
       for (let py = 3; py < S - 2; py += 4) {
@@ -2060,26 +2073,28 @@ function getGarbageBaseSprite(isHard, gb, litIdx, isFlashing) {
   }
 
   if (isHard) {
-    ctx.strokeStyle = gb ? dimHexColor('#111111', 0, valScale) : 'rgba(15, 15, 15, 0.45)';
-    ctx.lineWidth = 5;
-    ctx.beginPath();
-    ctx.moveTo(S * 0.25, S * 0.25);
-    ctx.lineTo(S * 0.75, S * 0.75);
-    ctx.moveTo(S * 0.75, S * 0.25);
-    ctx.lineTo(S * 0.25, S * 0.75);
-    ctx.stroke();
+    if (!isBack) {
+      ctx.strokeStyle = gb ? dimHexColor('#111111', 0, valScale) : 'rgba(15, 15, 15, 0.45)';
+      ctx.lineWidth = 5;
+      ctx.beginPath();
+      ctx.moveTo(S * 0.25, S * 0.25);
+      ctx.lineTo(S * 0.75, S * 0.75);
+      ctx.moveTo(S * 0.75, S * 0.25);
+      ctx.lineTo(S * 0.25, S * 0.75);
+      ctx.stroke();
+    }
 
     ctx.strokeStyle = gb
       ? dimHexColor('#ffffff', 0, Math.min(1, valScale + 0.07))
       : (isNextRow ? 'rgba(255, 255, 255, 0.25)' : 'rgba(255, 255, 255, 0.5)');
-    ctx.lineWidth = 2.4;
+    ctx.lineWidth = isBack ? 2.0 : 2.4;
     ctx.beginPath();
     ctx.moveTo(S * 0.25, S * 0.25);
     ctx.lineTo(S * 0.75, S * 0.75);
     ctx.moveTo(S * 0.75, S * 0.25);
     ctx.lineTo(S * 0.25, S * 0.75);
     ctx.stroke();
-  } else if (!gb) {
+  } else if (!gb && !isBack) {
     ctx.fillStyle = isNextRow ? 'rgba(255, 255, 255, 0.04)' : 'rgba(255, 255, 255, 0.1)';
     ctx.beginPath();
     ctx.arc(S / 2, S / 2, S / 4, 0, Math.PI * 2);
@@ -2090,7 +2105,7 @@ function getGarbageBaseSprite(isHard, gb, litIdx, isFlashing) {
   return cvs;
 }
 
-// --- 描画エンジン（2D & 3D円筒18列正面投影：スプライトキャッシュ・背面カリング＆簡略化・変形枠） ---
+// --- 描画エンジン（2D & 3D円筒18列正面投影：スプライトキャッシュ・背面カリング＆色味/マーク付軽量描画・変形枠） ---
 class BoardRenderer {
   constructor(canvasId) {
     this.canvas = document.getElementById(canvasId);
@@ -2321,9 +2336,9 @@ class BoardRenderer {
     return {
       isBack: true,
       cosT,
-      satScale: 0.28 - 0.14 * backDepth,
-      valScale: 0.38 - 0.14 * backDepth,
-      alpha: 0.76 - 0.16 * backDepth
+      satScale: 0.76 - 0.12 * backDepth,
+      valScale: 0.58 - 0.14 * backDepth,
+      alpha: 0.82 - 0.14 * backDepth
     };
   }
 
@@ -2632,17 +2647,23 @@ class BoardRenderer {
   }
 
   // ==========================================
-  // ①・④ 3D前面ブロック描画：事前スプライトのアフィン変換drawImage（clip()不要）
+  // ①・④ 3D前面/背面共用ブロック描画：事前スプライトのアフィン変換drawImage（左右反転自動補正対応）
   // ==========================================
   drawSpriteQuad3D(ctx, sprite, pLT, pRT, pRB, pLB, visRatio = 1.0, matchTimer = 0) {
     const S = CELL_PX;
-    const dx = pRT.x - pLT.x;
+    const flipX = pRT.x < pLT.x;
+    const leftTop = flipX ? pRT : pLT;
+    const rightTop = flipX ? pLT : pRT;
+    const leftBot = flipX ? pRB : pLB;
+    const rightBot = flipX ? pLB : pRB;
+
+    const dx = rightTop.x - leftTop.x;
     if (dx <= 0.4) return;
 
-    const hL = pLB.y - pLT.y;
-    const hR = pRB.y - pRT.y;
-    const yL_mid = (pLT.y + pLB.y) * 0.5;
-    const yR_mid = (pRT.y + pRB.y) * 0.5;
+    const hL = leftBot.y - leftTop.y;
+    const hR = rightBot.y - rightTop.y;
+    const yL_mid = (leftTop.y + leftBot.y) * 0.5;
+    const yR_mid = (rightTop.y + rightBot.y) * 0.5;
     const hAvg = (hL + hR) * 0.5;
     if (hAvg <= 0.4) return;
 
@@ -2650,7 +2671,7 @@ class BoardRenderer {
     const srcH = visRatio >= 0.999 ? S : Math.max(1, Math.min(S, S * visRatio));
 
     ctx.save();
-    ctx.transform(dx / S, (yR_mid - yL_mid) / S, 0, hAvg / S, pLT.x, yTopL);
+    ctx.transform(dx / S, (yR_mid - yL_mid) / S, 0, hAvg / S, leftTop.x, yTopL);
     if (matchTimer > 0 && matchTimer <= 12) {
       const expand = (12 - matchTimer) * 0.014;
       const off = S * expand * 0.5;
@@ -2663,7 +2684,7 @@ class BoardRenderer {
 
   drawPanelBlock3DFront(ctx, pLT, pRT, pRB, pLB, conf, cosT, isFlashing, bounceY = 0, matchTimer = 0, grayOut = false, visRatio = 1.0) {
     const gb = this.isGbActive();
-    const litIdx = getLightingBucket(cosT, grayOut);
+    const litIdx = getLightingBucket(cosT, grayOut, false);
     const hasBounce = !grayOut && visRatio >= 0.999 && Math.abs(bounceY) > 0.15;
     const sprite = getPanelSprite(conf, gb, litIdx, isFlashing, !hasBounce);
 
@@ -2717,7 +2738,7 @@ class BoardRenderer {
   drawGarbageCell3DFront(ctx, pLT, pRT, pRB, pLB, fRB, fLB, b, cosT, sameTop, sameBottom, sameLeft, sameRight, grayOut = false, visRatio = 1.0, isNextRow = false) {
     const isFlashing = (b.state === 'match' && Math.floor(b.timer / 4) % 2 === 0);
     const gb = this.isGbActive();
-    const litIdx = getLightingBucket(cosT, grayOut);
+    const litIdx = getLightingBucket(cosT, grayOut, false);
     const sprite = getGarbageBaseSprite(!!b.isHard, gb, litIdx, isFlashing);
 
     if (isNextRow) {
@@ -2750,63 +2771,60 @@ class BoardRenderer {
   }
 
   // ==========================================
-  // ② 3D背面ブロック（cosT < 0）超軽量簡略ポリゴン描画（文字・ツヤ・細部省略）
+  // ② 3D背面ブロック（cosT < 0）軽量オフスクリーンスプライト drawImage ベース描画
+  // （元の色味・マークあり / ツヤや細部装飾なし）
   // ==========================================
-  drawCell3DBackSimple(ctx, engine, r, c, b, pLT, pRT, pRB, pLB, lighting, isNextRow = false) {
+  drawCell3DBackSimple(ctx, engine, r, c, b, pLT, pRT, pRB, pLB, fRB, fLB, cosT, lighting, isNextRow = false, visRatio = 1.0) {
     const gb = this.isGbActive();
     const { satScale, valScale, alpha } = lighting;
-    const effVal = isNextRow ? valScale * 0.72 : valScale;
-    const effSat = isNextRow ? satScale * 0.3 : satScale;
 
     ctx.save();
     ctx.globalAlpha *= alpha;
 
     if (b.type === 'garbage') {
       const isFlashing = (b.state === 'match' && Math.floor(b.timer / 4) % 2 === 0);
-      const rawFill = b.state === 'purify_anim'
-        ? (gb ? '#a3a3a3' : '#4ecca3')
-        : (isFlashing ? '#ffffff' : (gb ? (b.isHard ? '#c8c8c8' : '#585858') : (b.isHard ? '#a8b2bd' : '#5c636a')));
-      ctx.fillStyle = dimHexColor(rawFill, effSat, effVal);
-      traceQuadPath(ctx, pLT, pRT, pRB, pLB);
-      ctx.fill();
+      if (b.state === 'purify_anim') {
+        const rawFill = gb ? '#a3a3a3' : '#4ecca3';
+        ctx.fillStyle = dimHexColor(rawFill, isNextRow ? satScale * 0.35 : satScale, isNextRow ? valScale * 0.65 : valScale);
+        traceQuadPath(ctx, pLT, pRT, pRB, pLB);
+        ctx.fill();
+      } else {
+        const litIdx = getLightingBucket(cosT, isNextRow, true);
+        const sprite = getGarbageBaseSprite(!!b.isHard, gb, litIdx, isFlashing);
+        if (isNextRow) {
+          this.drawSpriteQuad3D(ctx, sprite, pLT, pRT, fRB, fLB, visRatio, 0);
+        } else {
+          this.drawSpriteQuad3D(ctx, sprite, pLT, pRT, pRB, pLB, 1.0, 0);
+        }
 
-      const N = engine.cols;
-      const cLeft = (c - 1 + N) % N;
-      const cRight = (c + 1) % N;
-      const rowArr = isNextRow ? engine.nextRow : engine.grid[r];
-      const sameTop = !isNextRow && b.groupId && r > 0 && engine.grid[r - 1][c] && engine.grid[r - 1][c].groupId === b.groupId;
-      const sameBottom = !isNextRow && b.groupId && r < engine.rows - 1 && engine.grid[r + 1][c] && engine.grid[r + 1][c].groupId === b.groupId;
-      const sameLeft = !!(b.groupId && rowArr && rowArr[cLeft] && rowArr[cLeft].groupId === b.groupId);
-      const sameRight = !!(b.groupId && rowArr && rowArr[cRight] && rowArr[cRight].groupId === b.groupId);
-      if (!sameTop || (!sameBottom && !isNextRow) || !sameLeft || !sameRight) {
-        const rawBorder = gb ? (b.isHard ? '#111111' : '#f0f0f0') : '#dee2e6';
-        ctx.strokeStyle = dimHexColor(rawBorder, effSat, effVal * 0.9);
-        ctx.lineWidth = 1.0;
-        ctx.beginPath();
-        if (!sameTop) { ctx.moveTo(pLT.x, pLT.y); ctx.lineTo(pRT.x, pRT.y); }
-        if (!sameBottom && !isNextRow) { ctx.moveTo(pLB.x, pLB.y); ctx.lineTo(pRB.x, pRB.y); }
-        if (!sameLeft) { ctx.moveTo(pLT.x, pLT.y); ctx.lineTo(pLB.x, pLB.y); }
-        if (!sameRight) { ctx.moveTo(pRT.x, pRT.y); ctx.lineTo(pRB.x, pRB.y); }
-        ctx.stroke();
+        const N = engine.cols;
+        const cLeft = (c - 1 + N) % N;
+        const cRight = (c + 1) % N;
+        const rowArr = isNextRow ? engine.nextRow : engine.grid[r];
+        const sameTop = !isNextRow && b.groupId && r > 0 && engine.grid[r - 1][c] && engine.grid[r - 1][c].groupId === b.groupId;
+        const sameBottom = !isNextRow && b.groupId && r < engine.rows - 1 && engine.grid[r + 1][c] && engine.grid[r + 1][c].groupId === b.groupId;
+        const sameLeft = !!(b.groupId && rowArr && rowArr[cLeft] && rowArr[cLeft].groupId === b.groupId);
+        const sameRight = !!(b.groupId && rowArr && rowArr[cRight] && rowArr[cRight].groupId === b.groupId);
+        if (!sameTop || (!sameBottom && !isNextRow) || !sameLeft || !sameRight) {
+          const rawBorder = gb ? (b.isHard ? '#111111' : '#f0f0f0') : '#dee2e6';
+          const preset = LIT_PRESETS[litIdx] || LIT_PRESETS[5];
+          ctx.strokeStyle = dimHexColor(rawBorder, preset.sat, preset.val * 0.9);
+          ctx.lineWidth = 1.0;
+          ctx.beginPath();
+          if (!sameTop) { ctx.moveTo(pLT.x, pLT.y); ctx.lineTo(pRT.x, pRT.y); }
+          if (!sameBottom && !isNextRow) { ctx.moveTo(pLB.x, pLB.y); ctx.lineTo(pRB.x, pRB.y); }
+          if (!sameLeft) { ctx.moveTo(pLT.x, pLT.y); ctx.lineTo(pLB.x, pLB.y); }
+          if (!sameRight) { ctx.moveTo(pRT.x, pRT.y); ctx.lineTo(pRB.x, pRB.y); }
+          ctx.stroke();
+        }
       }
     } else {
       const conf = COLORS.find(item => item.id === b.type);
       if (conf) {
         const isFlashing = (b.state === 'match' && Math.floor(b.timer / 4) % 2 === 0);
-        let rawColor;
-        if (gb) {
-          const gbStyle = GB_BLOCK_PALETTE[conf.id] || GB_BLOCK_PALETTE[3];
-          rawColor = isFlashing ? '#ffffff' : gbStyle.bg;
-        } else {
-          rawColor = isFlashing ? '#94a3b8' : conf.bg;
-        }
-        ctx.fillStyle = dimHexColor(rawColor, effSat, effVal);
-        traceQuadPath(ctx, pLT, pRT, pRB, pLB);
-        ctx.fill();
-
-        ctx.strokeStyle = 'rgba(0, 0, 0, 0.38)';
-        ctx.lineWidth = 0.8;
-        ctx.stroke();
+        const litIdx = getLightingBucket(cosT, isNextRow, true);
+        const sprite = getPanelSprite(conf, gb, litIdx, isFlashing, true);
+        this.drawSpriteQuad3D(ctx, sprite, pLT, pRT, isNextRow ? fRB : pRB, isNextRow ? fLB : pLB, visRatio, 0);
       }
     }
     ctx.restore();
@@ -3030,10 +3048,12 @@ class BoardRenderer {
     backItems.sort(sortPainterOrder);
     frontItems.sort(sortPainterOrder);
 
-    // ② 前面ブロックによる背面カリング＆簡略ポリゴン描画
+    const nextRowVisRatio = Math.max(0.01, Math.min(1, offsetY / CELL_PX));
+
+    // ② 前面ブロックによる背面カリング＆色味・マーク付き軽量スプライトdrawImage描画
     const frontCoverCols = this.buildFrontCoverColumns(engine, metrics, vCol, offsetY);
     for (let i = 0; i < backItems.length; i++) {
-      const { r, c, b, thetaC, isNextRow } = backItems[i];
+      const { r, c, b, thetaC, cosT, isNextRow } = backItems[i];
       const thetaL = thetaC - dTheta * 0.5;
       const thetaR = thetaC + dTheta * 0.5;
       const cosL = Math.cos(thetaL);
@@ -3056,8 +3076,18 @@ class BoardRenderer {
 
       if (this.isBackQuadOccluded(frontCoverCols, bxL, bxR, byTop, byBot)) continue;
 
+      let fRB = pRB;
+      let fLB = pLB;
+      if (isNextRow) {
+        const rowYBotFull = rowYTop + CELL_PX;
+        fRB = this.project3DPoint(metrics, thetaR, rowYBotFull);
+        fLB = this.project3DPoint(metrics, thetaL, rowYBotFull);
+      }
+
+      const cellVisRatio = isNextRow ? nextRowVisRatio : 1.0;
+      const effNext = isNextRow && grayOutNextRow;
       const lighting = this.getBlockLighting(thetaC);
-      this.drawCell3DBackSimple(ctx, engine, r, c, b, pLT, pRT, pRB, pLB, lighting, isNextRow && grayOutNextRow);
+      this.drawCell3DBackSimple(ctx, engine, r, c, b, pLT, pRT, pRB, pLB, fRB, fLB, cosT, lighting, effNext, cellVisRatio);
     }
 
     // ③ キャッシュされた内部ベール＋前面上下リング＋動的縦線
@@ -3065,7 +3095,6 @@ class BoardRenderer {
     this.drawCylinderVerticalWires(ctx, metrics, vCol, true);
 
     // ①・④ 前面ブロック描画（通常ブロックは1.0、nextRowのみvisRatioで切り抜き）
-    const nextRowVisRatio = Math.max(0.01, Math.min(1, offsetY / CELL_PX));
     for (let i = 0; i < frontItems.length; i++) {
       const { r, c, b, thetaC, cosT, isNextRow } = frontItems[i];
       const thetaL = thetaC - dTheta * 0.5;

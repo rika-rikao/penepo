@@ -189,22 +189,334 @@ function resolveOppIs3DForMode(mode, oppIndex) {
 }
 
 // ==========================================
-// PCどの倍率でも150%相当のレイアウトになる動的スケール計算
+// PCどの倍率でも150%相当のレイアウトになる動的スケール計算 & メニュー/バトル独立倍率
 // ==========================================
 function updateResponsiveUiZoom() {
   const W = window.innerWidth || 1024;
   const H = window.innerHeight || 768;
   const isPortrait = H >= W;
-  let zoom = 1.0;
+  let baseZoom = 1.0;
 
   if (!isPortrait && W >= 1020 && H >= 640) {
-    zoom = Math.min(1.65, Math.max(1.0, Math.min(W / 1260, H / 710)));
+    baseZoom = Math.min(1.65, Math.max(1.0, Math.min(W / 1260, H / 710)));
   } else if (isPortrait && W >= 720 && H >= 960) {
-    zoom = Math.min(1.35, Math.max(1.0, Math.min(W / 680, H / 960)));
+    baseZoom = Math.min(1.35, Math.max(1.0, Math.min(W / 680, H / 960)));
   }
-  zoom = Math.round(zoom * 100) / 100;
-  document.documentElement.style.setProperty('--ui-pc-zoom', String(zoom));
-  return zoom;
+  baseZoom = Math.round(baseZoom * 100) / 100;
+  const mFactor = (typeof userMenuScale === 'number' && userMenuScale > 0) ? userMenuScale : 1.0;
+  const menuZoom = Math.round(Math.max(0.5, Math.min(2.6, baseZoom * mFactor)) * 100) / 100;
+
+  document.documentElement.style.setProperty('--ui-pc-zoom', String(baseZoom));
+  document.documentElement.style.setProperty('--ui-menu-zoom', String(menuZoom));
+  return baseZoom;
+}
+
+// ==========================================
+// メニュー / 疑似バトル 全画面表示倍率プレビュー制御
+// ==========================================
+let isLayoutPreviewMode = false;
+let activeLayoutPreviewType = null; // 'menu' | 'battle' | null
+let previewBattleCount = 2;
+let previewPrevFocusEl = null;
+let previewSavedState = null;
+
+function syncLayoutPreviewBarUI() {
+  const slider = document.getElementById('layout-preview-slider');
+  const valEl = document.getElementById('layout-preview-val');
+  const titleEl = document.getElementById('layout-preview-title');
+  const cntGroup = document.getElementById('layout-preview-count-group');
+  const isBattle = (activeLayoutPreviewType === 'battle');
+  const curVal = isBattle
+    ? (typeof userBattleScale === 'number' ? userBattleScale : 1.0)
+    : (typeof userMenuScale === 'number' ? userMenuScale : 1.0);
+
+  if (titleEl) {
+    titleEl.innerText = isBattle ? '🎮 疑似バトル全画面プレビュー' : '🖥️ メニュー拡大率プレビュー';
+  }
+  if (cntGroup) {
+    cntGroup.style.display = isBattle ? 'flex' : 'none';
+    cntGroup.querySelectorAll('.layout-preview-cnt-btn').forEach(btn => {
+      btn.classList.toggle('active', parseInt(btn.dataset.cnt, 10) === previewBattleCount);
+    });
+  }
+  if (slider) slider.value = String(curVal);
+  if (valEl) valEl.innerText = `${Math.round(curVal * 100)}%`;
+}
+
+function onLayoutPreviewSliderInput(val) {
+  if (activeLayoutPreviewType === 'battle') {
+    if (typeof onBattleScaleChange === 'function') onBattleScaleChange(val);
+  } else if (activeLayoutPreviewType === 'menu') {
+    if (typeof onMenuScaleChange === 'function') onMenuScaleChange(val);
+  }
+  syncLayoutPreviewBarUI();
+}
+
+function resetActiveLayoutPreviewScale() {
+  if (activeLayoutPreviewType === 'battle') {
+    if (typeof resetBattleScale === 'function') resetBattleScale();
+  } else if (activeLayoutPreviewType === 'menu') {
+    if (typeof resetMenuScale === 'function') resetMenuScale();
+  }
+  syncLayoutPreviewBarUI();
+}
+
+function openMenuScalePreview() {
+  if (isLayoutPreviewMode) return;
+  SE.play('select');
+  if (typeof clearSliderAdjusting === 'function') clearSliderAdjusting();
+  if (typeof closeRangeDigitEdit === 'function') closeRangeDigitEdit();
+
+  previewPrevFocusEl = document.activeElement;
+  isLayoutPreviewMode = true;
+  activeLayoutPreviewType = 'menu';
+
+  const settingsOverlay = document.getElementById('settings-overlay');
+  if (settingsOverlay) settingsOverlay.style.display = 'none';
+  if (typeof updateVerticalBottomNav === 'function') updateVerticalBottomNav();
+  if (typeof refreshMenuLayoutState === 'function') refreshMenuLayoutState(false);
+
+  const previewOverlay = document.getElementById('layout-preview-overlay');
+  if (previewOverlay) {
+    previewOverlay.style.display = 'block';
+    syncLayoutPreviewBarUI();
+    const slider = document.getElementById('layout-preview-slider');
+    if (typeof enhanceRangeSlider === 'function' && slider) enhanceRangeSlider(slider);
+    if (slider) requestAnimationFrame(() => slider.focus());
+  }
+  if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(180);
+}
+
+function setBattlePreviewCount(cnt) {
+  const nextCnt = [1, 2, 4].includes(cnt) ? cnt : 2;
+  if (previewBattleCount !== nextCnt) SE.play('select');
+  previewBattleCount = nextCnt;
+  syncLayoutPreviewBarUI();
+  if (isLayoutPreviewMode && activeLayoutPreviewType === 'battle') {
+    setupBattlePreviewBoards(previewBattleCount);
+  }
+}
+
+function setupBattlePreviewBoards(totalPlayers) {
+  removeInlinePlayerPortraits();
+  cleanupShareDomZones();
+
+  currentMode = totalPlayers === 1 ? 'single_free' : 'com';
+  currentComLevel = 10;
+  currentTotalPlayers = totalPlayers;
+  currentSkillEnabled = (totalPlayers >= 2);
+  currentCustomSkillEnabled = true;
+  isMatchOver = false;
+  isDeadInMatch = false;
+  isPracticeMode = false;
+  matchState = 'ready';
+  myTargetIndex = totalPlayers >= 2 ? 0 : -1;
+
+  const myWrapper = document.getElementById('my-wrapper');
+  if (myWrapper) myWrapper.classList.remove('sacrifice-aura');
+
+  const resolvedCharId = resolvePlayableCharId(selectedCharId);
+  const myIs3D = resolveSelfIs3DForMode(currentMode);
+
+  myRenderer = new BoardRenderer('my-canvas');
+  myRenderer.theme = buildThemeForCharacter(
+    resolvedCharId,
+    (resolvedCharId === 'custom' && CustomAssets.chara) ? CustomAssets.chara.dataUrl : null,
+    true,
+    resolvedCharId === 'custom' ? getPlayerDisplayName() : null
+  );
+  if (typeof applyBoardFrame === 'function') applyBoardFrame('my-wrapper', null);
+  if (typeof applyGlobalFrameTheme === 'function') applyGlobalFrameTheme(myRenderer.theme.frameSrc);
+
+  myEngine = new PonEngine(null, null, 3, true, 24680, { is3D: myIs3D });
+  myEngine.garbageQueue = [{ w: myIs3D ? 18 : 6, h: 1, delay: 150, isHard: false }];
+
+  const plLabel = document.getElementById('player-label');
+  if (plLabel) plLabel.innerText = myRenderer.theme.name;
+  const tLabel = document.getElementById('timer-label');
+  if (tLabel) tLabel.innerText = '01:23';
+  const sLabel = document.getElementById('score-label');
+  if (sLabel) sLabel.innerText = 'SCORE: 1200 | CHAIN: 2';
+
+  initPlayerSkillState(currentSkillEnabled, selectedPlayerSkill, true, selectedFallbackSkill);
+
+  const rivalsArea = document.getElementById('rivals-area');
+  const rivalsTopArea = document.getElementById('rivals-top-area');
+  if (rivalsArea) rivalsArea.innerHTML = '';
+  if (rivalsTopArea) rivalsTopArea.innerHTML = '';
+  opponents = [];
+
+  const rivalPool = CHARACTERS.filter(c => c.id !== resolvedCharId);
+  for (let i = 0; i < totalPlayers - 1; i++) {
+    const oppChar = rivalPool[i % rivalPool.length] || CHARACTERS[0];
+    const wrapper = document.createElement('div');
+    wrapper.className = 'board-wrapper rival-board com-board';
+    wrapper.id = `rival-wrapper-${i}`;
+    wrapper.innerHTML = `
+      <div class="garbage-preview-box">
+        <span class="preview-label">予告</span>
+        <div id="rival-garbage-preview-${i}" class="preview-list"></div>
+        <span id="rival-skill-badge-${i}" class="skill-count-badge" style="display:none;"></span>
+      </div>
+      <div class="board-header">
+        <span style="color:${oppChar.color};">${oppChar.name} (COM) <span class="target-badge">🎯 TARGET</span></span>
+        <span id="rival-score-label-${i}">SCORE: 900</span>
+      </div>
+      <div class="canvas-container"><canvas id="rival-canvas-${i}"></canvas></div>`;
+    if (rivalsArea) rivalsArea.appendChild(wrapper);
+
+    const rRenderer = new BoardRenderer(`rival-canvas-${i}`);
+    rRenderer.theme = buildThemeForCharacter(oppChar.id, null, false);
+    if (typeof applyBoardFrame === 'function') applyBoardFrame(`rival-wrapper-${i}`, rRenderer.theme.frameSrc);
+
+    const oppIs3D = resolveOppIs3DForMode(currentMode, i);
+    const rEngine = new PonEngine(null, null, 3, false, 24680 + i + 1, { is3D: oppIs3D });
+    rEngine.garbageQueue = [{ w: oppIs3D ? 18 : 6, h: 1, delay: 150, isHard: false }];
+
+    const oppObj = {
+      id: `preview_com_${i}`,
+      name: `${oppChar.name} (COM)`,
+      type: 'com',
+      level: 10,
+      engine: rEngine,
+      renderer: rRenderer,
+      ai: null,
+      syncedSkillRemaining: 3,
+      index: i
+    };
+    opponents.push(oppObj);
+    updateRivalSkillBadge(oppObj, i);
+  }
+
+  redrawBattlePreviewBoards();
+  updateGarbagePreview(myEngine, 'my-garbage-preview');
+  opponents.forEach((opp, i) => updateGarbagePreview(opp.engine, `rival-garbage-preview-${i}`));
+  updateTargetUI();
+  updateSkillButtonUI();
+  adjustLayout();
+}
+
+function redrawBattlePreviewBoards() {
+  if (!isLayoutPreviewMode || activeLayoutPreviewType !== 'battle') return;
+  if (myEngine && myRenderer) myRenderer.draw(myEngine);
+  opponents.forEach(opp => {
+    if (opp.engine && opp.renderer) opp.renderer.draw(opp.engine);
+  });
+}
+
+function openBattleScalePreview(playerCount = null) {
+  if (isLayoutPreviewMode) return;
+  SE.play('select');
+  if (typeof clearSliderAdjusting === 'function') clearSliderAdjusting();
+  if (typeof closeRangeDigitEdit === 'function') closeRangeDigitEdit();
+
+  previewPrevFocusEl = document.activeElement;
+  previewSavedState = {
+    mode: currentMode,
+    comLevel: currentComLevel,
+    totalPlayers: currentTotalPlayers,
+    skillEnabled: currentSkillEnabled,
+    customSkillEnabled: currentCustomSkillEnabled,
+    matchState
+  };
+
+  isLayoutPreviewMode = true;
+  activeLayoutPreviewType = 'battle';
+  if (playerCount !== null) previewBattleCount = playerCount;
+
+  const settingsOverlay = document.getElementById('settings-overlay');
+  const menuOverlay = document.getElementById('menu-overlay');
+  const gameArea = document.getElementById('game-area');
+  if (settingsOverlay) settingsOverlay.style.display = 'none';
+  if (menuOverlay) {
+    menuOverlay.classList.add('battle-preview-hidden');
+    menuOverlay.classList.remove('switch-hub-active', 'vertical-hub-active');
+    menuOverlay.style.display = 'none';
+  }
+  if (gameArea) gameArea.style.display = 'flex';
+  if (typeof updateVerticalBottomNav === 'function') updateVerticalBottomNav();
+
+  setupBattlePreviewBoards(previewBattleCount);
+
+  const previewOverlay = document.getElementById('layout-preview-overlay');
+  if (previewOverlay) {
+    previewOverlay.style.display = 'block';
+    syncLayoutPreviewBarUI();
+    const slider = document.getElementById('layout-preview-slider');
+    if (typeof enhanceRangeSlider === 'function' && slider) enhanceRangeSlider(slider);
+    if (slider) requestAnimationFrame(() => slider.focus());
+  }
+  if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(180);
+}
+
+function closeLayoutPreview(silent = false) {
+  if (!isLayoutPreviewMode) return;
+  const prevType = activeLayoutPreviewType;
+  isLayoutPreviewMode = false;
+  activeLayoutPreviewType = null;
+
+  if (typeof clearSliderAdjusting === 'function') clearSliderAdjusting();
+  if (typeof closeRangeDigitEdit === 'function') closeRangeDigitEdit();
+
+  const previewOverlay = document.getElementById('layout-preview-overlay');
+  if (previewOverlay) previewOverlay.style.display = 'none';
+
+  if (prevType === 'battle') {
+    removeInlinePlayerPortraits();
+    cleanupShareDomZones();
+    resetBattleLayoutStyles();
+    document.getElementById('my-wrapper')?.classList.remove('sacrifice-aura');
+    if (typeof applyBoardFrame === 'function') applyBoardFrame('my-wrapper', null);
+    if (typeof applyGlobalFrameTheme === 'function') {
+      applyGlobalFrameTheme(typeof CustomAssets !== 'undefined' && CustomAssets.frame ? CustomAssets.frame.dataUrl : null);
+    }
+    const p1Card = document.getElementById('battle-side-p1');
+    const p2Card = document.getElementById('battle-side-p2');
+    const bottomBar = document.getElementById('battle-bottom-status-bar');
+    const skillBtn = document.getElementById('skill-btn');
+    if (p1Card) p1Card.style.display = 'none';
+    if (p2Card) p2Card.style.display = 'none';
+    if (bottomBar) bottomBar.style.display = 'none';
+    if (skillBtn) skillBtn.style.display = 'none';
+
+    myEngine = null;
+    myRenderer = null;
+    opponents = [];
+
+    if (previewSavedState) {
+      currentMode = previewSavedState.mode;
+      currentComLevel = previewSavedState.comLevel;
+      currentTotalPlayers = previewSavedState.totalPlayers;
+      currentSkillEnabled = previewSavedState.skillEnabled;
+      currentCustomSkillEnabled = previewSavedState.customSkillEnabled;
+      matchState = previewSavedState.matchState;
+      previewSavedState = null;
+    }
+
+    document.getElementById('game-area').style.display = 'none';
+    const menuOverlay = document.getElementById('menu-overlay');
+    if (menuOverlay) {
+      menuOverlay.classList.remove('battle-preview-hidden');
+      menuOverlay.style.display = 'flex';
+    }
+  }
+
+  const settingsOverlay = document.getElementById('settings-overlay');
+  if (settingsOverlay && !silent) {
+    settingsOverlay.style.display = 'block';
+    if (typeof selectSettingsTab === 'function') selectSettingsTab('visual');
+  }
+  if (typeof updateVerticalBottomNav === 'function') updateVerticalBottomNav();
+  if (typeof refreshMenuLayoutState === 'function') refreshMenuLayoutState(false);
+
+  if (!silent) {
+    SE.play('cancel');
+    if (previewPrevFocusEl && document.body.contains(previewPrevFocusEl)) {
+      requestAnimationFrame(() => previewPrevFocusEl.focus());
+    }
+  }
+  previewPrevFocusEl = null;
+  if (typeof syncPadSnapshotsAll === 'function') syncPadSnapshotsAll(180);
 }
 
 // ==========================================
@@ -825,6 +1137,10 @@ function handleMenuStartAction() {
     closePwaGuideModal();
     return true;
   }
+  if (isElementActuallyVisible('layout-preview-overlay')) {
+    closeLayoutPreview();
+    return true;
+  }
   if (isElementActuallyVisible('custom-skill-modal')) {
     saveCurrentCustomSkillSlot();
     return true;
@@ -1020,6 +1336,17 @@ function refreshMenuLayoutState(rerollHubChar = false) {
   updateResponsiveUiZoom();
   const menuOverlay = document.getElementById('menu-overlay');
   if (!menuOverlay) return;
+
+  if (
+    menuOverlay.style.display === 'none' ||
+    menuOverlay.classList.contains('battle-preview-hidden') ||
+    (isLayoutPreviewMode && activeLayoutPreviewType === 'battle')
+  ) {
+    menuOverlay.classList.remove('switch-hub-active', 'vertical-hub-active');
+    updateVerticalBottomNav();
+    return;
+  }
+
   const isPortrait = window.innerHeight >= window.innerWidth;
   const isLandscape = !isPortrait;
   const isSwitchLandscape = isLandscape && window.innerWidth >= 560;
@@ -2828,6 +3155,10 @@ function handleMenuCancelAction() {
   }
   if (isElementActuallyVisible('select-picker-modal')) {
     if (typeof closeSelectPickerModal === 'function') closeSelectPickerModal();
+    return true;
+  }
+  if (isElementActuallyVisible('layout-preview-overlay')) {
+    closeLayoutPreview();
     return true;
   }
   if (isElementActuallyVisible('custom-skill-modal')) {
@@ -5093,6 +5424,10 @@ function cleanupShareDomZones() {
 }
 
 function exitGame(silent = false) {
+  if (isLayoutPreviewMode) {
+    closeLayoutPreview(silent);
+    return;
+  }
   if (!silent && myEngine && !isMatchOver && !isPracticeMode && !myEngine.gameOver) {
     openExitConfirmModal();
     return;
@@ -6798,6 +7133,7 @@ function setupInput() {
     const isCustomSkillModalVisible = isElementActuallyVisible('custom-skill-modal');
     const isConfirmModalVisible = isElementActuallyVisible('confirm-match-modal');
     const isSelectPickerVisible = isElementActuallyVisible('select-picker-modal');
+    const isLayoutPreviewVisible = isElementActuallyVisible('layout-preview-overlay');
     const isExitConfirmVisible = isElementActuallyVisible('exit-confirm-modal');
     const isAppExitConfirmVisible = isElementActuallyVisible('app-exit-confirm-modal');
     const isAppTerminatedVisible = isElementActuallyVisible('app-terminated-overlay');
@@ -6813,7 +7149,7 @@ function setupInput() {
       return;
     }
 
-    if (!isGameVisible || isResultVisible || isSettingsVisible || isSettingsConfirmVisible || isSkillModalVisible || isCustomSkillModalVisible || isConfirmModalVisible || isSelectPickerVisible || isExitConfirmVisible || isAppExitConfirmVisible || isAppTerminatedVisible || isKeyResetConfirmVisible || isPwaGuideVisible) {
+    if (!isGameVisible || isResultVisible || isSettingsVisible || isSettingsConfirmVisible || isSkillModalVisible || isCustomSkillModalVisible || isConfirmModalVisible || isSelectPickerVisible || isLayoutPreviewVisible || isExitConfirmVisible || isAppExitConfirmVisible || isAppTerminatedVisible || isKeyResetConfirmVisible || isPwaGuideVisible) {
       const tag = document.activeElement?.tagName;
       const isTextInput = tag === 'INPUT' && document.activeElement?.type === 'text';
       const isLocalMenuOpen = isElementActuallyVisible('local-menu');
@@ -6822,6 +7158,7 @@ function setupInput() {
                        || isCustomSkillModalVisible
                        || isConfirmModalVisible
                        || isSelectPickerVisible
+                       || isLayoutPreviewVisible
                        || isExitConfirmVisible
                        || isAppExitConfirmVisible
                        || isAppTerminatedVisible
@@ -7110,6 +7447,7 @@ function ensureShareSizerBox(parentZone, sizerId, childEl, orderNum) {
 function adjustLayout() {
   updateShareForcePortraitClass();
   const uiZoom = updateResponsiveUiZoom();
+  const battleScaleFactor = (typeof userBattleScale === 'number' && userBattleScale > 0) ? userBattleScale : 1.0;
   const exitZoom = Math.min(uiZoom, 1.35);
   const topSafeExitPx = Math.round(48 * exitZoom);
 
@@ -7186,7 +7524,8 @@ function adjustLayout() {
     const p2CtrlH = p2Controls ? Math.max(160, p2Controls.offsetHeight || 180) : 180;
     const baseTotalW = 224 + 110 + 10;
     const availHalfH = Math.max(140, halfH - homeBarGuardPx - 14);
-    const scale = Math.max(0.30, Math.min(2.0, availHalfH / baseBoardH, (effW - 14) / baseTotalW));
+    const baseScale = Math.min(2.0, availHalfH / baseBoardH, (effW - 14) / baseTotalW);
+    const scale = Math.max(0.30, Math.min(2.0 * battleScaleFactor, baseScale * battleScaleFactor));
 
     myWrapper.style.transform = `scale(${scale})`;
     p1BoardSizer.style.width = `${Math.round(224 * scale)}px`;
@@ -7222,7 +7561,7 @@ function adjustLayout() {
   }
 
   const isLandscapeLarge = !isPortrait && !useMobileLayoutInLandscape;
-  const maxDynamicScale = 2.2;
+  const maxDynamicScale = 2.2 * battleScaleFactor;
   const isGameShown = gameArea.style.display !== 'none';
   const showBottomBar = isGameShown && (isPortrait || useMobileLayoutInLandscape) && currentMode !== 'local';
 
@@ -7259,7 +7598,8 @@ function adjustLayout() {
     const baseTotalW = totalPlayers * baseW + totalPortraits * portraitW + Math.max(0, itemCount - 1) * gapPx;
     const localTopPad = Math.max(48, topSafeExitPx + 6);
 
-    const scale = Math.max(0.28, Math.min(maxDynamicScale, (effW - 22) / baseTotalW, (effH - localTopPad - 12) / baseH));
+    const baseScale = Math.min(2.2, (effW - 22) / baseTotalW, (effH - localTopPad - 12) / baseH);
+    const scale = Math.max(0.28, Math.min(maxDynamicScale, baseScale * battleScaleFactor));
     gameContainer.style.cssText = `position:relative;width:100%;height:100%;display:flex;flex-direction:row;flex-wrap:nowrap;align-items:center;align-content:center;justify-content:center;gap:${gapPx}px;padding:${localTopPad}px 8px 10px 8px;`;
 
     const mx = (baseW - baseW * scale) / -2, my = (baseH - baseH * scale) / -2;
@@ -7320,7 +7660,8 @@ function adjustLayout() {
 
       const availW = Math.max(300, W - 24);
       const availH = Math.max(220, H - topSafeExitPx - 16);
-      const scale = Math.max(0.28, Math.min(maxDynamicScale, availW / totalBaseW, availH / baseBoardH));
+      const baseScale = Math.min(2.2, availW / totalBaseW, availH / baseBoardH);
+      const scale = Math.max(0.28, Math.min(maxDynamicScale, baseScale * battleScaleFactor));
 
       rivalsArea.style.display = 'contents';
       gameContainer.style.cssText = `position:relative;width:100%;height:100%;display:flex;flex-direction:row;flex-wrap:nowrap;align-items:center;justify-content:center;gap:${gapPx}px;padding:${topSafeExitPx + 2}px 10px 14px 10px;`;
@@ -7383,7 +7724,8 @@ function adjustLayout() {
     const baseBoardW = 224, baseBoardH = 536, ctrlW = 110;
     const availableW = Math.max(240, W - sideMargin * 2 - 14);
     const availableH = Math.max(240, H - topSafeExitPx - 24);
-    const myScale = Math.max(0.4, Math.min(maxDynamicScale, availableH / baseBoardH, availableW / (baseBoardW + ctrlW + 14)));
+    const baseScale = Math.min(2.2, availableH / baseBoardH, availableW / (baseBoardW + ctrlW + 14));
+    const myScale = Math.max(0.4, Math.min(maxDynamicScale, baseScale * battleScaleFactor));
 
     myWrapper.style.transformOrigin = 'center';
     myWrapper.style.transform = `scale(${myScale})`;
@@ -7433,7 +7775,8 @@ function adjustLayout() {
     const ctrlBaseH = applyVerticalControlsSpacing(controls, 536, rivalUsedH, false);
     const baseBoardH = Math.max(536, ctrlBaseH);
     const availH = Math.max(220, H - topReserve - bottomReserve - 8), contentW = 344;
-    const myScale = Math.max(0.4, Math.min(maxDynamicScale, availH / baseBoardH, (W - 14) / contentW));
+    const baseScale = Math.min(2.2, availH / baseBoardH, (W - 14) / contentW);
+    const myScale = Math.max(0.4, Math.min(maxDynamicScale, baseScale * battleScaleFactor));
     myWrapper.style.transform = `scale(${myScale})`; controls.style.transform = `scale(${myScale})`;
     myWrapper.style.transformOrigin = 'center'; controls.style.transformOrigin = 'center';
     const boardMx = (224 - 224 * myScale) / -2, ctrlMx = (110 - 110 * myScale) / -2;
@@ -7470,7 +7813,8 @@ function adjustLayout() {
     gameContainer.style.cssText = `display:flex;flex-direction:${isLeft ? 'row' : 'row-reverse'};align-items:center;justify-content:center;position:absolute;top:${maxTopH + 8}px;left:0;width:100vw;height:${H - maxTopH - 8 - bottomReserve}px;padding:0;gap:10px;`;
     const maxCenterH = Math.max(200, H - maxTopH - 18 - bottomReserve), contentW = 344;
     const baseBoardH = Math.max(536, ctrlBaseH);
-    const myScale = Math.max(0.32, Math.min(maxDynamicScale, maxCenterH / baseBoardH, (W - 14) / contentW));
+    const baseScale = Math.min(2.2, maxCenterH / baseBoardH, (W - 14) / contentW);
+    const myScale = Math.max(0.32, Math.min(maxDynamicScale, baseScale * battleScaleFactor));
     myWrapper.style.transform = `scale(${myScale})`; controls.style.transform = `scale(${myScale})`;
     myWrapper.style.transformOrigin = 'center'; controls.style.transformOrigin = 'center';
     myWrapper.style.margin = `${(536 - 536 * myScale) / -2}px ${(224 - 224 * myScale) / -2}px`;
@@ -7497,6 +7841,9 @@ function toggleHandedness() {
 function handleWindowLayoutChange() {
   updateResponsiveUiZoom();
   adjustLayout();
+  if (isLayoutPreviewMode && activeLayoutPreviewType === 'battle') {
+    redrawBattlePreviewBoards();
+  }
   refreshMenuLayoutState(false);
 }
 

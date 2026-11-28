@@ -7,6 +7,8 @@ let serverUpdateCheckPromise = null;
 
 let isSwapVibrateEnabled = (localStorage.getItem('pdw_swap_vibrate') !== 'false');
 let isGbMode = (localStorage.getItem('pdw_gb_mode') === 'true');
+let userMenuScale = Math.max(0.7, Math.min(1.4, parseFloat(localStorage.getItem('pdw_menu_scale')) || 1.0));
+let userBattleScale = Math.max(0.7, Math.min(1.4, parseFloat(localStorage.getItem('pdw_battle_scale')) || 1.0));
 let isAppExiting = false;
 const padVibrateResetTimers = {};
 const lastVibrateAtByKind = { swap: 0, confirm: 0, garbage: 0 };
@@ -91,6 +93,37 @@ function onGbModeToggle(checked) {
   if (typeof SE !== 'undefined') SE.play('select');
 }
 
+function clampUserUiScale(val) {
+  const num = parseFloat(val);
+  if (Number.isNaN(num)) return 1.0;
+  return Math.round(Math.max(0.7, Math.min(1.4, num)) * 100) / 100;
+}
+
+function onMenuScaleChange(val) {
+  userMenuScale = clampUserUiScale(val);
+  syncVisualControlSettingToggles();
+  if (typeof updateResponsiveUiZoom === 'function') updateResponsiveUiZoom();
+  if (typeof refreshMenuLayoutState === 'function') refreshMenuLayoutState(false);
+}
+
+function onBattleScaleChange(val) {
+  userBattleScale = clampUserUiScale(val);
+  syncVisualControlSettingToggles();
+  if (typeof isLayoutPreviewMode !== 'undefined' && isLayoutPreviewMode && typeof adjustLayout === 'function') {
+    adjustLayout();
+  }
+}
+
+function resetMenuScale() {
+  if (typeof SE !== 'undefined') SE.play('select');
+  onMenuScaleChange(1.0);
+}
+
+function resetBattleScale() {
+  if (typeof SE !== 'undefined') SE.play('select');
+  onBattleScaleChange(1.0);
+}
+
 function onSwapVibrateToggle(checked) {
   isSwapVibrateEnabled = !!checked;
   syncVisualControlSettingToggles();
@@ -133,6 +166,14 @@ function syncVisualControlSettingToggles() {
   if (gbEl) gbEl.checked = !!isGbMode;
   const vibEl = document.getElementById('settings-swap-vibrate');
   if (vibEl) vibEl.checked = !!isSwapVibrateEnabled;
+  const menuSl = document.getElementById('settings-menu-scale');
+  const menuValEl = document.getElementById('settings-menu-scale-val');
+  if (menuSl) menuSl.value = String(userMenuScale);
+  if (menuValEl) menuValEl.innerText = String(Math.round(userMenuScale * 100));
+  const battleSl = document.getElementById('settings-battle-scale');
+  const battleValEl = document.getElementById('settings-battle-scale-val');
+  if (battleSl) battleSl.value = String(userBattleScale);
+  if (battleValEl) battleValEl.innerText = String(Math.round(userBattleScale * 100));
   syncBoardVibrateToggleUI();
 }
 
@@ -3001,6 +3042,8 @@ function hasSettingsChanges() {
   if (Math.round(VOICE.volume * 100) !== Math.round(snap.voiceVol * 100)) return true;
   if (!!isGbMode !== !!snap.gbMode) return true;
   if (!!isSwapVibrateEnabled !== !!snap.swapVibrate) return true;
+  if (Math.round(userMenuScale * 100) !== Math.round((snap.menuScale || 1.0) * 100)) return true;
+  if (Math.round(userBattleScale * 100) !== Math.round((snap.battleScale || 1.0) * 100)) return true;
 
   const curPlayerName = (typeof playerCustomName !== 'undefined') ? playerCustomName : '';
   if (curPlayerName !== (snap.playerCustomName || '')) return true;
@@ -3174,6 +3217,8 @@ function openSettings() {
     voiceVol: VOICE.volume,
     gbMode: isGbMode,
     swapVibrate: isSwapVibrateEnabled,
+    menuScale: userMenuScale,
+    battleScale: userBattleScale,
     playerCustomName: typeof playerCustomName !== 'undefined' ? playerCustomName : '',
     hubPortraitMode: typeof hubPortraitMode !== 'undefined' ? hubPortraitMode : 'random',
     selectedCharId: typeof selectedCharId !== 'undefined' ? selectedCharId : 'main00',
@@ -3211,6 +3256,9 @@ function openSettings() {
 }
 
 async function cancelSettings(afterDiscardCb = null) {
+  if (typeof isLayoutPreviewMode !== 'undefined' && isLayoutPreviewMode && typeof closeLayoutPreview === 'function') {
+    closeLayoutPreview(true);
+  }
   closeRangeDigitEdit();
   clearSliderAdjusting();
   closeSelectPickerModal(true);
@@ -3250,7 +3298,11 @@ async function cancelSettings(afterDiscardCb = null) {
     applyGbMode(!!snap.gbMode);
     isSwapVibrateEnabled = !!snap.swapVibrate;
     if (!isSwapVibrateEnabled) stopAllVibration();
+    userMenuScale = snap.menuScale !== undefined ? snap.menuScale : 1.0;
+    userBattleScale = snap.battleScale !== undefined ? snap.battleScale : 1.0;
     syncVisualControlSettingToggles();
+    if (typeof updateResponsiveUiZoom === 'function') updateResponsiveUiZoom();
+    if (typeof refreshMenuLayoutState === 'function') refreshMenuLayoutState(false);
 
     const seEl = document.getElementById('se-volume');
     const seVal = document.getElementById('se-volume-val');
@@ -3353,6 +3405,9 @@ function closeSettings() {
     focusInvalidControlField(check);
     return;
   }
+  if (typeof isLayoutPreviewMode !== 'undefined' && isLayoutPreviewMode && typeof closeLayoutPreview === 'function') {
+    closeLayoutPreview(true);
+  }
   closeRangeDigitEdit();
   clearSliderAdjusting();
   closeSelectPickerModal(true);
@@ -3368,6 +3423,9 @@ function closeSettings() {
   localStorage.setItem('pdw_bgm_vol', bgmAudio.volume);
   localStorage.setItem('pdw_gb_mode', String(!!isGbMode));
   localStorage.setItem('pdw_swap_vibrate', String(!!isSwapVibrateEnabled));
+  localStorage.setItem('pdw_menu_scale', String(userMenuScale));
+  localStorage.setItem('pdw_battle_scale', String(userBattleScale));
+  if (typeof updateResponsiveUiZoom === 'function') updateResponsiveUiZoom();
   syncBoardVibrateToggleUI();
 
   if (typeof playerCustomName !== 'undefined') {
@@ -3531,6 +3589,7 @@ function getActiveMenuFocusScope() {
     'exit-confirm-modal',
     'pwa-guide-modal',
     'select-picker-modal',
+    'layout-preview-overlay',
     'custom-skill-modal',
     'confirm-match-modal',
     'skill-select-modal',
@@ -4159,6 +4218,7 @@ function getCurrentPadContextKey() {
   if (document.getElementById('exit-confirm-modal')?.style.display === 'flex') return 'exit-confirm';
   if (document.getElementById('pwa-guide-modal')?.style.display === 'flex') return 'pwa-guide';
   if (document.getElementById('select-picker-modal')?.style.display === 'flex') return 'select-picker';
+  if (document.getElementById('layout-preview-overlay')?.style.display === 'flex') return 'layout-preview';
   if (document.getElementById('custom-skill-modal')?.style.display === 'flex') return 'custom-skill-modal';
   if (document.getElementById('confirm-match-modal')?.style.display === 'flex') return 'confirm-modal';
   if (document.getElementById('skill-select-modal')?.style.display === 'flex') return 'skill-modal';

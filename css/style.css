@@ -17,6 +17,7 @@
   --accent-gold: #ffd700;
   --ui-modal-scale: 1;
   --ui-pc-zoom: 1;
+  --ui-menu-zoom: 1;
 
   /* メイン画面～モード選択画面の背景画像 & 将来の盤面外背景差し替え用変数 */
   --menu-bg-image: none;
@@ -128,7 +129,7 @@ textarea {
 
 /* 戻るボタン表示中は上部に安全スペースを確保し重なりを防止 */
 #menu-overlay.has-back-btn {
-  padding-top: max(56px, calc(16px + 42px * var(--ui-pc-zoom, 1)), env(safe-area-inset-top));
+  padding-top: max(56px, calc(16px + 42px * var(--ui-menu-zoom, 1)), env(safe-area-inset-top));
 }
 
 .menu-scale-content {
@@ -153,15 +154,15 @@ textarea {
   margin-top: auto;
   margin-bottom: auto;
   flex-shrink: 0;
-  zoom: var(--ui-pc-zoom, 1);
-  max-width: calc(94vw / var(--ui-pc-zoom, 1));
+  zoom: var(--ui-menu-zoom, 1);
+  max-width: calc(94vw / var(--ui-menu-zoom, 1));
 }
 
 /* 縦画面ハブ表示時は #vertical-hub-hero と下のメニュー群を合わせて上下中央に配置 */
 #menu-overlay.vertical-hub-active #vertical-hub-hero {
   margin-top: auto;
   margin-bottom: 0;
-  zoom: var(--ui-pc-zoom, 1);
+  zoom: var(--ui-menu-zoom, 1);
 }
 #menu-overlay.vertical-hub-active #main-menu,
 #menu-overlay.vertical-hub-active #solo-hub-menu,

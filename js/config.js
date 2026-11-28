@@ -422,7 +422,7 @@ async function checkServerUpdatesOnBoot() {
       let settled = false;
       const timer = setTimeout(() => {
         if (!settled) { settled = true; resolve({ updated: false }); }
-      }, 2400);
+      }, 6000);
 
       try {
         const mc = new MessageChannel();
